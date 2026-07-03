@@ -9,7 +9,7 @@
 //! cargo run --example lapin_topology -- run
 //! ```
 
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
+use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use serde::Deserialize;
 
@@ -36,7 +36,7 @@ async fn on_order(event: &OrderPlaced) -> HandlerResult {
 
 // --8<-- [start:app]
 #[ruststream::app]
-fn app() -> RustStream {
+fn app() -> impl App {
     // declare_topology is off by default; this service owns its queues, so it opts in.
     // default_queue_type applies to descriptors that do not pick a type themselves.
     let broker = LapinBroker::new("amqp://localhost:5672")

@@ -11,18 +11,18 @@
 //!
 //! ```text
 //! just brokers-up
-//! docker exec ruststream-rabbitmq rabbitmqadmin declare queue name=orders durable=true
+//! docker exec ruststream-rabbitmq rabbitmqadmin declare queue --name orders --durable true
 //! cargo run --example lapin_quickstart -- run
 //! ```
 //!
 //! Publish an order from another terminal:
 //!
 //! ```text
-//! docker exec ruststream-rabbitmq rabbitmqadmin publish routing_key=orders payload='{"id":1}'
+//! docker exec ruststream-rabbitmq rabbitmqadmin publish message --routing-key orders --payload '{"id":1}'
 //! ```
 
 // --8<-- [start:handler]
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
+use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream_lapin::LapinBroker;
 use serde::Deserialize;
@@ -41,7 +41,7 @@ async fn handle(order: &Order) -> HandlerResult {
 
 // --8<-- [start:app]
 #[ruststream::app]
-fn app() -> RustStream {
+fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672").prefetch(64),
         |b| {

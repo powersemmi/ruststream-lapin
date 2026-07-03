@@ -39,8 +39,8 @@
 - **Lazy startup contract.** `LapinBroker::new(uri)` is synchronous and does no I/O; the runtime
   connects once at startup, so the broker composes with `#[ruststream::app]`.
 - **In-process test broker.** The `testing` feature ships `LapinTestBroker`, an in-process
-  transport that implements `ruststream::testing::TestableBroker`, so it drives the `TestApp`
-  harness and passes the framework's conformance suite without a server.
+  stand-in for RabbitMQ that plugs into the framework's `TestApp` harness, so handlers are
+  unit-tested with the same wiring they ship with - no server needed.
 
 ## Install
 

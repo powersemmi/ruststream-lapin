@@ -11,6 +11,15 @@ Well-known headers map onto native AMQP properties (`content-type`, `correlation
 `reply-to`, `message-id`); every other header travels in the AMQP header table as a byte string,
 so binary values round-trip.
 
+## Replying from a handler
+
+The framework's `publish(..)` form works unchanged: the handler returns the reply value and the
+runtime encodes and publishes it through the `TypedPublisher` the mount was given (see the
+[core publishing guide](https://powersemmi.github.io/ruststream/) for the whole surface,
+including per-publisher transforms and app-wide publish layers). The
+[request/reply page](request-reply.md) shows the RPC variant, where a transform redirects each
+reply to the requester's private address.
+
 ## Three publishers
 
 `broker.publisher()` is fire-and-forget: the publish resolves when the frame is written, with no
@@ -27,13 +36,23 @@ broker feedback. Upgrade on the publisher when the guarantee matters:
 --8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:confirms"
 ```
 
-```rust
---8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:server-tx"
-```
-
 The trade-off in one sentence: confirms give per-message durability (a failed commit may leave
 earlier messages published), server transactions give all-or-nothing visibility.
 
-Both implement the framework's `TransactionalPublisher`, so either plugs into the same
-`begin_transaction / commit / abort` call sites. Clones of a publisher share the underlying
-channel and transaction state.
+## Transactional fan-out from a handler
+
+A publisher is a value like any other shared resource: build it once, wire it into the typed
+application state at startup, and let handlers request it by type (`State<Shipments>` below).
+Here an order fans out into per-item shipment commands, published all-or-nothing:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:state"
+```
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:handler"
+```
+
+Both transactional publishers implement the framework's `TransactionalPublisher`, so either
+plugs into the same `begin_transaction / commit / abort` call sites. Clones of a publisher share
+the underlying channel and transaction state.

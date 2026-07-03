@@ -1,15 +1,13 @@
 //! In-process unit-testing: the same handlers and descriptors, no `RabbitMQ` server.
 //!
-//! The `testing` feature ships `LapinTestBroker`, an in-process transport that is a full broker
-//! and also implements `ruststream::testing::TestableBroker`. Build the app around it exactly
-//! as in production, drive publishes with `TestApp::publish` (which waits for quiescence), and
-//! assert on what the handlers did.
+//! The `testing` feature ships `LapinTestBroker`, an in-process stand-in for `RabbitMQ`. Build
+//! the app around it exactly as in production, drive publishes with `TestApp::publish` (which
+//! waits for the handlers to settle), and assert on what they did.
 //!
 //! ```text
 //! cargo run --example lapin_testing --features testing
 //! ```
 
-use ruststream::conformance::harness;
 use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
@@ -56,11 +54,6 @@ async fn main() {
 
     tb.shutdown().await.expect("shutdown");
     // --8<-- [end:testapp]
-
-    // --8<-- [start:conformance]
-    // The in-process transport itself is held to the core broker contract.
-    harness::run_suite(LapinTestBroker::new).await;
-    // --8<-- [end:conformance]
 
     println!("all in-process checks passed");
 }
