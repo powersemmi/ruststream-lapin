@@ -3,8 +3,9 @@
 //! `lapin_rpc_client` example).
 //!
 //! The responder is an ordinary `#[subscriber(.., publish(..))]` handler; what makes it an RPC
-//! responder is one static `PublishTransform` that redirects each reply to the private address
-//! the requester stamped on the request. The handler itself knows nothing about reply-to.
+//! responder is the crate's [`DirectReplyTo`] transform composed onto the reply publisher, which
+//! redirects each reply to the private address the requester stamped on the request. The
+//! handler itself knows nothing about reply-to.
 //!
 //! ```text
 //! just brokers-up
@@ -13,12 +14,9 @@
 //!
 //! Then start the client service from another terminal (see `lapin_rpc_client`).
 
-use ruststream::runtime::{
-    App, AppInfo, HandlerResult, Outgoing, PublishContext, PublishTransform, RustStream,
-    TypedPublisher,
-};
+use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
 use ruststream::subscriber;
-use ruststream_lapin::LapinBroker;
+use ruststream_lapin::{DirectReplyTo, LapinBroker};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -48,25 +46,6 @@ async fn check(req: &CheckStock) -> Result<Stock, HandlerResult> {
     })
 }
 // --8<-- [end:handler]
-
-// --8<-- [start:transform]
-/// The responder half of the direct reply-to convention, as a static publish transform:
-/// redirect the reply to the requester's private address and echo its correlation id. Requests
-/// without a reply-to fall through to the mount's static destination.
-struct DirectReplyTo;
-
-impl<C> PublishTransform<C> for DirectReplyTo {
-    fn apply(&self, out: &mut Outgoing<'_>, cx: &PublishContext<'_, C>) {
-        if let Some(reply_to) = cx.headers().reply_to() {
-            out.set_name(reply_to.to_owned());
-        }
-        if let Some(correlation_id) = cx.headers().correlation_id() {
-            out.headers_mut()
-                .insert("correlation-id", correlation_id.as_bytes().to_vec());
-        }
-    }
-}
-// --8<-- [end:transform]
 
 #[ruststream::app]
 fn app() -> impl App {

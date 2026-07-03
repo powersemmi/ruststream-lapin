@@ -36,23 +36,15 @@ mechanism:
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:handler"
 ```
 
-What makes it an RPC responder is the reply destination, and that is publish-pipeline work, not
-handler work. A static `PublishTransform` reads the incoming delivery through the
-`PublishContext` and redirects each reply to the address the requester stamped on the request,
-echoing its correlation id:
-
-```rust
---8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:transform"
-```
-
-Compose it onto the reply publisher at mount time:
+What makes it an RPC responder is the reply destination. `DirectReplyTo` is a ready-made publish
+transform that sends each reply back to the address the requester asked for and echoes its
+correlation id; compose it onto the reply publisher at mount time:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:mount"
 ```
 
-The handler stays a pure request-to-reply function, testable in-process like any other; the
-direct reply-to convention lives in one reusable transform.
+The handler stays a pure request-to-reply function, testable in-process like any other.
 
 ## Semantics
 
