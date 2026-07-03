@@ -473,6 +473,28 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#the-requester" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The requester
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-responder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The responder
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#semantics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -608,6 +630,28 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#the-requester" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The requester
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-responder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The responder
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#semantics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -644,45 +688,120 @@
 
 
 <h1 id="requestreply">Request/reply<a class="headerlink" href="#requestreply" title="Permanent link">&para;</a></h1>
-<p><code>broker.requester()</code> implements the framework's <code>RequestReply</code> capability over RabbitMQ
-<a href="https://www.rabbitmq.com/docs/direct-reply-to">direct reply-to</a>: requests carry
-<code>reply-to = amq.rabbitmq.reply-to</code> and a generated <code>correlation-id</code>; RabbitMQ rewrites the
-address per request, and all replies arrive on one private consumer where the requester
-multiplexes them back by correlation id.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">requester</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">broker</span><span class="p">.</span><span class="n">requester</span><span class="p">();</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">reply</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">requester</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="p">.</span><span class="n">request</span><span class="p">(</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">        </span><span class="n">OutgoingMessage</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;rpc.ping&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">b&quot;ping&quot;</span><span class="p">),</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">        </span><span class="n">Duration</span><span class="p">::</span><span class="n">from_secs</span><span class="p">(</span><span class="mi">2</span><span class="p">),</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="p">)</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;reply: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">String</span><span class="p">::</span><span class="n">from_utf8_lossy</span><span class="p">(</span><span class="n">reply</span><span class="p">.</span><span class="n">payload</span><span class="p">()));</span>
+<p>RPC over RabbitMQ <a href="https://www.rabbitmq.com/docs/direct-reply-to">direct reply-to</a> is how one
+service asks another a question through the broker it already has, instead of growing an HTTP
+sidechannel: an order service checks stock in the inventory service, a gateway fetches a price,
+a saga step confirms a reservation. The two halves are two ordinary services; the runnable pair
+is <a href="https://github.com/powersemmi/ruststream-lapin/blob/main/crates/ruststream-lapin/examples/lapin_rpc_server.rs"><code>lapin_rpc_server</code></a>
+and <a href="https://github.com/powersemmi/ruststream-lapin/blob/main/crates/ruststream-lapin/examples/lapin_rpc_client.rs"><code>lapin_rpc_client</code></a>.</p>
+<h2 id="the-requester">The requester<a class="headerlink" href="#the-requester" title="Permanent link">&para;</a></h2>
+<p><code>broker.requester()</code> implements the <code>RequestReply</code> capability: every request goes out with
+<code>reply-to</code> set to the direct reply-to pseudo-queue and a generated <code>correlation-id</code>, and the
+matching reply resolves the call. Wrap the raw capability in a small typed client and put it in
+the application state, like any other shared dependency:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="sd">/// A typed RPC client over the raw requester: encode the request, await the correlated reply,</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="sd">/// decode it. One reusable value, shared through the application state.</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="cp">#[derive(Clone)]</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">struct</span><span class="w"> </span><span class="nc">Inventory</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="n">requester</span><span class="p">:</span><span class="w"> </span><span class="nc">LapinRequester</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">}</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">impl</span><span class="w"> </span><span class="n">Inventory</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">check</span><span class="p">(</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">        </span><span class="n">sku</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="p">,</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">        </span><span class="n">quantity</span><span class="p">:</span><span class="w"> </span><span class="kt">u32</span><span class="p">,</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">Stock</span><span class="p">,</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">error</span><span class="p">::</span><span class="n">Error</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CheckStock</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">            </span><span class="n">sku</span><span class="p">:</span><span class="w"> </span><span class="nc">sku</span><span class="p">.</span><span class="n">to_owned</span><span class="p">(),</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">            </span><span class="n">quantity</span><span class="p">,</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">        </span><span class="p">};</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">payload</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">JsonCodec</span><span class="p">.</span><span class="n">encode</span><span class="p">(</span><span class="o">&amp;</span><span class="n">request</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">reply</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">            </span><span class="p">.</span><span class="n">requester</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">            </span><span class="p">.</span><span class="n">request</span><span class="p">(</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="w">                </span><span class="n">OutgoingMessage</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;inventory.check&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">payload</span><span class="p">.</span><span class="n">as_ref</span><span class="p">()),</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="w">                </span><span class="n">Duration</span><span class="p">::</span><span class="n">from_secs</span><span class="p">(</span><span class="mi">2</span><span class="p">),</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">            </span><span class="p">)</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">            </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="w">        </span><span class="nb">Ok</span><span class="p">(</span><span class="n">JsonCodec</span><span class="p">.</span><span class="n">decode</span><span class="p">(</span><span class="n">reply</span><span class="p">.</span><span class="n">payload</span><span class="p">())</span><span class="o">?</span><span class="p">)</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="p">}</span>
 </code></pre></div>
-<p>The responder needs no special machinery: it is an ordinary subscriber that publishes its reply
-to the <code>reply-to</code> address it received (a plain publish to the default exchange), echoing the
-<code>correlation-id</code> header. Both values arrive as regular headers on the request:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1">// The responder is an ordinary subscriber: it reads the reply address and the correlation</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1">// id off the request headers and publishes the reply through a plain publisher.</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">responder</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">broker</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="p">.</span><span class="n">subscribe</span><span class="p">(</span><span class="n">RabbitQueue</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;rpc.ping&quot;</span><span class="p">).</span><span class="n">durable</span><span class="p">(</span><span class="kc">false</span><span class="p">).</span><span class="n">exclusive</span><span class="p">(</span><span class="kc">true</span><span class="p">))</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="kd">let</span><span class="w"> </span><span class="n">reply_publisher</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">broker</span><span class="p">.</span><span class="n">publisher</span><span class="p">();</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">tokio</span><span class="p">::</span><span class="n">spawn</span><span class="p">(</span><span class="k">async</span><span class="w"> </span><span class="k">move</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">requests</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">pin</span><span class="p">::</span><span class="n">pin</span><span class="o">!</span><span class="p">(</span><span class="n">responder</span><span class="p">.</span><span class="n">stream</span><span class="p">());</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="nb">Ok</span><span class="p">(</span><span class="n">request</span><span class="p">))</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">requests</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">reply_to</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">request</span><span class="p">.</span><span class="n">headers</span><span class="p">().</span><span class="n">reply_to</span><span class="p">().</span><span class="n">map</span><span class="p">(</span><span class="kt">str</span><span class="p">::</span><span class="n">to_owned</span><span class="p">)</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">            </span><span class="k">continue</span><span class="p">;</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">        </span><span class="p">};</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Headers</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">correlation_id</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">request</span><span class="p">.</span><span class="n">headers</span><span class="p">().</span><span class="n">correlation_id</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">            </span><span class="n">headers</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="s">&quot;correlation-id&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">correlation_id</span><span class="p">.</span><span class="n">as_bytes</span><span class="p">().</span><span class="n">to_vec</span><span class="p">());</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">        </span><span class="p">}</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">reply</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">OutgoingMessage</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="o">&amp;</span><span class="n">reply_to</span><span class="p">,</span><span class="w"> </span><span class="s">b&quot;pong&quot;</span><span class="p">).</span><span class="n">with_headers</span><span class="p">(</span><span class="n">headers</span><span class="p">);</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">reply_publisher</span><span class="p">.</span><span class="n">publish</span><span class="p">(</span><span class="n">reply</span><span class="p">).</span><span class="k">await</span><span class="p">;</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">request</span><span class="p">.</span><span class="n">ack</span><span class="p">().</span><span class="k">await</span><span class="p">;</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="p">});</span>
+<p>Handlers then request it by type and call the other service in the middle of their own message
+flow. The RPC timeout is the failure boundary, and it maps straight onto settlement: a business
+answer settles the order, an unreachable service asks for redelivery:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1">// The business handler calls the other service synchronously. A business answer settles the</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1">// order either way; only an unreachable inventory service (the RPC timed out or failed) asks</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1">// the broker to redeliver and try again later.</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="cp">#[subscriber(</span><span class="s">&quot;orders&quot;</span><span class="cp">)]</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">place_order</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">,</span><span class="w"> </span><span class="n">State</span><span class="p">(</span><span class="n">inventory</span><span class="p">):</span><span class="w"> </span><span class="nc">State</span><span class="o">&lt;</span><span class="n">Inventory</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="k">match</span><span class="w"> </span><span class="n">inventory</span><span class="p">.</span><span class="n">check</span><span class="p">(</span><span class="o">&amp;</span><span class="n">order</span><span class="p">.</span><span class="n">sku</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">quantity</span><span class="p">).</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">        </span><span class="nb">Ok</span><span class="p">(</span><span class="n">stock</span><span class="p">)</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">stock</span><span class="p">.</span><span class="n">available</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">            </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;order accepted: {} x{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">sku</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">quantity</span><span class="p">);</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">            </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">        </span><span class="nb">Ok</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">            </span><span class="fm">println!</span><span class="p">(</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">                </span><span class="s">&quot;order rejected, out of stock: {} x{}&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">                </span><span class="n">order</span><span class="p">.</span><span class="n">sku</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">quantity</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">            </span><span class="p">);</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">            </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">        </span><span class="nb">Err</span><span class="p">(</span><span class="n">err</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">            </span><span class="fm">eprintln!</span><span class="p">(</span><span class="s">&quot;inventory unavailable, retrying later: {err}&quot;</span><span class="p">);</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">            </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">retry</span><span class="p">()</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="p">}</span>
 </code></pre></div>
+<h2 id="the-responder">The responder<a class="headerlink" href="#the-responder" title="Permanent link">&para;</a></h2>
+<p>The responder is an ordinary <code>#[subscriber(.., publish(..))]</code> handler: decode the request,
+return the reply. <code>Err</code> settles without replying, and the requester's timeout is the recovery
+mechanism:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1">// A plain publishing handler: decode the request, return the reply. `Err` settles without</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1">// replying, and the requester&#39;s timeout is the recovery mechanism.</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="cp">#[subscriber(</span><span class="s">&quot;inventory.check&quot;</span><span class="cp">, publish(</span><span class="s">&quot;inventory.check.unrouted&quot;</span><span class="cp">))]</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">check</span><span class="p">(</span><span class="n">req</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">CheckStock</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">Stock</span><span class="p">,</span><span class="w"> </span><span class="n">HandlerResult</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">req</span><span class="p">.</span><span class="n">sku</span><span class="p">.</span><span class="n">is_empty</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">HandlerResult</span><span class="p">::</span><span class="nb">drop</span><span class="p">());</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="c1">// Stand-in for a warehouse lookup.</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">Stock</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">        </span><span class="n">sku</span><span class="p">:</span><span class="w"> </span><span class="nc">req</span><span class="p">.</span><span class="n">sku</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">        </span><span class="n">available</span><span class="p">:</span><span class="w"> </span><span class="nc">req</span><span class="p">.</span><span class="n">quantity</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="p">})</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="p">}</span>
+</code></pre></div>
+<p>What makes it an RPC responder is the reply destination, and that is publish-pipeline work, not
+handler work. A static <code>PublishTransform</code> reads the incoming delivery through the
+<code>PublishContext</code> and redirects each reply to the address the requester stamped on the request,
+echoing its correlation id:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="sd">/// The responder half of the direct reply-to convention, as a static publish transform:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="sd">/// redirect the reply to the requester&#39;s private address and echo its correlation id. Requests</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="sd">/// without a reply-to fall through to the mount&#39;s static destination.</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">struct</span><span class="w"> </span><span class="nc">DirectReplyTo</span><span class="p">;</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="k">impl</span><span class="o">&lt;</span><span class="n">C</span><span class="o">&gt;</span><span class="w"> </span><span class="n">PublishTransform</span><span class="o">&lt;</span><span class="n">C</span><span class="o">&gt;</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">DirectReplyTo</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">apply</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">out</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">mut</span><span class="w"> </span><span class="n">Outgoing</span><span class="o">&lt;&#39;</span><span class="nb">_</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">cx</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">PublishContext</span><span class="o">&lt;&#39;</span><span class="nb">_</span><span class="p">,</span><span class="w"> </span><span class="n">C</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">reply_to</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cx</span><span class="p">.</span><span class="n">headers</span><span class="p">().</span><span class="n">reply_to</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">            </span><span class="n">out</span><span class="p">.</span><span class="n">set_name</span><span class="p">(</span><span class="n">reply_to</span><span class="p">.</span><span class="n">to_owned</span><span class="p">());</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">correlation_id</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cx</span><span class="p">.</span><span class="n">headers</span><span class="p">().</span><span class="n">correlation_id</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">            </span><span class="n">out</span><span class="p">.</span><span class="n">headers_mut</span><span class="p">()</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">                </span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="s">&quot;correlation-id&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">correlation_id</span><span class="p">.</span><span class="n">as_bytes</span><span class="p">().</span><span class="n">to_vec</span><span class="p">());</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="p">}</span>
+</code></pre></div>
+<p>Compose it onto the reply publisher at mount time:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">RustStream</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">AppInfo</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;inventory&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;0.1.0&quot;</span><span class="p">)).</span><span class="n">with_broker</span><span class="p">(</span><span class="n">broker</span><span class="p">,</span><span class="w"> </span><span class="o">|</span><span class="n">b</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">replies</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">TypedPublisher</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">b</span><span class="p">.</span><span class="n">broker</span><span class="p">().</span><span class="n">publisher</span><span class="p">()).</span><span class="n">transform</span><span class="p">(</span><span class="n">DirectReplyTo</span><span class="p">);</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="n">b</span><span class="p">.</span><span class="n">include_publishing</span><span class="p">(</span><span class="n">check</span><span class="p">,</span><span class="w"> </span><span class="n">replies</span><span class="p">);</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="p">})</span>
+</code></pre></div>
+<p>The handler stays a pure request-to-reply function, testable in-process like any other; the
+direct reply-to convention lives in one reusable transform.</p>
 <h2 id="semantics">Semantics<a class="headerlink" href="#semantics" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>At-most-once.</strong> Direct reply-to keeps reply state in the requester's channel on one broker
@@ -691,9 +810,10 @@ to the <code>reply-to</code> address it received (a plain publish to the default
   error.</li>
 <li><strong>Transient by default.</strong> Requests are published with delivery mode 1: a request nobody is
   waiting for after the timeout gains nothing from surviving a broker restart. Opt into
-  persistence with <code>.persistent(true)</code>.</li>
+  persistence with <code>.persistent(true)</code> on the requester.</li>
 <li><strong>No infrastructure.</strong> The pseudo-queue is never declared; the only real entity involved is
-  the request queue the responder consumes.</li>
+  the request queue the responder consumes. Responders on other stacks interoperate as long as
+  they publish the reply to the received <code>reply-to</code> and echo <code>correlation-id</code>.</li>
 </ul>
 
 

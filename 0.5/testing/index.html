@@ -509,17 +509,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#the-conformance-contract" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The conformance contract
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -627,17 +616,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#the-conformance-contract" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The conformance contract
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -664,11 +642,11 @@
 
 
 <h1 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h1>
-<p>The <code>testing</code> feature ships <code>LapinTestBroker</code>, an in-process transport that stands in for
-RabbitMQ in application tests: the same handlers, descriptors, and wiring, no server. It routes
-by exact queue name (the default-exchange model), records every publish, and implements
-<code>ruststream::testing::TestableBroker</code>, so the framework's <code>TestApp</code> harness can drive it to
-quiescence deterministically.</p>
+<p>The <code>testing</code> feature ships <code>LapinTestBroker</code>, an in-process stand-in for RabbitMQ in
+application tests: the same handlers, descriptors, and wiring, no server. It routes by exact
+queue name (the default-exchange model), records every publish, and plugs into the framework's
+<code>TestApp</code> harness, which drives each publish to quiescence so assertions never race the
+handlers.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[dev-dependencies]</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">ruststream-lapin</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;0.5&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;testing&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
 </code></pre></div>
@@ -707,14 +685,6 @@ exercise them against a real server. The crate's own integration tests run that 
 <code>AMQP_TEST_URL</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>just brokers-up
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>AMQP_TEST_URL=amqp://127.0.0.1:5672 cargo test --workspace --all-features -- --test-threads=1
-</code></pre></div>
-<h2 id="the-conformance-contract">The conformance contract<a class="headerlink" href="#the-conformance-contract" title="Permanent link">&para;</a></h2>
-<p>The in-process transport is not a hand-rolled fake with private semantics: it passes the
-framework's broker conformance suite (ordering, settlement, headers, publish log), and the real
-broker passes the lifecycle and capability suites in CI. Broker authors extending this crate can
-hold their changes to the same bar:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1">// The in-process transport itself is held to the core broker contract.</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">harness</span><span class="p">::</span><span class="n">run_suite</span><span class="p">(</span><span class="n">LapinTestBroker</span><span class="p">::</span><span class="n">new</span><span class="p">).</span><span class="k">await</span><span class="p">;</span>
 </code></pre></div>
 
 

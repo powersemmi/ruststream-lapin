@@ -445,10 +445,32 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#replying-from-a-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replying from a handler
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#three-publishers" class="md-nav__link">
     <span class="md-ellipsis">
       
         Three publishers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#transactional-fan-out-from-a-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transactional fan-out from a handler
       
     </span>
   </a>
@@ -608,10 +630,32 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#replying-from-a-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replying from a handler
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#three-publishers" class="md-nav__link">
     <span class="md-ellipsis">
       
         Three publishers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#transactional-fan-out-from-a-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transactional fan-out from a handler
       
     </span>
   </a>
@@ -652,6 +696,13 @@ for fire-and-forget traffic where losing messages on a broker restart is accepta
 <p>Well-known headers map onto native AMQP properties (<code>content-type</code>, <code>correlation-id</code>,
 <code>reply-to</code>, <code>message-id</code>); every other header travels in the AMQP header table as a byte string,
 so binary values round-trip.</p>
+<h2 id="replying-from-a-handler">Replying from a handler<a class="headerlink" href="#replying-from-a-handler" title="Permanent link">&para;</a></h2>
+<p>The framework's <code>publish(..)</code> form works unchanged: the handler returns the reply value and the
+runtime encodes and publishes it through the <code>TypedPublisher</code> the mount was given (see the
+<a href="https://powersemmi.github.io/ruststream/">core publishing guide</a> for the whole surface,
+including per-publisher transforms and app-wide publish layers). The
+<a href="../request-reply/">request/reply page</a> shows the RPC variant, where a transform redirects each
+reply to the requester's private address.</p>
 <h2 id="three-publishers">Three publishers<a class="headerlink" href="#three-publishers" title="Permanent link">&para;</a></h2>
 <p><code>broker.publisher()</code> is fire-and-forget: the publish resolves when the frame is written, with no
 broker feedback. Upgrade on the publisher when the guarantee matters:</p>
@@ -663,32 +714,64 @@ broker feedback. Upgrade on the publisher when the guarantee matters:</p>
   messages become visible atomically at commit. Slower (a synchronous round trip per commit),
   but the only option when partial flushes are unacceptable.</li>
 </ul>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1">// Publisher confirms: both messages flush on commit, and commit resolves only after the</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1">// broker confirmed each one. An abort before commit publishes nothing.</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">publisher</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">broker</span><span class="p">.</span><span class="n">publisher</span><span class="p">().</span><span class="n">confirms</span><span class="p">();</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">publisher</span><span class="p">.</span><span class="n">begin_transaction</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">publisher</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="p">.</span><span class="n">publish</span><span class="p">(</span><span class="n">OutgoingMessage</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;processed&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">b&quot;one&quot;</span><span class="p">))</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">publisher</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="p">.</span><span class="n">publish</span><span class="p">(</span><span class="n">OutgoingMessage</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;processed&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">b&quot;two&quot;</span><span class="p">))</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">publisher</span><span class="p">.</span><span class="n">commit</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-</code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1">// AMQP server transaction: the publish reaches the broker inside the channel transaction</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1">// and is rolled back by abort, so it is never delivered.</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">atomic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">broker</span><span class="p">.</span><span class="n">publisher</span><span class="p">().</span><span class="n">server_tx</span><span class="p">();</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">atomic</span><span class="p">.</span><span class="n">begin_transaction</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">atomic</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="p">.</span><span class="n">publish</span><span class="p">(</span><span class="n">OutgoingMessage</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;processed&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">b&quot;discarded&quot;</span><span class="p">))</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">atomic</span><span class="p">.</span><span class="n">abort</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1">// The transactional flavour is picked on the publisher; swap `.confirms()` for</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1">// `.server_tx()` to trade throughput for AMQP server-side atomicity.</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">shipments</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Shipments</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="n">publisher</span><span class="p">:</span><span class="w"> </span><span class="nc">broker</span><span class="p">.</span><span class="n">publisher</span><span class="p">().</span><span class="n">confirms</span><span class="p">(),</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">};</span>
 </code></pre></div>
 <p>The trade-off in one sentence: confirms give per-message durability (a failed commit may leave
 earlier messages published), server transactions give all-or-nothing visibility.</p>
-<p>Both implement the framework's <code>TransactionalPublisher</code>, so either plugs into the same
-<code>begin_transaction / commit / abort</code> call sites. Clones of a publisher share the underlying
-channel and transaction state.</p>
+<h2 id="transactional-fan-out-from-a-handler">Transactional fan-out from a handler<a class="headerlink" href="#transactional-fan-out-from-a-handler" title="Permanent link">&para;</a></h2>
+<p>A publisher is a value like any other shared resource: build it once, wire it into the typed
+application state at startup, and let handlers request it by type (<code>State&lt;Shipments&gt;</code> below).
+Here an order fans out into per-item shipment commands, published all-or-nothing:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1">// The application state wires the use-case object once at startup; `#[derive(FromRef)]` makes</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1">// each field injectable into handlers as `State&lt;FieldType&gt;`.</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="cp">#[derive(Clone, FromRef)]</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">struct</span><span class="w"> </span><span class="nc">AppState</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="n">shipments</span><span class="p">:</span><span class="w"> </span><span class="nc">Shipments</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">}</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="cp">#[derive(Clone)]</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">struct</span><span class="w"> </span><span class="nc">Shipments</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="n">publisher</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfirmsPublisher</span><span class="p">,</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="p">}</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="k">impl</span><span class="w"> </span><span class="n">Shipments</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="sd">/// Publishes one shipment command per item, all-or-nothing: commit resolves only after the</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="sd">/// broker confirmed every message, and any failure aborts so shipments are never</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="sd">/// half-visible.</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">dispatch</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="n">AmqpError</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">publisher</span><span class="p">.</span><span class="n">begin_transaction</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="n">item</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="o">&amp;</span><span class="n">order</span><span class="p">.</span><span class="n">items</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ItemShipment</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">                </span><span class="n">order_id</span><span class="p">:</span><span class="w"> </span><span class="nc">order</span><span class="p">.</span><span class="n">id</span><span class="p">,</span>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">                </span><span class="n">item</span><span class="p">:</span><span class="w"> </span><span class="nc">item</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">            </span><span class="p">};</span>
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">payload</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">JsonCodec</span><span class="p">.</span><span class="n">encode</span><span class="p">(</span><span class="o">&amp;</span><span class="n">command</span><span class="p">).</span><span class="n">expect</span><span class="p">(</span><span class="s">&quot;serializable&quot;</span><span class="p">);</span>
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">outgoing</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">OutgoingMessage</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;shipments&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">payload</span><span class="p">.</span><span class="n">as_ref</span><span class="p">());</span>
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">err</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">publisher</span><span class="p">.</span><span class="n">publish</span><span class="p">(</span><span class="n">outgoing</span><span class="p">).</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="w">                </span><span class="bp">self</span><span class="p">.</span><span class="n">publisher</span><span class="p">.</span><span class="n">abort</span><span class="p">().</span><span class="k">await</span><span class="p">.</span><span class="n">ok</span><span class="p">();</span>
+<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">err</span><span class="p">);</span>
+<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">            </span><span class="p">}</span>
+<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">publisher</span><span class="p">.</span><span class="n">commit</span><span class="p">().</span><span class="k">await</span>
+<a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a><span class="p">}</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="cp">#[subscriber(</span><span class="s">&quot;orders&quot;</span><span class="cp">)]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">ship</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">,</span><span class="w"> </span><span class="n">State</span><span class="p">(</span><span class="n">shipments</span><span class="p">):</span><span class="w"> </span><span class="nc">State</span><span class="o">&lt;</span><span class="n">Shipments</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">shipments</span><span class="p">.</span><span class="n">dispatch</span><span class="p">(</span><span class="n">order</span><span class="p">).</span><span class="k">await</span><span class="p">.</span><span class="n">is_err</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">        </span><span class="c1">// Nothing was committed; ask for redelivery and try the whole fan-out again.</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">retry</span><span class="p">();</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">}</span>
+</code></pre></div>
+<p>Both transactional publishers implement the framework's <code>TransactionalPublisher</code>, so either
+plugs into the same <code>begin_transaction / commit / abort</code> call sites. Clones of a publisher share
+the underlying channel and transaction state.</p>
 
 
 
