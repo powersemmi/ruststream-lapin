@@ -58,11 +58,8 @@ native dead-letter target. A handler that drops a message settles with
 
 Anything the descriptor does not model rides through verbatim:
 
-<!-- inline-rust: constructor sketch, no runnable example adds value here -->
 ```rust
-RabbitQueue::new("orders")
-    .argument("x-message-ttl", AMQPValue::LongLongInt(60_000))
-    .argument("x-max-length", AMQPValue::LongLongInt(100_000))
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:arguments"
 ```
 
-`AMQPValue` and `FieldTable` are re-exported from `lapin` for exactly this purpose.
+`AMQPValue` and `FieldTable` are re-exported from the crate for exactly this purpose.
