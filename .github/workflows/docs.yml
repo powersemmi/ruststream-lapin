@@ -2,7 +2,7 @@ name: Docs
 
 on:
   push:
-    branches: [main]
+    branches: [main, "0.5.*"]
     paths: &docs-paths
       - docs/**
       - mkdocs.yml
@@ -11,7 +11,7 @@ on:
       - scripts/lint_doc_fences.py
       - .github/workflows/docs.yml
   pull_request:
-    branches: [main]
+    branches: [main, "0.5.*"]
     paths: *docs-paths
   workflow_dispatch:
 
