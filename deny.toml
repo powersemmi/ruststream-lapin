@@ -1,0 +1,43 @@
+# cargo-deny configuration: the dependency-graph half of the security gate.
+# Checks RustSec advisories, license compatibility, duplicate versions, and
+# registry sources. Run locally with `just deny`.
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+ignore = []
+
+[licenses]
+# Apache-2.0/MIT-compatible permissive licenses only.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    # The AMQP protocol stack itself (lapin's amq-protocol-* crates and the
+    # async-rs runtime shim) is BSD-2-Clause; OSI-approved and permissive.
+    "BSD-2-Clause",
+    # lapin's TLS tree (rustls, aws-lc, ring): ring is (Apache-2.0 AND ISC),
+    # aws-lc-rs carries ISC alongside Apache-2.0, and parts of the stack are
+    # BSD-3-Clause. All OSI-approved and permissive.
+    "BSD-3-Clause",
+    "ISC",
+    # rustls-platform-verifier / webpki-roots ship the Mozilla CA bundle under
+    # CDLA-Permissive-2.0, a permissive data license covering the certificate set.
+    "CDLA-Permissive-2.0",
+    # unicode-ident is (MIT OR Apache-2.0) AND Unicode-3.0; the Unicode license
+    # only covers the embedded character tables and is permissive.
+    "Unicode-3.0",
+]
+
+[bans]
+# clippy::cargo's multiple_crate_versions is allowed in the workspace lints
+# because the lapin client tree pulls unavoidable duplicates; warn (not deny)
+# so the report stays visible without blocking on a transitive client's
+# dependency choices.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

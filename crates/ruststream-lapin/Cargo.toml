@@ -1,0 +1,58 @@
+[package]
+name = "ruststream-lapin"
+description = "RabbitMQ / AMQP 0.9.1 broker implementation for the RustStream messaging framework, backed by lapin."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["rabbitmq", "amqp", "messaging", "broker", "faststream"]
+categories = ["asynchronous", "network-programming"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Ships the in-process test broker (`testing` module) plus the core harness wiring it needs.
+testing = ["ruststream/conformance", "ruststream/testing"]
+# TLS backends, mapped 1:1 onto lapin's cargo features.
+tls-native-tls = ["lapin/native-tls"]
+tls-rustls = ["lapin/rustls"]
+tls-rustls-ring = ["lapin/rustls", "lapin/rustls--ring"]
+
+[dependencies]
+ruststream = { workspace = true }
+lapin = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+# The lapin_* examples are the docs-site snippet sources; keep them runnable and snippet-checked.
+[[example]]
+name = "lapin_quickstart"
+
+[[example]]
+name = "lapin_topology"
+
+[[example]]
+name = "lapin_transactions"
+
+[[example]]
+name = "lapin_request_reply"
+
+[[example]]
+name = "lapin_testing"
+required-features = ["testing"]

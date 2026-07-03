@@ -1,0 +1,22 @@
+# Test broker for the integration and conformance suites.
+#
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   AMQP_TEST_URL=amqp://127.0.0.1:5672 cargo test --workspace --all-features -- --test-threads=1
+#
+# The default guest/guest account only accepts connections from localhost, which is
+# exactly how the port is published below.
+name: ruststream-lapin-tests
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: ruststream-rabbitmq
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s

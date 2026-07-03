@@ -1,0 +1,161 @@
+//! The delivery type yielded by [`LapinSubscriber`](crate::LapinSubscriber).
+
+use bytes::Bytes;
+use lapin::Acker;
+use lapin::message::Delivery;
+use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
+use ruststream::{AckError, Headers, IncomingMessage};
+
+use crate::convert;
+
+/// One AMQP delivery, settled with the protocol's native acknowledgement frames.
+///
+/// Settlement mapping:
+///
+/// - [`ack`](IncomingMessage::ack) sends `basic.ack`.
+/// - [`nack(true)`](IncomingMessage::nack) sends `basic.nack` with `requeue = true`; the broker
+///   redelivers the message (typically to the same queue, `redelivered` set).
+/// - [`nack(false)`](IncomingMessage::nack) sends `basic.reject` with `requeue = false`; the
+///   broker drops the message, or dead-letters it when the queue has a dead-letter exchange.
+///
+/// Replies received through [`LapinRequester`](crate::LapinRequester) arrive on a no-ack
+/// consumer; settling them is a no-op that always succeeds.
+#[derive(Debug)]
+pub struct LapinMessage {
+    payload: Bytes,
+    headers: Headers,
+    exchange: String,
+    routing_key: String,
+    redelivered: bool,
+    delivery_tag: u64,
+    acker: Option<Acker>,
+}
+
+impl LapinMessage {
+    pub(crate) fn from_delivery(delivery: Delivery) -> Self {
+        let headers = convert::headers_from_properties(&delivery.properties);
+        Self {
+            payload: Bytes::from(delivery.data),
+            headers,
+            exchange: delivery.exchange.to_string(),
+            routing_key: delivery.routing_key.to_string(),
+            redelivered: delivery.redelivered,
+            delivery_tag: delivery.delivery_tag,
+            acker: Some(delivery.acker),
+        }
+    }
+
+    /// Builds a settled-by-construction message for no-ack deliveries (request replies).
+    pub(crate) fn from_delivery_no_ack(delivery: Delivery) -> Self {
+        let mut msg = Self::from_delivery(delivery);
+        msg.acker = None;
+        msg
+    }
+
+    /// The exchange this message was published to (empty for the default exchange).
+    #[must_use]
+    pub fn exchange(&self) -> &str {
+        &self.exchange
+    }
+
+    /// The routing key the message was published with.
+    #[must_use]
+    pub fn routing_key(&self) -> &str {
+        &self.routing_key
+    }
+
+    /// Whether the broker marked this delivery as redelivered.
+    #[must_use]
+    pub fn redelivered(&self) -> bool {
+        self.redelivered
+    }
+
+    /// The channel-local delivery tag of this delivery.
+    #[must_use]
+    pub fn delivery_tag(&self) -> u64 {
+        self.delivery_tag
+    }
+
+    async fn settle<F, Fut>(mut self, op: F, what: &'static str) -> Result<(), AckError>
+    where
+        F: FnOnce(Acker) -> Fut,
+        Fut: Future<Output = lapin::Result<bool>>,
+    {
+        // No acker means a no-ack consumer delivered this message; nothing to settle.
+        let Some(acker) = self.acker.take() else {
+            return Ok(());
+        };
+        match op(acker).await {
+            Ok(true) => Ok(()),
+            // lapin reports `false` when the settle frame could not be sent because the channel
+            // already closed or errored; surface that instead of pretending the broker saw it.
+            Ok(false) => Err(AckError::Broker(
+                format!("{what} was not sent: the delivery channel is closed or errored").into(),
+            )),
+            Err(err) => Err(AckError::Broker(Box::new(err))),
+        }
+    }
+}
+
+impl IncomingMessage for LapinMessage {
+    fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    fn headers(&self) -> &Headers {
+        &self.headers
+    }
+
+    /// Acknowledges the delivery with `basic.ack`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AckError::Broker`] when the frame cannot be sent, for example because the
+    /// channel closed after the delivery arrived.
+    ///
+    /// # Cancel safety
+    ///
+    /// Not cancel safe: dropping the future after the frame was queued may still acknowledge the
+    /// message on the broker.
+    async fn ack(self) -> Result<(), AckError> {
+        self.settle(
+            |acker| async move { acker.ack(BasicAckOptions::default()).await },
+            "basic.ack",
+        )
+        .await
+    }
+
+    /// Settles negatively: `basic.nack(requeue = true)` or `basic.reject(requeue = false)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AckError::Broker`] when the frame cannot be sent, for example because the
+    /// channel closed after the delivery arrived.
+    ///
+    /// # Cancel safety
+    ///
+    /// Not cancel safe: dropping the future after the frame was queued may still settle the
+    /// message on the broker.
+    async fn nack(self, requeue: bool) -> Result<(), AckError> {
+        if requeue {
+            self.settle(
+                |acker| async move {
+                    acker
+                        .nack(BasicNackOptions {
+                            multiple: false,
+                            requeue: true,
+                        })
+                        .await
+                },
+                "basic.nack",
+            )
+            .await
+        } else {
+            self.settle(
+                |acker| async move { acker.reject(BasicRejectOptions { requeue: false }).await },
+                "basic.reject",
+            )
+            .await
+        }
+    }
+}
