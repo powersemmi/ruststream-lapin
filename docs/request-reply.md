@@ -1,17 +1,29 @@
 # Request/reply
 
-RPC over RabbitMQ [direct reply-to](https://www.rabbitmq.com/docs/direct-reply-to), with both
-sides expressed in the framework's ordinary forms: the requester is a capability handle from the
-broker, and the responder is a plain publishing handler.
+RPC over RabbitMQ [direct reply-to](https://www.rabbitmq.com/docs/direct-reply-to) is how one
+service asks another a question through the broker it already has, instead of growing an HTTP
+sidechannel: an order service checks stock in the inventory service, a gateway fetches a price,
+a saga step confirms a reservation. The two halves are two ordinary services; the runnable pair
+is [`lapin_rpc_server`](https://github.com/powersemmi/ruststream-lapin/blob/main/crates/ruststream-lapin/examples/lapin_rpc_server.rs)
+and [`lapin_rpc_client`](https://github.com/powersemmi/ruststream-lapin/blob/main/crates/ruststream-lapin/examples/lapin_rpc_client.rs).
 
 ## The requester
 
-`broker.requester()` implements the `RequestReply` capability. Every request goes out with
-`reply-to` set to the `amq.rabbitmq.reply-to` pseudo-queue and a generated `correlation-id`;
-replies come back on the requester's private consumer and are matched by correlation id:
+`broker.requester()` implements the `RequestReply` capability: every request goes out with
+`reply-to` set to the direct reply-to pseudo-queue and a generated `correlation-id`, and the
+matching reply resolves the call. Wrap the raw capability in a small typed client and put it in
+the application state, like any other shared dependency:
 
 ```rust
---8<-- "crates/ruststream-lapin/examples/lapin_request_reply.rs:request"
+--8<-- "crates/ruststream-lapin/examples/lapin_rpc_client.rs:client"
+```
+
+Handlers then request it by type and call the other service in the middle of their own message
+flow. The RPC timeout is the failure boundary, and it maps straight onto settlement: a business
+answer settles the order, an unreachable service asks for redelivery:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_rpc_client.rs:handler"
 ```
 
 ## The responder
@@ -21,7 +33,7 @@ return the reply. `Err` settles without replying, and the requester's timeout is
 mechanism:
 
 ```rust
---8<-- "crates/ruststream-lapin/examples/lapin_request_reply.rs:handler"
+--8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:handler"
 ```
 
 What makes it an RPC responder is the reply destination, and that is publish-pipeline work, not
@@ -30,18 +42,17 @@ handler work. A static `PublishTransform` reads the incoming delivery through th
 echoing its correlation id:
 
 ```rust
---8<-- "crates/ruststream-lapin/examples/lapin_request_reply.rs:transform"
+--8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:transform"
 ```
 
 Compose it onto the reply publisher at mount time:
 
 ```rust
---8<-- "crates/ruststream-lapin/examples/lapin_request_reply.rs:mount"
+--8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:mount"
 ```
 
 The handler stays a pure request-to-reply function, testable in-process like any other; the
-direct reply-to convention lives in one reusable transform. The full runnable program is
-[`examples/lapin_request_reply.rs`](https://github.com/powersemmi/ruststream-lapin/blob/main/crates/ruststream-lapin/examples/lapin_request_reply.rs).
+direct reply-to convention lives in one reusable transform.
 
 ## Semantics
 
