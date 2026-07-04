@@ -86,6 +86,13 @@ it is declared only under `declare_topology(true)`, otherwise provision it yours
 classic queue only releases expired messages from its head, use one waiting queue per delay class
 (or a quorum queue) when delays vary widely.
 
+For workloads with widely mixed delays, the `plugin-dme` feature offers `Delay::plugin_dme()`,
+which routes redeliveries through the
+[delayed-message-exchange](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange) plugin
+instead: the message carries an `x-delay` header and the plugin holds each one independently, so a
+short delay never waits behind a long one. It needs the plugin enabled on the broker, hence the
+feature gate.
+
 ## Consistent-hash exchange (plugin)
 
 For server-side fan-out - spreading one stream across several queues by hashing the routing key -

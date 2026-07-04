@@ -25,6 +25,9 @@ tls-rustls-ring = ["lapin/rustls", "lapin/rustls--ring"]
 # Typed support for the consistent-hash exchange plugin (server-side hash fan-out). The typed
 # constructor lowers to the plugin's exchange type, so the plugin must be enabled on the broker.
 plugin-consistent-hash = []
+# Delayed-message-exchange plugin backend for `RabbitQueue::delay` (an alternative to the stock
+# TTL waiting queue). Needs the plugin enabled on the broker.
+plugin-dme = []
 
 [dependencies]
 ruststream = { workspace = true }

@@ -120,7 +120,7 @@ jobs:
       - name: Run plugin feature tests
         env:
           AMQP_PLUGINS_TEST_URL: amqp://127.0.0.1:5673
-        run: cargo test -p ruststream-lapin --features plugin-consistent-hash --test plugins_lapin -- --test-threads=1
+        run: cargo test -p ruststream-lapin --features plugin-consistent-hash,plugin-dme --test plugins_lapin -- --test-threads=1
 
       - name: Stop the plugin-enabled RabbitMQ
         if: always()
