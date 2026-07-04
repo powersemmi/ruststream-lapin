@@ -5,8 +5,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use lapin::Acker;
 use lapin::message::Delivery;
-use lapin::options::{BasicAckOptions, BasicNackOptions, BasicPublishOptions, BasicRejectOptions};
-use lapin::types::ShortString;
+use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
 use ruststream::{AckError, Headers, IncomingMessage};
 
 use crate::convert;
@@ -199,19 +198,8 @@ impl IncomingMessage for LapinMessage {
         let Some(context) = self.delay.take() else {
             return Err(AckError::Unsupported);
         };
-        let mut properties = convert::properties_for_publish(&self.headers, true)
-            .map_err(|err| AckError::Broker(Box::new(err)))?;
-        properties = properties.with_expiration(ShortString::from(DelayContext::expiration(delay)));
-
         context
-            .channel()
-            .basic_publish(
-                ShortString::default(),
-                ShortString::from(context.waiting_queue()),
-                BasicPublishOptions::default(),
-                &self.payload,
-                properties,
-            )
+            .republish(&self.payload, &self.headers, delay)
             .await
             .map_err(|err| AckError::Broker(Box::new(err)))?;
 

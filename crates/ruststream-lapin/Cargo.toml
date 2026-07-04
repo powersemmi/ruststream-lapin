@@ -22,6 +22,9 @@ testing = ["ruststream/conformance", "ruststream/testing"]
 tls-native-tls = ["lapin/native-tls"]
 tls-rustls = ["lapin/rustls"]
 tls-rustls-ring = ["lapin/rustls", "lapin/rustls--ring"]
+# Delayed-message-exchange plugin backend for `RabbitQueue::delay` (an alternative to the stock
+# TTL waiting queue). Needs the plugin enabled on the broker.
+plugin-dme = []
 
 [dependencies]
 ruststream = { workspace = true }
