@@ -335,6 +335,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#scaffold-a-service" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scaffold a service
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#guides" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -626,6 +637,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#scaffold-a-service" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scaffold a service
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#guides" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -713,6 +735,12 @@ startup, before opening subscriptions.</p>
 <li>Nothing is declared on the broker unless the service opts in with <code>.declare_topology(true)</code>:
   infrastructure stays the user's job.</li>
 </ul>
+<h2 id="scaffold-a-service">Scaffold a service<a class="headerlink" href="#scaffold-a-service" title="Permanent link">&para;</a></h2>
+<p>Generate a runnable starter with <a href="https://github.com/cargo-generate/cargo-generate"><code>cargo generate</code></a>,
+one template per messaging shape:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cargo<span class="w"> </span>generate<span class="w"> </span>--git<span class="w"> </span>https://github.com/powersemmi/ruststream-lapin<span class="w"> </span>templates/amqp-queue
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cargo<span class="w"> </span>generate<span class="w"> </span>--git<span class="w"> </span>https://github.com/powersemmi/ruststream-lapin<span class="w"> </span>templates/amqp-topic
+</code></pre></div>
 <h2 id="guides">Guides<a class="headerlink" href="#guides" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="queues/">Queues and topology</a> - descriptors, queue types, bindings, prefetch, dead-letter,
