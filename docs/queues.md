@@ -72,6 +72,23 @@ it is declared only under `declare_topology(true)`, otherwise provision it yours
 classic queue only releases expired messages from its head, use one waiting queue per delay class
 (or a quorum queue) when delays vary widely.
 
+## Consistent-hash exchange (plugin)
+
+For server-side fan-out - spreading one stream across several queues by hashing the routing key -
+the `plugin-consistent-hash` feature exposes `RabbitExchange::consistent_hash(..)`, lowering to the
+[`rabbitmq_consistent_hash_exchange`](https://github.com/rabbitmq/rabbitmq-server/tree/main/deps/rabbitmq_consistent_hash_exchange)
+plugin's exchange type. Each queue binds with its integer weight as the routing key, and the
+broker splits the hash space proportionally:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_consistent_hash.rs:shards"
+```
+
+Consistent-hash routing happens on the broker (across queues); it is the server-side counterpart
+to client-side keyed worker lanes (across lanes in one consumer). Enable the plugin on the broker
+before using it; the feature is off by default because the plugin is not part of a stock
+RabbitMQ.
+
 ## Raw arguments
 
 Anything the descriptor does not model rides through verbatim:

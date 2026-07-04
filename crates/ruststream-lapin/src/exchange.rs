@@ -64,6 +64,31 @@ impl RabbitExchange {
         Self::new(name, ExchangeKind::Custom(kind.into()))
     }
 
+    /// A consistent-hash exchange (the `x-consistent-hash` type from the
+    /// [`rabbitmq_consistent_hash_exchange`](https://github.com/rabbitmq/rabbitmq-server/tree/main/deps/rabbitmq_consistent_hash_exchange)
+    /// plugin): distributes messages across the queues bound to it by hashing the routing key,
+    /// so partition-like fan-out is a server-side concern rather than a client one.
+    ///
+    /// Each queue binds with a routing key that is its integer weight (`"1"`, `"2"`, ...); the
+    /// broker splits the hash space proportionally. Requires the plugin to be enabled on the
+    /// broker, so it lives behind the `plugin-consistent-hash` feature.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_lapin::{RabbitExchange, RabbitQueue};
+    ///
+    /// let hashed = RabbitExchange::consistent_hash("orders-by-key");
+    /// // Bind a queue with its weight as the routing key:
+    /// let shard = RabbitQueue::new("shard-a").bind(hashed, "1");
+    /// # let _ = shard;
+    /// ```
+    #[cfg(feature = "plugin-consistent-hash")]
+    #[must_use]
+    pub fn consistent_hash(name: impl Into<String>) -> Self {
+        Self::new(name, ExchangeKind::Custom("x-consistent-hash".to_owned()))
+    }
+
     /// Whether the exchange survives a broker restart. Defaults to `true`.
     #[must_use]
     pub fn durable(mut self, durable: bool) -> Self {
