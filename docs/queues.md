@@ -48,6 +48,20 @@ deliveries in flight unacknowledged. This is the back-pressure valve for the sub
 consuming slower slows the broker's pushes instead of buffering without bound. A descriptor
 overrides it per queue with `.prefetch(n)`. Without either, the server imposes no limit.
 
+## Keyed worker lanes
+
+A subscription can dispatch across several worker lanes with `workers(n, by_key)`, keeping
+deliveries that share a key on the same lane (ordered per key, parallel across keys):
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_keyed_lanes.rs:consumer"
+```
+
+The key comes from the `PARTITION_KEY_HEADER` (`amqp-partition-key`): the producer sets it on the
+outgoing message's headers, and the crate reads it back through the `Partitioned` capability.
+AMQP itself does not interpret the header, so it is a pure client-side convention - unrelated to
+server-side hash routing (see the consistent-hash exchange below).
+
 ## Dead-letter
 
 `.dead_letter_exchange("dlx")` (plus optionally `.dead_letter_routing_key(..)`) sets the queue's
