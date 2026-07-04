@@ -1,9 +1,12 @@
 [workspace]
 resolver = "3"
 members = ["crates/ruststream-lapin"]
+# cargo-generate scaffolds: their sources carry `{{project-name}}` placeholders that are not valid
+# Rust/TOML until rendered, so they stay out of the workspace.
+exclude = ["templates"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"

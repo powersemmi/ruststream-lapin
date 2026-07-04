@@ -1,12 +1,22 @@
 //! The delivery type yielded by [`LapinSubscriber`](crate::LapinSubscriber).
 
+use std::time::Duration;
+
 use bytes::Bytes;
 use lapin::Acker;
 use lapin::message::Delivery;
 use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
-use ruststream::{AckError, Headers, IncomingMessage};
+use ruststream::{AckError, Headers, IncomingMessage, Partitioned};
 
 use crate::convert;
+use crate::delay::DelayContext;
+
+/// Header carrying a message's partition key, read by [`Partitioned`] for keyed worker lanes.
+///
+/// Set it on an outgoing message's [`Headers`] to route deliveries that share a key to the same
+/// worker lane under [`workers(n, by_key)`](https://docs.rs/ruststream). It rides in the AMQP
+/// header table like any other header; nothing else in the broker interprets it.
+pub const PARTITION_KEY_HEADER: &str = "amqp-partition-key";
 
 /// One AMQP delivery, settled with the protocol's native acknowledgement frames.
 ///
@@ -17,6 +27,9 @@ use crate::convert;
 ///   redelivers the message (typically to the same queue, `redelivered` set).
 /// - [`nack(false)`](IncomingMessage::nack) sends `basic.reject` with `requeue = false`; the
 ///   broker drops the message, or dead-letters it when the queue has a dead-letter exchange.
+/// - [`nack_after(delay)`](IncomingMessage::nack_after) is native only when the subscription set
+///   [`RabbitQueue::delay`](crate::RabbitQueue::delay); otherwise the default reports the delay
+///   unsupported and the runtime uses its broker-agnostic fallback.
 ///
 /// Replies received through [`LapinRequester`](crate::LapinRequester) arrive on a no-ack
 /// consumer; settling them is a no-op that always succeeds.
@@ -29,10 +42,11 @@ pub struct LapinMessage {
     redelivered: bool,
     delivery_tag: u64,
     acker: Option<Acker>,
+    delay: Option<DelayContext>,
 }
 
 impl LapinMessage {
-    pub(crate) fn from_delivery(delivery: Delivery) -> Self {
+    pub(crate) fn from_delivery(delivery: Delivery, delay: Option<DelayContext>) -> Self {
         let headers = convert::headers_from_properties(&delivery.properties);
         Self {
             payload: Bytes::from(delivery.data),
@@ -42,12 +56,13 @@ impl LapinMessage {
             redelivered: delivery.redelivered,
             delivery_tag: delivery.delivery_tag,
             acker: Some(delivery.acker),
+            delay,
         }
     }
 
     /// Builds a settled-by-construction message for no-ack deliveries (request replies).
     pub(crate) fn from_delivery_no_ack(delivery: Delivery) -> Self {
-        let mut msg = Self::from_delivery(delivery);
+        let mut msg = Self::from_delivery(delivery, None);
         msg.acker = None;
         msg
     }
@@ -157,5 +172,65 @@ impl IncomingMessage for LapinMessage {
             )
             .await
         }
+    }
+
+    /// The partition key from the [`PARTITION_KEY_HEADER`], if set. Overridden so keyed worker
+    /// lanes see it without a `Partitioned` bound on every dispatch path.
+    fn partition_key(&self) -> Option<&[u8]> {
+        self.headers.get(PARTITION_KEY_HEADER)
+    }
+
+    /// Whether this delivery can honor a native delayed redelivery.
+    ///
+    /// `true` only when the subscription set [`RabbitQueue::delay`](crate::RabbitQueue::delay);
+    /// otherwise the runtime uses its broker-agnostic deferred re-publish.
+    fn supports_nack_after(&self) -> bool {
+        self.delay.is_some()
+    }
+
+    /// Redelivers this message no sooner than `delay`, natively: re-publish it to the delay
+    /// waiting queue with a per-message TTL, then acknowledge the original. The waiting queue
+    /// dead-letters the copy back to the origin queue when the TTL fires.
+    ///
+    /// Duplicate-not-loss: the re-publish is sent on the same channel before the original is
+    /// acked, so a connection failure between them leaves the original unacked (redelivered), not
+    /// lost. The one loss window is a missing waiting queue - an unroutable publish to the default
+    /// exchange is silently dropped - which is why the waiting queue is the user's declared
+    /// infrastructure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AckError::Unsupported`] when the subscription set no delay queue, and
+    /// [`AckError::Broker`] when the re-publish or the ack fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Not cancel safe: dropping the future may leave the delayed copy published, the original
+    /// acked, or both.
+    async fn nack_after(mut self, delay: Duration) -> Result<(), AckError> {
+        let Some(context) = self.delay.take() else {
+            return Err(AckError::Unsupported);
+        };
+        context
+            .republish(&self.payload, &self.headers, delay)
+            .await
+            .map_err(|err| AckError::Broker(Box::new(err)))?;
+
+        self.settle(
+            |acker| async move { acker.ack(BasicAckOptions::default()).await },
+            "basic.ack",
+        )
+        .await
+    }
+}
+
+impl Partitioned for LapinMessage {
+    /// The partition key from the [`PARTITION_KEY_HEADER`], or `None` when unset.
+    ///
+    /// Deliveries that share a key are dispatched to the same worker lane under
+    /// [`workers(n, by_key)`](https://docs.rs/ruststream); AMQP itself does not interpret the
+    /// header, so the producer sets it.
+    fn partition_key(&self) -> Option<&[u8]> {
+        self.headers.get(PARTITION_KEY_HEADER)
     }
 }

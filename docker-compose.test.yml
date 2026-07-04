@@ -20,3 +20,23 @@ services:
       timeout: 5s
       retries: 15
       start_period: 5s
+
+  # Plugin-enabled broker for the `plugin-*` feature tests (AMQP_PLUGINS_TEST_URL). Off by
+  # default: start it with the `plugins` profile (`just plugins-up`). Pinned to RabbitMQ 4.2
+  # because the community delayed-message-exchange plugin lags the broker; see the Dockerfile.
+  rabbitmq-plugins:
+    build:
+      context: .
+      dockerfile: docker/rabbitmq-plugins.dockerfile
+    image: ruststream-rabbitmq-plugins
+    container_name: ruststream-rabbitmq-plugins
+    profiles: ["plugins"]
+    ports:
+      - "127.0.0.1:5673:5672"
+      - "127.0.0.1:15673:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s

@@ -17,11 +17,11 @@ use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    Broker, DescribeServer, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
-    TransactionalPublisher, testing::expect_published,
+    Broker, DescribeServer, Headers, IncomingMessage, OutgoingMessage, Partitioned, Publisher,
+    Subscriber, TransactionalPublisher, testing::expect_published,
 };
 use ruststream_lapin::testing::{LapinTestBroker, LapinTestMessage};
-use ruststream_lapin::{AmqpError, RabbitQueue};
+use ruststream_lapin::{AmqpError, PARTITION_KEY_HEADER, RabbitQueue};
 use serde::{Deserialize, Serialize};
 
 const WAIT: Duration = Duration::from_secs(1);
@@ -189,6 +189,60 @@ async fn stream_can_be_reentered() {
     assert_eq!(next_payload(&mut stream).await, b"two");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_key_header_is_surfaced() {
+    let broker = LapinTestBroker::new();
+    let mut sub = broker.subscribe("keyed").await.expect("subscribe");
+
+    let mut headers = Headers::new();
+    headers.insert(PARTITION_KEY_HEADER, "tenant-a");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new("keyed", b"payload").with_headers(headers))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = tokio::time::timeout(WAIT, stream.next())
+        .await
+        .expect("delivery")
+        .expect("item")
+        .expect("ok");
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    // The IncomingMessage override sees the same key (the path keyed lanes use).
+    assert_eq!(
+        IncomingMessage::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_key_absent_yields_none() {
+    let broker = LapinTestBroker::new();
+    let mut sub = broker.subscribe("unkeyed").await.expect("subscribe");
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new("unkeyed", b"payload"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = tokio::time::timeout(WAIT, stream.next())
+        .await
+        .expect("delivery")
+        .expect("item")
+        .expect("ok");
+    assert_eq!(Partitioned::partition_key(&msg), None);
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn describe_server_returns_amqp_protocol() {
     let broker = LapinTestBroker::new();
@@ -332,4 +386,54 @@ async fn test_app_requeue_stays_balanced() {
         .settled(HandlerResult::Ack);
 
     tb.shutdown().await.expect("shutdown");
+}
+
+#[subscriber(RabbitQueue::new("rpc.in"), publish("rpc.fallback"))]
+async fn echo_id(order: &Order) -> Result<Order, HandlerResult> {
+    Ok(Order { id: order.id })
+}
+
+// The exported DirectReplyTo transform must redirect each reply to the request's reply-to,
+// echo its correlation id, and fall through to the static destination without one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_reply_transform_redirects_and_echoes() {
+    use ruststream::runtime::{App, TypedPublisher};
+    use ruststream::testing::TestableBroker;
+    use ruststream_lapin::DirectReplyTo;
+
+    let broker = LapinTestBroker::new();
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(broker.clone(), |b| {
+        let replies = TypedPublisher::new(b.broker().publisher()).transform(DirectReplyTo);
+        b.include_publishing(echo_id, replies);
+    });
+
+    // Driven manually instead of through TestApp: the injected request must carry headers.
+    let app_task = tokio::spawn(App::run_until(
+        app,
+        tokio::time::sleep(Duration::from_millis(500)),
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut headers = Headers::new();
+    headers.insert("reply-to", "rpc.replies");
+    headers.insert("correlation-id", "c-9");
+    broker.inject(OutgoingMessage::new("rpc.in", br#"{"id":9}"#).with_headers(headers));
+
+    let redirected = expect_published(&broker, "rpc.replies", 1, Duration::from_secs(1)).await;
+    assert_eq!(
+        redirected.len(),
+        1,
+        "reply must land on the request's reply-to address"
+    );
+    assert_eq!(redirected[0].headers().correlation_id(), Some("c-9"));
+
+    broker.inject(OutgoingMessage::new("rpc.in", br#"{"id":1}"#));
+    let fallback = expect_published(&broker, "rpc.fallback", 1, Duration::from_secs(1)).await;
+    assert_eq!(
+        fallback.len(),
+        1,
+        "a request without reply-to falls through to the mount name"
+    );
+
+    app_task.await.expect("join").expect("run");
 }

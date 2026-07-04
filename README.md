@@ -31,6 +31,9 @@
   bare-string `#[subscriber("orders")]` form consumes the queue with that name.
 - **Infrastructure stays yours.** Descriptors describe the EXPECTED topology; nothing is created
   on the broker unless the service opts in with `.declare_topology(true)`.
+- **Durable delayed retry.** `.delay(..)` routes `retry_after` through a broker TTL waiting queue
+  that dead-letters back to the origin, keeping the delayed copy on the broker instead of the
+  core in-process fallback.
 - **Two transactional publishers, chosen on the publisher.** `.confirms()` buffers and awaits
   every broker confirm on commit (durable, fast, recommended); `.server_tx()` uses AMQP channel
   transactions for server-side atomicity.
@@ -52,7 +55,20 @@ serde = { version = "1", features = ["derive"] }
 ```
 
 TLS (`amqps://`) is feature-gated, mapped onto `lapin`'s backends: `tls-rustls`,
-`tls-rustls-ring`, `tls-native-tls`.
+`tls-rustls-ring`, `tls-native-tls`. Plugin-dependent features are gated too and off by default:
+`plugin-consistent-hash` adds `RabbitExchange::consistent_hash(..)` for server-side hash fan-out
+(needs the consistent-hash exchange plugin on the broker).
+
+## Scaffold a service
+
+Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate):
+
+```bash
+# work queue (default exchange, competing consumers)
+cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-queue
+# topic exchange (routing-key patterns, declared topology)
+cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-topic
+```
 
 ## License
 

@@ -36,11 +36,13 @@
 
 mod broker;
 mod convert;
+mod delay;
 mod error;
 mod exchange;
 mod message;
 mod publisher;
 mod queue;
+mod reply;
 mod requester;
 mod subscriber;
 
@@ -49,11 +51,13 @@ pub mod context;
 pub mod testing;
 
 pub use broker::LapinBroker;
+pub use delay::Delay;
 pub use error::AmqpError;
 pub use exchange::RabbitExchange;
-pub use message::LapinMessage;
+pub use message::{LapinMessage, PARTITION_KEY_HEADER};
 pub use publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
 pub use queue::{QueueType, RabbitQueue};
+pub use reply::DirectReplyTo;
 pub use requester::LapinRequester;
 pub use subscriber::LapinSubscriber;
 

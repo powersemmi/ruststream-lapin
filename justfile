@@ -27,6 +27,22 @@ test-brokers: brokers-up
     AMQP_TEST_URL=amqp://127.0.0.1:5672 \
         cargo test --workspace --all-features -- --test-threads=1
 
+# The plugin-enabled broker (consistent-hash + delayed-message-exchange), off by default.
+plugins-up:
+    docker compose -f docker-compose.test.yml --profile plugins up -d --wait rabbitmq-plugins
+
+plugins-down:
+    docker compose -f docker-compose.test.yml --profile plugins down -v
+
+# Run the plugin feature tests against the plugin-enabled broker.
+test-plugins: plugins-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just plugins-down' EXIT
+    AMQP_PLUGINS_TEST_URL=amqp://127.0.0.1:5673 \
+        cargo test -p ruststream-lapin --features plugin-consistent-hash,plugin-dme \
+        --test plugins_lapin -- --test-threads=1
+
 fmt:
     cargo fmt --all
 

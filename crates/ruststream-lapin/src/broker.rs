@@ -12,6 +12,7 @@ use ruststream::{Broker, DescribeServer, ServerSpec, Subscribe};
 use tokio::sync::OnceCell;
 
 use crate::convert;
+use crate::delay::{Delay, DelayContext, DelayTarget};
 use crate::error::AmqpError;
 use crate::publisher::LapinPublisher;
 use crate::queue::{QueueType, RabbitQueue};
@@ -168,6 +169,13 @@ impl LapinBroker {
         }
 
         let queue = def.name().to_owned();
+        // A native delay backend re-publishes the delayed copy on the same channel the delivery is
+        // acked on, so no extra channel is created and the publish orders naturally before the
+        // ack (duplicate-not-loss).
+        let delay = def
+            .delay_config()
+            .map(|delay| DelayContext::new(channel.clone(), delay.target_for(&queue)));
+
         let consumer = channel
             .basic_consume(
                 convert::short(&queue, "queue name")?,
@@ -178,7 +186,7 @@ impl LapinBroker {
             .await
             .map_err(AmqpError::subscribe)?;
 
-        Ok(LapinSubscriber::new(channel, consumer, queue))
+        Ok(LapinSubscriber::new(channel, consumer, queue, delay))
     }
 
     /// A fire-and-forget publisher on the shared publish channel.
@@ -346,6 +354,99 @@ async fn declare_topology(
             .map_err(AmqpError::declare)?;
     }
 
+    if let Some(delay) = def.delay_config() {
+        declare_delay_backend(channel, delay, def.name()).await?;
+    }
+
+    Ok(())
+}
+
+/// Declares the infrastructure the delay backend needs to route a delayed copy back to `origin`.
+async fn declare_delay_backend(
+    channel: &Channel,
+    delay: &Delay,
+    origin: &str,
+) -> Result<(), AmqpError> {
+    match delay.target_for(origin) {
+        DelayTarget::WaitingQueue { waiting_queue } => {
+            declare_delay_queue(channel, &waiting_queue, origin).await
+        }
+        #[cfg(feature = "plugin-dme")]
+        DelayTarget::DelayedExchange {
+            exchange,
+            routing_key,
+        } => declare_delayed_exchange(channel, &exchange, origin, &routing_key).await,
+    }
+}
+
+/// Declares the delay waiting queue: durable, with a per-message TTL applied by the sender and a
+/// dead-letter route back to `origin` on the default exchange (so an expired message returns to
+/// the queue it came from).
+async fn declare_delay_queue(
+    channel: &Channel,
+    waiting_queue: &str,
+    origin: &str,
+) -> Result<(), AmqpError> {
+    let mut arguments = FieldTable::default();
+    arguments.insert(
+        ShortString::from("x-dead-letter-exchange"),
+        AMQPValue::LongString(String::new().into()),
+    );
+    arguments.insert(
+        ShortString::from("x-dead-letter-routing-key"),
+        AMQPValue::LongString(origin.into()),
+    );
+    channel
+        .queue_declare(
+            convert::short(waiting_queue, "waiting queue name")?,
+            QueueDeclareOptions {
+                durable: true,
+                ..QueueDeclareOptions::default()
+            },
+            arguments,
+        )
+        .await
+        .map_err(AmqpError::declare)?;
+    Ok(())
+}
+
+/// Declares the `x-delayed-message` exchange (direct-typed) and binds `origin` to it under
+/// `routing_key`, so a delayed copy the plugin releases returns to the origin queue.
+#[cfg(feature = "plugin-dme")]
+async fn declare_delayed_exchange(
+    channel: &Channel,
+    exchange: &str,
+    origin: &str,
+    routing_key: &str,
+) -> Result<(), AmqpError> {
+    let mut arguments = FieldTable::default();
+    // The delayed exchange wraps an underlying routing type; direct routes by the exact key.
+    arguments.insert(
+        ShortString::from("x-delayed-type"),
+        AMQPValue::LongString("direct".into()),
+    );
+    channel
+        .exchange_declare(
+            convert::short(exchange, "delayed exchange name")?,
+            lapin::ExchangeKind::Custom("x-delayed-message".to_owned()),
+            ExchangeDeclareOptions {
+                durable: true,
+                ..ExchangeDeclareOptions::default()
+            },
+            arguments,
+        )
+        .await
+        .map_err(AmqpError::declare)?;
+    channel
+        .queue_bind(
+            convert::short(origin, "queue name")?,
+            convert::short(exchange, "delayed exchange name")?,
+            convert::short(routing_key, "routing key")?,
+            QueueBindOptions::default(),
+            FieldTable::default(),
+        )
+        .await
+        .map_err(AmqpError::declare)?;
     Ok(())
 }
 
