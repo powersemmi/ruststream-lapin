@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use ruststream::{Broker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscriber};
-use ruststream_lapin::{LapinBroker, LapinMessage, QueueType, RabbitExchange, RabbitQueue};
+use ruststream_lapin::{Delay, LapinBroker, LapinMessage, QueueType, RabbitExchange, RabbitQueue};
 
 const WAIT: Duration = Duration::from_secs(5);
 const SILENCE: Duration = Duration::from_millis(200);
@@ -341,6 +341,65 @@ async fn server_tx_publisher_is_plain_outside_a_transaction() {
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nack_after_redelivers_through_the_delay_queue() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url.clone()).declare_topology(true);
+    Broker::connect(&broker).await.expect("connect");
+
+    let queue = unique("delayed");
+    let def = transient_queue(&queue).delay(Delay::dlx_ttl());
+    let mut subscriber = broker.subscribe(def).await.expect("subscribe");
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(&queue, b"later"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(subscriber.stream());
+    let first = next(&mut stream).await;
+    assert_eq!(first.payload(), b"later");
+    // Native delay: park it in the waiting queue for ~300ms, then dead-letter back here.
+    first
+        .nack_after(Duration::from_millis(300))
+        .await
+        .expect("nack_after");
+
+    // It must not return before the TTL fires.
+    let early = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
+    assert!(
+        early.is_err(),
+        "the delayed message must not return before its TTL"
+    );
+
+    // It must return once the TTL fires (waiting queue -> DLX -> origin), redelivered.
+    let second = next(&mut stream).await;
+    assert_eq!(second.payload(), b"later");
+    second.ack().await.expect("ack");
+
+    drop(stream);
+    drop(subscriber);
+    broker.shutdown().await.expect("shutdown");
+
+    // The waiting queue is durable, so remove it explicitly (the origin was exclusive/transient).
+    let cleanup = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+        .await
+        .expect("cleanup connect");
+    let channel = cleanup.create_channel().await.expect("cleanup channel");
+    channel
+        .queue_delete(
+            format!("{queue}.retry").as_str().into(),
+            lapin::options::QueueDeleteOptions::default(),
+        )
+        .await
+        .expect("cleanup queue delete");
+    cleanup
+        .close(200, "OK".into())
+        .await
+        .expect("cleanup close");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

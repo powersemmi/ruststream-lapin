@@ -9,12 +9,14 @@
 //! cargo run --example lapin_topology -- run
 //! ```
 
+use std::time::Duration;
+
 use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use serde::Deserialize;
 
 // --8<-- [start:descriptor]
-use ruststream_lapin::{AMQPValue, LapinBroker, QueueType, RabbitExchange, RabbitQueue};
+use ruststream_lapin::{AMQPValue, Delay, LapinBroker, QueueType, RabbitExchange, RabbitQueue};
 
 #[derive(Debug, Deserialize)]
 struct OrderPlaced {
@@ -45,6 +47,20 @@ async fn on_bounded(event: &OrderPlaced) -> HandlerResult {
 }
 // --8<-- [end:arguments]
 
+// --8<-- [start:delay]
+// `.delay(..)` makes `retry_after` native: a delayed message parks in a broker waiting queue for
+// the delay, then dead-letters back here - durable, off the service process. The waiting queue
+// (`charges.retry` by default) is declared under `declare_topology`.
+#[subscriber(RabbitQueue::new("charges").delay(Delay::dlx_ttl()))]
+async fn on_charge(event: &OrderPlaced) -> HandlerResult {
+    if event.id == 0 {
+        // Not ready yet: come back in 30s instead of spinning on an immediate requeue.
+        return HandlerResult::retry_after(Duration::from_secs(30));
+    }
+    HandlerResult::Ack
+}
+// --8<-- [end:delay]
+
 // --8<-- [start:app]
 #[ruststream::app]
 fn app() -> impl App {
@@ -57,6 +73,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(on_order);
         b.include(on_bounded);
+        b.include(on_charge);
     })
 }
 // --8<-- [end:app]
