@@ -54,6 +54,26 @@ overrides it per queue with `.prefetch(n)`. Without either, the server imposes n
 native dead-letter target. A handler that drops a message settles with
 `basic.reject(requeue = false)`, which routes it there; no extra machinery is involved.
 
+## Consistent-hash exchange (plugin)
+
+For server-side fan-out - spreading one stream across several queues by hashing the routing key -
+the `plugin-consistent-hash` feature exposes `RabbitExchange::consistent_hash(..)`, lowering to the
+[`rabbitmq_consistent_hash_exchange`](https://github.com/rabbitmq/rabbitmq-server/tree/main/deps/rabbitmq_consistent_hash_exchange)
+plugin's exchange type. Each queue binds with its integer weight as the routing key, and the
+broker splits the hash space proportionally:
+
+<!-- inline-rust: constructor sketch behind an off-by-default plugin feature; no compiled example home -->
+```rust
+let hashed = RabbitExchange::consistent_hash("orders-by-key");
+let shard_a = RabbitQueue::new("shard-a").bind(hashed.clone(), "1"); // weight 1
+let shard_b = RabbitQueue::new("shard-b").bind(hashed, "1");         // weight 1
+```
+
+Consistent-hash routing happens on the broker (across queues); it is the server-side counterpart
+to client-side keyed worker lanes (across lanes in one consumer). Enable the plugin on the broker
+before using it; the feature is off by default because the plugin is not part of a stock
+RabbitMQ.
+
 ## Raw arguments
 
 Anything the descriptor does not model rides through verbatim:

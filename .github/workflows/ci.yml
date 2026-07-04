@@ -98,6 +98,34 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.test.yml down -v
 
+  plugin-integration:
+    name: "Plugin integration (RabbitMQ + plugins)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Builds the plugin-enabled image (consistent-hash + delayed-message-exchange) and waits
+      # for it to be healthy.
+      - name: Start the plugin-enabled RabbitMQ
+        run: docker compose -f docker-compose.test.yml --profile plugins up -d --wait rabbitmq-plugins
+
+      - name: Run plugin feature tests
+        env:
+          AMQP_PLUGINS_TEST_URL: amqp://127.0.0.1:5673
+        run: cargo test -p ruststream-lapin --features plugin-consistent-hash --test plugins_lapin -- --test-threads=1
+
+      - name: Stop the plugin-enabled RabbitMQ
+        if: always()
+        run: docker compose -f docker-compose.test.yml --profile plugins down -v
+
   security:
     name: Security scans
     runs-on: ubuntu-latest

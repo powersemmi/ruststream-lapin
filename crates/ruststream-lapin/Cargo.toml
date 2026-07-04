@@ -22,6 +22,9 @@ testing = ["ruststream/conformance", "ruststream/testing"]
 tls-native-tls = ["lapin/native-tls"]
 tls-rustls = ["lapin/rustls"]
 tls-rustls-ring = ["lapin/rustls", "lapin/rustls--ring"]
+# Typed support for the consistent-hash exchange plugin (server-side hash fan-out). The typed
+# constructor lowers to the plugin's exchange type, so the plugin must be enabled on the broker.
+plugin-consistent-hash = []
 
 [dependencies]
 ruststream = { workspace = true }
