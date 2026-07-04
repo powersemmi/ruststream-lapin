@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::Stream;
 use ruststream::testing::Coordinator;
-use ruststream::{AckError, Headers, IncomingMessage, Subscriber};
+use ruststream::{AckError, Headers, IncomingMessage, Partitioned, Subscriber};
 
 use super::broker::TestBrokerState;
 use super::router::{DeliveryReceiver, DeliverySender, SubscriptionId, TestDelivery};
@@ -141,6 +141,12 @@ impl IncomingMessage for LapinTestMessage {
             .headers
     }
 
+    /// The partition key from the `PARTITION_KEY_HEADER`, mirroring the real message so keyed
+    /// worker lanes behave the same in-process.
+    fn partition_key(&self) -> Option<&[u8]> {
+        self.headers().get(crate::PARTITION_KEY_HEADER)
+    }
+
     /// Finalizes the delivery.
     ///
     /// # Errors
@@ -165,5 +171,12 @@ impl IncomingMessage for LapinTestMessage {
             }
         }
         Ok(())
+    }
+}
+
+impl Partitioned for LapinTestMessage {
+    /// The partition key from the `PARTITION_KEY_HEADER`, mirroring the real message.
+    fn partition_key(&self) -> Option<&[u8]> {
+        self.headers().get(crate::PARTITION_KEY_HEADER)
     }
 }

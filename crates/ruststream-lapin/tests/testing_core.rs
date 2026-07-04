@@ -17,11 +17,11 @@ use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    Broker, DescribeServer, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
-    TransactionalPublisher, testing::expect_published,
+    Broker, DescribeServer, Headers, IncomingMessage, OutgoingMessage, Partitioned, Publisher,
+    Subscriber, TransactionalPublisher, testing::expect_published,
 };
 use ruststream_lapin::testing::{LapinTestBroker, LapinTestMessage};
-use ruststream_lapin::{AmqpError, RabbitQueue};
+use ruststream_lapin::{AmqpError, PARTITION_KEY_HEADER, RabbitQueue};
 use serde::{Deserialize, Serialize};
 
 const WAIT: Duration = Duration::from_secs(1);
@@ -187,6 +187,60 @@ async fn stream_can_be_reentered() {
         .expect("publish two");
     let mut stream = Box::pin(subscriber.stream());
     assert_eq!(next_payload(&mut stream).await, b"two");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_key_header_is_surfaced() {
+    let broker = LapinTestBroker::new();
+    let mut sub = broker.subscribe("keyed").await.expect("subscribe");
+
+    let mut headers = Headers::new();
+    headers.insert(PARTITION_KEY_HEADER, "tenant-a");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new("keyed", b"payload").with_headers(headers))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = tokio::time::timeout(WAIT, stream.next())
+        .await
+        .expect("delivery")
+        .expect("item")
+        .expect("ok");
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    // The IncomingMessage override sees the same key (the path keyed lanes use).
+    assert_eq!(
+        IncomingMessage::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_key_absent_yields_none() {
+    let broker = LapinTestBroker::new();
+    let mut sub = broker.subscribe("unkeyed").await.expect("subscribe");
+
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new("unkeyed", b"payload"))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(sub.stream());
+    let msg = tokio::time::timeout(WAIT, stream.next())
+        .await
+        .expect("delivery")
+        .expect("item")
+        .expect("ok");
+    assert_eq!(Partitioned::partition_key(&msg), None);
+    msg.ack().await.ok();
+    broker.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]

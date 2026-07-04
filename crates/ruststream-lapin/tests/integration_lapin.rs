@@ -15,8 +15,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::{Broker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscriber};
-use ruststream_lapin::{LapinBroker, LapinMessage, QueueType, RabbitExchange, RabbitQueue};
+use ruststream::{
+    Broker, Headers, IncomingMessage, OutgoingMessage, Partitioned, Publisher, Subscriber,
+};
+use ruststream_lapin::{
+    LapinBroker, LapinMessage, PARTITION_KEY_HEADER, QueueType, RabbitExchange, RabbitQueue,
+};
 
 const WAIT: Duration = Duration::from_secs(5);
 const SILENCE: Duration = Duration::from_millis(200);
@@ -337,6 +341,38 @@ async fn server_tx_publisher_is_plain_outside_a_transaction() {
     let mut stream = Box::pin(subscriber.stream());
     let msg = next(&mut stream).await;
     assert_eq!(msg.payload(), b"direct");
+    msg.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_key_round_trips_through_the_header() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url).declare_topology(true);
+    Broker::connect(&broker).await.expect("connect");
+
+    let queue = unique("keyed");
+    let mut subscriber = broker
+        .subscribe(transient_queue(&queue))
+        .await
+        .expect("subscribe");
+
+    let mut headers = Headers::new();
+    headers.insert(PARTITION_KEY_HEADER, "tenant-a");
+    broker
+        .publisher()
+        .publish(OutgoingMessage::new(&queue, b"payload").with_headers(headers))
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(subscriber.stream());
+    let msg = next(&mut stream).await;
+    assert_eq!(
+        Partitioned::partition_key(&msg),
+        Some(b"tenant-a".as_slice())
+    );
     msg.ack().await.expect("ack");
 
     drop(stream);
