@@ -4,6 +4,7 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::SubscriptionSource;
 
 use crate::broker::LapinBroker;
+use crate::delay::Delay;
 use crate::error::AmqpError;
 use crate::exchange::RabbitExchange;
 use crate::subscriber::LapinSubscriber;
@@ -57,6 +58,7 @@ pub struct RabbitQueue {
     bindings: Vec<(RabbitExchange, String)>,
     arguments: FieldTable,
     prefetch: Option<u16>,
+    delay: Option<Delay>,
 }
 
 impl RabbitQueue {
@@ -72,6 +74,7 @@ impl RabbitQueue {
             bindings: Vec::new(),
             arguments: FieldTable::default(),
             prefetch: None,
+            delay: None,
         }
     }
 
@@ -169,6 +172,22 @@ impl RabbitQueue {
         self
     }
 
+    /// Makes `retry_after` / `nack_after` native, routing delayed redeliveries through a broker
+    /// waiting queue instead of the core in-process fallback.
+    ///
+    /// Without this the runtime handles a delay with its broker-agnostic deferred re-publish
+    /// (at-most-once over the delay window, held in the service). With it, a delayed message is
+    /// re-published to the [`Delay`] waiting queue with a per-message TTL and dead-lettered back
+    /// to this queue when it fires, so the delayed copy lives on the broker.
+    ///
+    /// The waiting queue is infrastructure: it is declared only when the broker opts into
+    /// [`declare_topology`](LapinBroker::declare_topology); otherwise provision it yourself.
+    #[must_use]
+    pub fn delay(mut self, delay: Delay) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+
     /// The queue name.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -201,6 +220,10 @@ impl RabbitQueue {
 
     pub(crate) fn prefetch_or(&self, broker_default: Option<u16>) -> Option<u16> {
         self.prefetch.or(broker_default)
+    }
+
+    pub(crate) fn delay_config(&self) -> Option<&Delay> {
+        self.delay.as_ref()
     }
 }
 

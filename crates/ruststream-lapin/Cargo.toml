@@ -57,5 +57,8 @@ name = "lapin_rpc_server"
 name = "lapin_rpc_client"
 
 [[example]]
+name = "lapin_keyed_lanes"
+
+[[example]]
 name = "lapin_testing"
 required-features = ["testing"]
