@@ -37,6 +37,16 @@ startup, before opening subscriptions.
 - Nothing is declared on the broker unless the service opts in with `.declare_topology(true)`:
   infrastructure stays the user's job.
 
+## Scaffold a service
+
+Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate),
+one template per messaging shape:
+
+```bash
+cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-queue
+cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-topic
+```
+
 ## Guides
 
 - [Queues and topology](queues.md) - descriptors, queue types, bindings, prefetch, dead-letter,

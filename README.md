@@ -54,6 +54,17 @@ serde = { version = "1", features = ["derive"] }
 TLS (`amqps://`) is feature-gated, mapped onto `lapin`'s backends: `tls-rustls`,
 `tls-rustls-ring`, `tls-native-tls`.
 
+## Scaffold a service
+
+Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate):
+
+```bash
+# work queue (default exchange, competing consumers)
+cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-queue
+# topic exchange (routing-key patterns, declared topology)
+cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-topic
+```
+
 ## License
 
 Apache-2.0.
