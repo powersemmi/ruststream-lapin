@@ -13,6 +13,7 @@
 //! exchange routes it back to the origin queue once the TTL fires. The delayed copy lives on the
 //! broker, not in the service.
 
+use std::fmt;
 use std::time::Duration;
 
 use lapin::Channel;
@@ -112,8 +113,8 @@ impl DelayContext {
     }
 }
 
-impl std::fmt::Debug for DelayContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for DelayContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DelayContext")
             .field("waiting_queue", &self.waiting_queue)
             .finish_non_exhaustive()

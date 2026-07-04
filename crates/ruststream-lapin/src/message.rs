@@ -1,5 +1,7 @@
 //! The delivery type yielded by [`LapinSubscriber`](crate::LapinSubscriber).
 
+use std::time::Duration;
+
 use bytes::Bytes;
 use lapin::Acker;
 use lapin::message::Delivery;
@@ -193,7 +195,7 @@ impl IncomingMessage for LapinMessage {
     ///
     /// Not cancel safe: dropping the future may leave the delayed copy published, the original
     /// acked, or both.
-    async fn nack_after(mut self, delay: std::time::Duration) -> Result<(), AckError> {
+    async fn nack_after(mut self, delay: Duration) -> Result<(), AckError> {
         let Some(context) = self.delay.take() else {
             return Err(AckError::Unsupported);
         };
