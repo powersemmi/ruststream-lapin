@@ -12,6 +12,7 @@ use ruststream::{Broker, DescribeServer, ServerSpec, Subscribe};
 use tokio::sync::OnceCell;
 
 use crate::convert;
+use crate::delay::DelayContext;
 use crate::error::AmqpError;
 use crate::publisher::LapinPublisher;
 use crate::queue::{QueueType, RabbitQueue};
@@ -168,6 +169,13 @@ impl LapinBroker {
         }
 
         let queue = def.name().to_owned();
+        // A native delay queue re-publishes the delayed copy on the same channel the delivery is
+        // acked on, so no extra channel is created and the publish orders naturally before the
+        // ack (duplicate-not-loss).
+        let delay = def
+            .delay_config()
+            .map(|delay| DelayContext::new(channel.clone(), delay.waiting_queue_for(&queue)));
+
         let consumer = channel
             .basic_consume(
                 convert::short(&queue, "queue name")?,
@@ -178,7 +186,7 @@ impl LapinBroker {
             .await
             .map_err(AmqpError::subscribe)?;
 
-        Ok(LapinSubscriber::new(channel, consumer, queue))
+        Ok(LapinSubscriber::new(channel, consumer, queue, delay))
     }
 
     /// A fire-and-forget publisher on the shared publish channel.
@@ -346,6 +354,41 @@ async fn declare_topology(
             .map_err(AmqpError::declare)?;
     }
 
+    if let Some(delay) = def.delay_config() {
+        declare_delay_queue(channel, delay.waiting_queue_for(def.name()), def.name()).await?;
+    }
+
+    Ok(())
+}
+
+/// Declares the delay waiting queue: durable, with a per-message TTL applied by the sender and a
+/// dead-letter route back to `origin` on the default exchange (so an expired message returns to
+/// the queue it came from).
+async fn declare_delay_queue(
+    channel: &Channel,
+    waiting_queue: String,
+    origin: &str,
+) -> Result<(), AmqpError> {
+    let mut arguments = FieldTable::default();
+    arguments.insert(
+        ShortString::from("x-dead-letter-exchange"),
+        AMQPValue::LongString(String::new().into()),
+    );
+    arguments.insert(
+        ShortString::from("x-dead-letter-routing-key"),
+        AMQPValue::LongString(origin.into()),
+    );
+    channel
+        .queue_declare(
+            convert::short(&waiting_queue, "waiting queue name")?,
+            QueueDeclareOptions {
+                durable: true,
+                ..QueueDeclareOptions::default()
+            },
+            arguments,
+        )
+        .await
+        .map_err(AmqpError::declare)?;
     Ok(())
 }
 

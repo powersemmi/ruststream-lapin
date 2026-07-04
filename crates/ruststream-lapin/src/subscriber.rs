@@ -4,6 +4,7 @@ use futures::{Stream, StreamExt};
 use lapin::{Channel, Consumer};
 use ruststream::Subscriber;
 
+use crate::delay::DelayContext;
 use crate::error::AmqpError;
 use crate::message::LapinMessage;
 
@@ -22,14 +23,23 @@ pub struct LapinSubscriber {
     _channel: Channel,
     consumer: Consumer,
     queue: String,
+    // Present only when the descriptor opted into a native delay queue; threaded into every
+    // delivery so `nack_after` can re-publish to the waiting queue.
+    delay: Option<DelayContext>,
 }
 
 impl LapinSubscriber {
-    pub(crate) fn new(channel: Channel, consumer: Consumer, queue: String) -> Self {
+    pub(crate) fn new(
+        channel: Channel,
+        consumer: Consumer,
+        queue: String,
+        delay: Option<DelayContext>,
+    ) -> Self {
         Self {
             _channel: channel,
             consumer,
             queue,
+            delay,
         }
     }
 
@@ -61,13 +71,17 @@ impl Subscriber for LapinSubscriber {
     /// the stream can be re-created by calling `stream` again: deliveries buffer in the
     /// consumer, not in the returned stream.
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
-        futures::stream::unfold(&mut self.consumer, |consumer| async move {
-            let item = consumer.next().await?;
-            let mapped = match item {
-                Ok(delivery) => Ok(LapinMessage::from_delivery(delivery)),
-                Err(err) => Err(AmqpError::consume(err)),
-            };
-            Some((mapped, consumer))
-        })
+        let delay = self.delay.clone();
+        futures::stream::unfold(
+            (&mut self.consumer, delay),
+            |(consumer, delay)| async move {
+                let item = consumer.next().await?;
+                let mapped = match item {
+                    Ok(delivery) => Ok(LapinMessage::from_delivery(delivery, delay.clone())),
+                    Err(err) => Err(AmqpError::consume(err)),
+                };
+                Some((mapped, (consumer, delay)))
+            },
+        )
     }
 }
