@@ -41,6 +41,7 @@ mod exchange;
 mod message;
 mod publisher;
 mod queue;
+mod reply;
 mod requester;
 mod subscriber;
 
@@ -54,6 +55,7 @@ pub use exchange::RabbitExchange;
 pub use message::LapinMessage;
 pub use publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
 pub use queue::{QueueType, RabbitQueue};
+pub use reply::DirectReplyTo;
 pub use requester::LapinRequester;
 pub use subscriber::LapinSubscriber;
 
