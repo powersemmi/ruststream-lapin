@@ -14,7 +14,7 @@ use ruststream::subscriber;
 use serde::Deserialize;
 
 // --8<-- [start:descriptor]
-use ruststream_lapin::{LapinBroker, QueueType, RabbitExchange, RabbitQueue};
+use ruststream_lapin::{AMQPValue, LapinBroker, QueueType, RabbitExchange, RabbitQueue};
 
 #[derive(Debug, Deserialize)]
 struct OrderPlaced {
@@ -34,6 +34,17 @@ async fn on_order(event: &OrderPlaced) -> HandlerResult {
 }
 // --8<-- [end:descriptor]
 
+// --8<-- [start:arguments]
+// Anything the descriptor does not model rides through verbatim as a raw `x-*` argument.
+#[subscriber(RabbitQueue::new("bounded")
+    .argument("x-message-ttl", AMQPValue::LongLongInt(60_000))
+    .argument("x-max-length", AMQPValue::LongLongInt(100_000)))]
+async fn on_bounded(event: &OrderPlaced) -> HandlerResult {
+    println!("bounded order {}", event.id);
+    HandlerResult::Ack
+}
+// --8<-- [end:arguments]
+
 // --8<-- [start:app]
 #[ruststream::app]
 fn app() -> impl App {
@@ -45,6 +56,7 @@ fn app() -> impl App {
         .prefetch(64);
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(on_order);
+        b.include(on_bounded);
     })
 }
 // --8<-- [end:app]
