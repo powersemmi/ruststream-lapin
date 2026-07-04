@@ -6,10 +6,17 @@ use bytes::Bytes;
 use lapin::Acker;
 use lapin::message::Delivery;
 use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
-use ruststream::{AckError, Headers, IncomingMessage};
+use ruststream::{AckError, Headers, IncomingMessage, Partitioned};
 
 use crate::convert;
 use crate::delay::DelayContext;
+
+/// Header carrying a message's partition key, read by [`Partitioned`] for keyed worker lanes.
+///
+/// Set it on an outgoing message's [`Headers`] to route deliveries that share a key to the same
+/// worker lane under [`workers(n, by_key)`](https://docs.rs/ruststream). It rides in the AMQP
+/// header table like any other header; nothing else in the broker interprets it.
+pub const PARTITION_KEY_HEADER: &str = "amqp-partition-key";
 
 /// One AMQP delivery, settled with the protocol's native acknowledgement frames.
 ///
@@ -167,6 +174,12 @@ impl IncomingMessage for LapinMessage {
         }
     }
 
+    /// The partition key from the [`PARTITION_KEY_HEADER`], if set. Overridden so keyed worker
+    /// lanes see it without a `Partitioned` bound on every dispatch path.
+    fn partition_key(&self) -> Option<&[u8]> {
+        self.headers.get(PARTITION_KEY_HEADER)
+    }
+
     /// Whether this delivery can honor a native delayed redelivery.
     ///
     /// `true` only when the subscription set [`RabbitQueue::delay`](crate::RabbitQueue::delay);
@@ -208,5 +221,16 @@ impl IncomingMessage for LapinMessage {
             "basic.ack",
         )
         .await
+    }
+}
+
+impl Partitioned for LapinMessage {
+    /// The partition key from the [`PARTITION_KEY_HEADER`], or `None` when unset.
+    ///
+    /// Deliveries that share a key are dispatched to the same worker lane under
+    /// [`workers(n, by_key)`](https://docs.rs/ruststream); AMQP itself does not interpret the
+    /// header, so the producer sets it.
+    fn partition_key(&self) -> Option<&[u8]> {
+        self.headers.get(PARTITION_KEY_HEADER)
     }
 }
