@@ -62,3 +62,7 @@ name = "lapin_rpc_client"
 [[example]]
 name = "lapin_testing"
 required-features = ["testing"]
+
+[[example]]
+name = "lapin_consistent_hash"
+required-features = ["plugin-consistent-hash"]

@@ -54,6 +54,24 @@ overrides it per queue with `.prefetch(n)`. Without either, the server imposes n
 native dead-letter target. A handler that drops a message settles with
 `basic.reject(requeue = false)`, which routes it there; no extra machinery is involved.
 
+## Delayed retry
+
+A handler that returns `HandlerResult::retry_after(delay)` asks for redelivery no sooner than
+`delay` - the not-ready-yet case, where an immediate requeue would just spin. By default the
+runtime handles this with its broker-agnostic fallback (the delayed copy waits in the service
+process, at-most-once over the window). `.delay(..)` makes it native instead: the message parks
+in a broker waiting queue with a per-message TTL and dead-letters back to the origin queue when
+the TTL fires, so the delayed copy lives on the broker.
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"
+```
+
+The waiting queue (`<queue>.retry` by default, or `Delay::dlx_ttl_named(..)`) is infrastructure:
+it is declared only under `declare_topology(true)`, otherwise provision it yourself. Because a
+classic queue only releases expired messages from its head, use one waiting queue per delay class
+(or a quorum queue) when delays vary widely.
+
 ## Consistent-hash exchange (plugin)
 
 For server-side fan-out - spreading one stream across several queues by hashing the routing key -
@@ -62,11 +80,8 @@ the `plugin-consistent-hash` feature exposes `RabbitExchange::consistent_hash(..
 plugin's exchange type. Each queue binds with its integer weight as the routing key, and the
 broker splits the hash space proportionally:
 
-<!-- inline-rust: constructor sketch behind an off-by-default plugin feature; no compiled example home -->
 ```rust
-let hashed = RabbitExchange::consistent_hash("orders-by-key");
-let shard_a = RabbitQueue::new("shard-a").bind(hashed.clone(), "1"); // weight 1
-let shard_b = RabbitQueue::new("shard-b").bind(hashed, "1");         // weight 1
+--8<-- "crates/ruststream-lapin/examples/lapin_consistent_hash.rs:shards"
 ```
 
 Consistent-hash routing happens on the broker (across queues); it is the server-side counterpart

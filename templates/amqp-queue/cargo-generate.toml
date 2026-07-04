@@ -1,0 +1,8 @@
+# cargo-generate manifest for the AMQP work-queue RustStream starter.
+#
+# Render it with:
+#   cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-queue --name my-service
+#
+# `{{project-name}}` (the --name value) is a cargo-generate built-in; no placeholders need declaring.
+[template]
+description = "A RabbitMQ work-queue (default-exchange, competing-consumers) RustStream starter service"
