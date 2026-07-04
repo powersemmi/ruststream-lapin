@@ -40,7 +40,7 @@ test-plugins: plugins-up
     set -euo pipefail
     trap 'just plugins-down' EXIT
     AMQP_PLUGINS_TEST_URL=amqp://127.0.0.1:5673 \
-        cargo test -p ruststream-lapin --features plugin-consistent-hash \
+        cargo test -p ruststream-lapin --features plugin-consistent-hash,plugin-dme \
         --test plugins_lapin -- --test-threads=1
 
 fmt:
