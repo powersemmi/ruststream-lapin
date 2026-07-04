@@ -55,7 +55,9 @@ serde = { version = "1", features = ["derive"] }
 ```
 
 TLS (`amqps://`) is feature-gated, mapped onto `lapin`'s backends: `tls-rustls`,
-`tls-rustls-ring`, `tls-native-tls`.
+`tls-rustls-ring`, `tls-native-tls`. Plugin-dependent features are gated too and off by default:
+`plugin-consistent-hash` adds `RabbitExchange::consistent_hash(..)` for server-side hash fan-out
+(needs the consistent-hash exchange plugin on the broker).
 
 ## Scaffold a service
 
