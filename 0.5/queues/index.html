@@ -450,6 +450,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#delivery-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Delivery metadata
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#keyed-worker-lanes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -718,6 +729,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#delivery-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Delivery metadata
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#keyed-worker-lanes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -862,17 +884,39 @@ durable default unless the queue is <code>.exclusive(true)</code>.</p>
 deliveries in flight unacknowledged. This is the back-pressure valve for the subscriber stream -
 consuming slower slows the broker's pushes instead of buffering without bound. A descriptor
 overrides it per queue with <code>.prefetch(n)</code>. Without either, the server imposes no limit.</p>
+<h2 id="delivery-metadata">Delivery metadata<a class="headerlink" href="#delivery-metadata" title="Permanent link">&para;</a></h2>
+<p><code>AmqpContext</code> carries the AMQP delivery metadata that is not part of the payload or the
+headers: the exchange, the routing key, the redelivered flag, and the channel-local delivery
+tag. Each field has a zero-sized key in <code>context::keys</code>, readable two ways: as an extractor
+parameter (<code>Ctx(routing_key): Ctx&lt;RoutingKey&gt;</code> - the key names its context, so no ctx
+parameter is needed), or through a declared <code>ctx: &amp;mut Context&lt;'_, AmqpContext&gt;</code> parameter
+with <code>ctx.context(KEY)</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1">// Delivery metadata arrives as extractor parameters: each key names the context it reads, so</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1">// the handler declares exactly the fields it needs and no ctx parameter at all.</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;orders-audit&quot;</span><span class="cp">))]</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">audit</span><span class="p">(</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="n">Ctx</span><span class="p">(</span><span class="n">routing_key</span><span class="p">):</span><span class="w"> </span><span class="nc">Ctx</span><span class="o">&lt;</span><span class="n">RoutingKey</span><span class="o">&gt;</span><span class="p">,</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="n">Ctx</span><span class="p">(</span><span class="n">redelivered</span><span class="p">):</span><span class="w"> </span><span class="nc">Ctx</span><span class="o">&lt;</span><span class="n">Redelivered</span><span class="o">&gt;</span><span class="p">,</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">        </span><span class="s">&quot;order {} came via {routing_key} (redelivered: {redelivered})&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">        </span><span class="n">order</span><span class="p">.</span><span class="n">id</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="p">);</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="p">}</span>
+</code></pre></div>
 <h2 id="keyed-worker-lanes">Keyed worker lanes<a class="headerlink" href="#keyed-worker-lanes" title="Permanent link">&para;</a></h2>
 <p>A subscription can dispatch across several worker lanes with <code>workers(n, by_key)</code>, keeping
 deliveries that share a key on the same lane (ordered per key, parallel across keys):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1">// Eight lanes, keyed: two orders for the same tenant never process concurrently (per-tenant</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1">// ordering), while different tenants run in parallel. `by_key` reads the partition key the</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="c1">// producer set on the message.</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;orders&quot;</span><span class="cp">), workers(8, by_key))]</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_order</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;order {} for tenant {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">tenant</span><span class="p">);</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1">// Eight lanes, keyed: two orders for the same tenant never process concurrently (per-tenant</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1">// ordering), while different tenants run in parallel. `by_key` reads the partition key the</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1">// producer set on the message.</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;orders&quot;</span><span class="cp">), workers(8, by_key))]</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_order</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;order {} for tenant {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">tenant</span><span class="p">);</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="p">}</span>
 </code></pre></div>
 <p>The key comes from the <code>PARTITION_KEY_HEADER</code> (<code>amqp-partition-key</code>): the producer sets it on the
 outgoing message's headers, and the crate reads it back through the <code>Partitioned</code> capability.
@@ -889,17 +933,17 @@ runtime handles this with its broker-agnostic fallback (the delayed copy waits i
 process, at-most-once over the window). <code>.delay(..)</code> makes it native instead: the message parks
 in a broker waiting queue with a per-message TTL and dead-letters back to the origin queue when
 the TTL fires, so the delayed copy lives on the broker.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1">// `.delay(..)` makes `retry_after` native: a delayed message parks in a broker waiting queue for</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1">// the delay, then dead-letters back here - durable, off the service process. The waiting queue</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1">// (`charges.retry` by default) is declared under `declare_topology`.</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;charges&quot;</span><span class="cp">).delay(Delay::dlx_ttl()))]</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_charge</span><span class="p">(</span><span class="n">event</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">OrderPlaced</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">event</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">        </span><span class="c1">// Not ready yet: come back in 30s instead of spinning on an immediate requeue.</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">retry_after</span><span class="p">(</span><span class="n">Duration</span><span class="p">::</span><span class="n">from_secs</span><span class="p">(</span><span class="mi">30</span><span class="p">));</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1">// `.delay(..)` makes `retry_after` native: a delayed message parks in a broker waiting queue for</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="c1">// the delay, then dead-letters back here - durable, off the service process. The waiting queue</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1">// (`charges.retry` by default) is declared under `declare_topology`.</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;charges&quot;</span><span class="cp">).delay(Delay::dlx_ttl()))]</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_charge</span><span class="p">(</span><span class="n">event</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">OrderPlaced</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">event</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">        </span><span class="c1">// Not ready yet: come back in 30s instead of spinning on an immediate requeue.</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">retry_after</span><span class="p">(</span><span class="n">Duration</span><span class="p">::</span><span class="n">from_secs</span><span class="p">(</span><span class="mi">30</span><span class="p">));</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="p">}</span>
 </code></pre></div>
 <p>The waiting queue (<code>&lt;queue&gt;.retry</code> by default, or <code>Delay::dlx_ttl_named(..)</code>) is infrastructure:
 it is declared only under <code>declare_topology(true)</code>, otherwise provision it yourself. Because a
@@ -917,28 +961,28 @@ the <code>plugin-consistent-hash</code> feature exposes <code>RabbitExchange::co
 <a href="https://github.com/rabbitmq/rabbitmq-server/tree/main/deps/rabbitmq_consistent_hash_exchange"><code>rabbitmq_consistent_hash_exchange</code></a>
 plugin's exchange type. Each queue binds with its integer weight as the routing key, and the
 broker splits the hash space proportionally:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">use</span><span class="w"> </span><span class="n">ruststream_lapin</span><span class="p">::{</span><span class="n">LapinBroker</span><span class="p">,</span><span class="w"> </span><span class="n">RabbitExchange</span><span class="p">,</span><span class="w"> </span><span class="n">RabbitQueue</span><span class="p">};</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="cp">#[derive(Debug, Deserialize)]</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="k">struct</span><span class="w"> </span><span class="nc">Order</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">,</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">}</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1">// Two shards bound to one consistent-hash exchange: the broker splits the hash space by weight</span>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="c1">// (the binding key), so orders spread evenly and each key always lands on the same shard.</span>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;orders-shard-a&quot;</span><span class="cp">)</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="cp">    .bind(RabbitExchange::consistent_hash(</span><span class="s">&quot;orders-by-key&quot;</span><span class="cp">), </span><span class="s">&quot;1&quot;</span><span class="cp">))]</span>
-<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">shard_a</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;shard a: order {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
-<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
-<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="p">}</span>
-<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>
-<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;orders-shard-b&quot;</span><span class="cp">)</span>
-<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="cp">    .bind(RabbitExchange::consistent_hash(</span><span class="s">&quot;orders-by-key&quot;</span><span class="cp">), </span><span class="s">&quot;1&quot;</span><span class="cp">))]</span>
-<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">shard_b</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;shard b: order {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
-<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
-<a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">use</span><span class="w"> </span><span class="n">ruststream_lapin</span><span class="p">::{</span><span class="n">LapinBroker</span><span class="p">,</span><span class="w"> </span><span class="n">RabbitExchange</span><span class="p">,</span><span class="w"> </span><span class="n">RabbitQueue</span><span class="p">};</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="cp">#[derive(Debug, Deserialize)]</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="k">struct</span><span class="w"> </span><span class="nc">Order</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">,</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">}</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="c1">// Two shards bound to one consistent-hash exchange: the broker splits the hash space by weight</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="c1">// (the binding key), so orders spread evenly and each key always lands on the same shard.</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;orders-shard-a&quot;</span><span class="cp">)</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="cp">    .bind(RabbitExchange::consistent_hash(</span><span class="s">&quot;orders-by-key&quot;</span><span class="cp">), </span><span class="s">&quot;1&quot;</span><span class="cp">))]</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">shard_a</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;shard a: order {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="p">}</span>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;orders-shard-b&quot;</span><span class="cp">)</span>
+<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="cp">    .bind(RabbitExchange::consistent_hash(</span><span class="s">&quot;orders-by-key&quot;</span><span class="cp">), </span><span class="s">&quot;1&quot;</span><span class="cp">))]</span>
+<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">shard_b</span><span class="p">(</span><span class="n">order</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Order</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;shard b: order {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">order</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
+<a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="p">}</span>
 </code></pre></div>
 <p>Consistent-hash routing happens on the broker (across queues); it is the server-side counterpart
 to client-side keyed worker lanes (across lanes in one consumer). Enable the plugin on the broker
@@ -946,14 +990,14 @@ before using it; the feature is off by default because the plugin is not part of
 RabbitMQ.</p>
 <h2 id="raw-arguments">Raw arguments<a class="headerlink" href="#raw-arguments" title="Permanent link">&para;</a></h2>
 <p>Anything the descriptor does not model rides through verbatim:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1">// Anything the descriptor does not model rides through verbatim as a raw `x-*` argument.</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;bounded&quot;</span><span class="cp">)</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="cp">    .argument(</span><span class="s">&quot;x-message-ttl&quot;</span><span class="cp">, AMQPValue::LongLongInt(60_000))</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="cp">    .argument(</span><span class="s">&quot;x-max-length&quot;</span><span class="cp">, AMQPValue::LongLongInt(100_000)))]</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_bounded</span><span class="p">(</span><span class="n">event</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">OrderPlaced</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;bounded order {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">event</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1">// Anything the descriptor does not model rides through verbatim as a raw `x-*` argument.</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="cp">#[subscriber(RabbitQueue::new(</span><span class="s">&quot;bounded&quot;</span><span class="cp">)</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="cp">    .argument(</span><span class="s">&quot;x-message-ttl&quot;</span><span class="cp">, AMQPValue::LongLongInt(60_000))</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="cp">    .argument(</span><span class="s">&quot;x-max-length&quot;</span><span class="cp">, AMQPValue::LongLongInt(100_000)))]</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">on_bounded</span><span class="p">(</span><span class="n">event</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">OrderPlaced</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">HandlerResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;bounded order {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">event</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="n">HandlerResult</span><span class="p">::</span><span class="n">Ack</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="p">}</span>
 </code></pre></div>
 <p><code>AMQPValue</code> and <code>FieldTable</code> are re-exported from the crate for exactly this purpose.</p>
 

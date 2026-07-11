@@ -2,22 +2,22 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://powersemmi.github.io/ruststream-lapin/0.5/</loc>
-         <lastmod>2026-07-04</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://powersemmi.github.io/ruststream-lapin/0.5/publishing/</loc>
-         <lastmod>2026-07-04</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://powersemmi.github.io/ruststream-lapin/0.5/queues/</loc>
-         <lastmod>2026-07-04</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://powersemmi.github.io/ruststream-lapin/0.5/request-reply/</loc>
-         <lastmod>2026-07-04</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://powersemmi.github.io/ruststream-lapin/0.5/testing/</loc>
-         <lastmod>2026-07-04</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
 </urlset>
