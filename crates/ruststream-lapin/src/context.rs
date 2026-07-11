@@ -56,6 +56,8 @@ impl BuildContext<LapinMessage> for AmqpContext {
 
 /// Zero-sized [`Field`] keys reading one [`AmqpContext`] field each.
 pub mod keys {
+    use ruststream::ContextField;
+
     use super::{AmqpContext, Field};
 
     /// Reads the source exchange name.
@@ -67,6 +69,14 @@ pub mod keys {
 
         fn get(self, src: &AmqpContext) -> &str {
             src.exchange()
+        }
+    }
+
+    impl ContextField for Exchange {
+        type Context = AmqpContext;
+        type Value = String;
+        fn read(self, src: &AmqpContext) -> String {
+            src.exchange().to_owned()
         }
     }
 
@@ -82,6 +92,14 @@ pub mod keys {
         }
     }
 
+    impl ContextField for RoutingKey {
+        type Context = AmqpContext;
+        type Value = String;
+        fn read(self, src: &AmqpContext) -> String {
+            src.routing_key().to_owned()
+        }
+    }
+
     /// Reads the redelivered flag.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct Redelivered;
@@ -94,6 +112,14 @@ pub mod keys {
         }
     }
 
+    impl ContextField for Redelivered {
+        type Context = AmqpContext;
+        type Value = bool;
+        fn read(self, src: &AmqpContext) -> bool {
+            src.redelivered()
+        }
+    }
+
     /// Reads the channel-local delivery tag.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct DeliveryTag;
@@ -102,6 +128,14 @@ pub mod keys {
         type Value<'a> = u64;
 
         fn get(self, src: &AmqpContext) -> u64 {
+            src.delivery_tag()
+        }
+    }
+
+    impl ContextField for DeliveryTag {
+        type Context = AmqpContext;
+        type Value = u64;
+        fn read(self, src: &AmqpContext) -> u64 {
             src.delivery_tag()
         }
     }

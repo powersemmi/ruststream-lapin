@@ -6,7 +6,7 @@ members = ["crates/ruststream-lapin"]
 exclude = ["templates"]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ authors = ["RustStream contributors"]
 [workspace.dependencies]
 ruststream-lapin = { path = "crates/ruststream-lapin" }
 
-ruststream = { version = ">=0.5.0, <0.6.0", default-features = false }
+ruststream = { version = ">=0.5.2, <0.6.0", default-features = false }
 
 lapin = { version = "4.10", default-features = false, features = ["tokio"] }
 bytes = "1"

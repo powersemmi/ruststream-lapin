@@ -7,8 +7,10 @@
 //! cargo run --example lapin_keyed_lanes -- run
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
+use ruststream::runtime::{App, AppInfo, Ctx, HandlerResult, RustStream};
 use ruststream::subscriber;
+use ruststream_lapin::context::keys::{Redelivered, RoutingKey};
+use ruststream_lapin::{LapinBroker, RabbitQueue};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -28,12 +30,28 @@ async fn on_order(order: &Order) -> HandlerResult {
 }
 // --8<-- [end:consumer]
 
-use ruststream_lapin::{LapinBroker, RabbitQueue};
+// --8<-- [start:metadata]
+// Delivery metadata arrives as extractor parameters: each key names the context it reads, so
+// the handler declares exactly the fields it needs and no ctx parameter at all.
+#[subscriber(RabbitQueue::new("orders-audit"))]
+async fn audit(
+    order: &Order,
+    Ctx(routing_key): Ctx<RoutingKey>,
+    Ctx(redelivered): Ctx<Redelivered>,
+) -> HandlerResult {
+    println!(
+        "order {} came via {routing_key} (redelivered: {redelivered})",
+        order.id
+    );
+    HandlerResult::Ack
+}
+// --8<-- [end:metadata]
 
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(on_order);
+        b.include(audit);
     })
 }
