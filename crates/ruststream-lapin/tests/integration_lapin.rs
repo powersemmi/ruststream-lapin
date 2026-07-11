@@ -21,11 +21,12 @@ use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use tokio::sync::Notify;
 
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream, State};
+use ruststream::runtime::{AppInfo, Ctx, HandlerResult, RustStream, State};
 use ruststream::{
     Broker, FromRef, Headers, IncomingMessage, OutgoingMessage, Partitioned, Publisher, Subscriber,
     subscriber,
 };
+use ruststream_lapin::context::keys;
 use ruststream_lapin::{
     Delay, LapinBroker, LapinMessage, PARTITION_KEY_HEADER, QueueType, RabbitExchange, RabbitQueue,
 };
@@ -709,4 +710,131 @@ async fn subscribe_fails_without_declaration_when_queue_is_missing() {
     );
 
     broker.shutdown().await.expect("shutdown");
+}
+
+const CTX_DI_QUEUE: &str = "ruststream-tests-ctx-di";
+
+#[derive(Debug, Deserialize)]
+struct CtxDiOrder {
+    seq: u64,
+}
+
+#[derive(Clone)]
+struct CtxDiProbe {
+    expected: usize,
+    seen: Arc<Mutex<Vec<(String, bool, u64)>>>,
+    done: Arc<Notify>,
+}
+
+#[derive(FromRef)]
+struct CtxDiApp {
+    probe: CtxDiProbe,
+}
+
+#[subscriber(RabbitQueue::new(CTX_DI_QUEUE))]
+async fn ctx_di(
+    order: &CtxDiOrder,
+    Ctx(routing_key): Ctx<keys::RoutingKey>,
+    Ctx(redelivered): Ctx<keys::Redelivered>,
+    Ctx(tag): Ctx<keys::DeliveryTag>,
+    State(probe): State<CtxDiProbe>,
+) -> HandlerResult {
+    {
+        let mut seen = probe.seen.lock().expect("seen mutex poisoned");
+        assert_eq!(order.seq, seen.len() as u64, "prequeued order preserved");
+        seen.push((routing_key, redelivered, tag));
+        if seen.len() < probe.expected {
+            return HandlerResult::Ack;
+        }
+    }
+    probe.done.notify_waiters();
+    HandlerResult::Ack
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctx_extractors_inject_delivery_fields() {
+    const COUNT: usize = 3;
+
+    let Some(url) = amqp_url() else { return };
+
+    // Declare the queue up front and prequeue the deliveries, so the app consumes a known set.
+    let setup = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+        .await
+        .expect("setup connect");
+    let channel = setup.create_channel().await.expect("setup channel");
+    let _ = channel
+        .queue_delete(
+            CTX_DI_QUEUE.into(),
+            lapin::options::QueueDeleteOptions::default(),
+        )
+        .await;
+    channel
+        .queue_declare(
+            CTX_DI_QUEUE.into(),
+            lapin::options::QueueDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
+            lapin::types::FieldTable::default(),
+        )
+        .await
+        .expect("setup queue declare");
+    for seq in 0..COUNT {
+        let payload = format!(r#"{{"seq":{seq}}}"#);
+        channel
+            .basic_publish(
+                "".into(),
+                CTX_DI_QUEUE.into(),
+                lapin::options::BasicPublishOptions::default(),
+                payload.as_bytes(),
+                lapin::BasicProperties::default(),
+            )
+            .await
+            .expect("setup publish")
+            .await
+            .expect("setup confirm");
+    }
+    setup.close(200, "OK".into()).await.expect("setup close");
+
+    let probe = CtxDiProbe {
+        expected: COUNT,
+        seen: Arc::new(Mutex::new(Vec::new())),
+        done: Arc::new(Notify::new()),
+    };
+    let app_probe = probe.clone();
+    let done = Arc::clone(&probe.done);
+    let broker = LapinBroker::new(url.clone()).declare_topology(false);
+    let app = RustStream::new(AppInfo::new("ctx-di", "0.1.0"))
+        .on_startup(move |()| {
+            let probe = app_probe;
+            async move { Ok::<_, Infallible>(CtxDiApp { probe }) }
+        })
+        .with_broker(broker, |b| {
+            b.include(ctx_di);
+        });
+
+    let app_task = tokio::spawn(app.run_until(async move { done.notified().await }));
+    tokio::time::timeout(Duration::from_secs(20), app_task)
+        .await
+        .expect("app consumed the prequeued deliveries in time")
+        .expect("app task did not panic")
+        .expect("run_until succeeded");
+
+    let seen = probe.seen.lock().expect("seen mutex poisoned").clone();
+    assert_eq!(seen.len(), COUNT);
+    for (index, (routing_key, redelivered, tag)) in seen.iter().enumerate() {
+        assert_eq!(
+            routing_key, CTX_DI_QUEUE,
+            "the routing key must be the queue name on the default exchange",
+        );
+        assert!(
+            !redelivered,
+            "fresh deliveries must not be flagged redelivered"
+        );
+        assert_eq!(
+            *tag,
+            index as u64 + 1,
+            "delivery tags must be channel-local and increasing",
+        );
+    }
 }

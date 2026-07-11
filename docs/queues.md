@@ -48,6 +48,19 @@ deliveries in flight unacknowledged. This is the back-pressure valve for the sub
 consuming slower slows the broker's pushes instead of buffering without bound. A descriptor
 overrides it per queue with `.prefetch(n)`. Without either, the server imposes no limit.
 
+## Delivery metadata
+
+`AmqpContext` carries the AMQP delivery metadata that is not part of the payload or the
+headers: the exchange, the routing key, the redelivered flag, and the channel-local delivery
+tag. Each field has a zero-sized key in `context::keys`, readable two ways: as an extractor
+parameter (`Ctx(routing_key): Ctx<RoutingKey>` - the key names its context, so no ctx
+parameter is needed), or through a declared `ctx: &mut Context<'_, AmqpContext>` parameter
+with `ctx.context(KEY)`:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_keyed_lanes.rs:metadata"
+```
+
 ## Keyed worker lanes
 
 A subscription can dispatch across several worker lanes with `workers(n, by_key)`, keeping
