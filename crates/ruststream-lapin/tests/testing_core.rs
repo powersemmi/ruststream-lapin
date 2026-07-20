@@ -397,7 +397,7 @@ async fn echo_id(order: &Order) -> Result<Order, HandlerResult> {
 // echo its correlation id, and fall through to the static destination without one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_reply_transform_redirects_and_echoes() {
-    use ruststream::runtime::{App, TypedPublisher};
+    use ruststream::runtime::TypedPublisher;
     use ruststream::testing::TestableBroker;
     use ruststream_lapin::DirectReplyTo;
 
@@ -407,12 +407,10 @@ async fn direct_reply_transform_redirects_and_echoes() {
         b.include_publishing(echo_id, replies);
     });
 
-    // Driven manually instead of through TestApp: the injected request must carry headers.
-    let app_task = tokio::spawn(App::run_until(
-        app,
-        tokio::time::sleep(Duration::from_millis(500)),
-    ));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // TestApp drives the lifecycle (subscriptions are open once `start` returns); the requests
+    // are injected raw on the shared broker because they must carry headers, which the harness
+    // publish API does not accept.
+    let tb = TestApp::start(app).await.expect("start");
 
     let mut headers = Headers::new();
     headers.insert("reply-to", "rpc.replies");
@@ -435,5 +433,5 @@ async fn direct_reply_transform_redirects_and_echoes() {
         "a request without reply-to falls through to the mount name"
     );
 
-    app_task.await.expect("join").expect("run");
+    tb.shutdown().await.expect("shutdown");
 }
