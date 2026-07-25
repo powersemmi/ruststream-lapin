@@ -201,6 +201,24 @@ fn confirmation_ok(confirmation: &Confirmation, routing_key: &str) -> Result<(),
     Ok(())
 }
 
+impl ConfirmsPublisher {
+    /// Puts the unflushed tail of a failed commit (everything from `sent` on) back into the
+    /// transaction buffer, so the transaction stays open and the messages stay observable. A
+    /// buffer already opened by a concurrent `begin_transaction` keeps its later messages
+    /// behind the restored ones, preserving publish order.
+    fn restore(&self, mut buffered: Vec<Buffered>, sent: usize) {
+        buffered.drain(..sent);
+        let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
+        match txn.as_mut() {
+            Some(current) => {
+                buffered.append(current);
+                *current = buffered;
+            }
+            None => *txn = Some(buffered),
+        }
+    }
+}
+
 impl Publisher for ConfirmsPublisher {
     type Error = AmqpError;
 
@@ -252,10 +270,14 @@ impl TransactionalPublisher for ConfirmsPublisher {
     ///
     /// # Errors
     ///
-    /// Returns [`AmqpError::Publish`] when any message fails to publish or the broker returns a
-    /// negative confirm. Messages already flushed stay published: publisher confirms give
-    /// durability per message, not atomicity across them (use
-    /// [`server_tx`](LapinPublisher::server_tx) for that).
+    /// Returns [`AmqpError::NotConnected`] / [`AmqpError::Publish`] when resolving the channel
+    /// or a publish fails; the messages not yet handed to the broker go back into the buffer,
+    /// so the transaction stays open and nothing is silently dropped - `abort` discards them,
+    /// a retried `commit` flushes them. Messages already flushed stay published: publisher
+    /// confirms give durability per message, not atomicity across them (use
+    /// [`server_tx`](LapinPublisher::server_tx) for that). A failed *confirm* does not restore
+    /// anything: by then every message was handed to the broker, and re-buffering one would
+    /// duplicate it on the next commit.
     async fn commit(&self) -> Result<(), Self::Error> {
         let buffered = {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
@@ -268,17 +290,37 @@ impl TransactionalPublisher for ConfirmsPublisher {
             return Ok(());
         }
 
-        let channel = self.channel().await?;
+        let channel = match self.channel().await {
+            Ok(channel) => channel,
+            Err(err) => {
+                self.restore(buffered, 0);
+                return Err(err);
+            }
+        };
+        let mut sent = 0;
         let mut confirms = Vec::with_capacity(buffered.len());
-        for (routing_key, payload, headers) in &buffered {
-            let properties = convert::properties_for_publish(headers, self.persistent)?;
-            let confirm =
-                do_publish(channel, &self.exchange, routing_key, payload, properties).await?;
-            confirms.push((routing_key, confirm));
+        while sent < buffered.len() {
+            let (routing_key, payload, headers) = &buffered[sent];
+            let attempt = match convert::properties_for_publish(headers, self.persistent) {
+                Ok(properties) => {
+                    do_publish(channel, &self.exchange, routing_key, payload, properties).await
+                }
+                Err(err) => Err(err),
+            };
+            match attempt {
+                Ok(confirm) => {
+                    confirms.push(confirm);
+                    sent += 1;
+                }
+                Err(err) => {
+                    self.restore(buffered, sent);
+                    return Err(err);
+                }
+            }
         }
-        for (routing_key, confirm) in confirms {
+        for (index, confirm) in confirms.into_iter().enumerate() {
             let confirmation = confirm.await.map_err(AmqpError::publish)?;
-            confirmation_ok(&confirmation, routing_key)?;
+            confirmation_ok(&confirmation, &buffered[index].0)?;
         }
         Ok(())
     }
@@ -418,5 +460,41 @@ impl TransactionalPublisher for ServerTxPublisher {
         channel.tx_rollback().await.map_err(AmqpError::publish)?;
         self.set_open(false);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruststream::{OutgoingMessage, Publisher, TransactionalPublisher};
+
+    use crate::LapinBroker;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_commit_keeps_the_unsent_buffer() {
+        // Never connected: resolving the channel fails, so the flush cannot start.
+        let broker = LapinBroker::new("amqp://127.0.0.1:1");
+        let publisher = broker.publisher().confirms();
+
+        publisher.begin_transaction().await.unwrap();
+        publisher
+            .publish(OutgoingMessage::new("orders", b"payload".as_slice()))
+            .await
+            .unwrap();
+
+        assert!(
+            publisher.commit().await.is_err(),
+            "commit without a connection must fail",
+        );
+        // The unsent message went back into the buffer: a retried commit still has something
+        // to flush (and fails on the same dead connection). Before the fix the buffer was
+        // already cleared here, so this commit reported Ok and the message was silently lost.
+        assert!(
+            publisher.commit().await.is_err(),
+            "the unsent buffer must survive a failed commit",
+        );
+        // An explicit abort now really discards the restored messages; the next commit is the
+        // documented no-op on an empty transaction.
+        publisher.abort().await.unwrap();
+        assert!(publisher.commit().await.is_ok());
     }
 }
