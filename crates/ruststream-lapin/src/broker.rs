@@ -15,7 +15,7 @@ use ruststream::{Broker, ConnectedBroker, DefaultPublish, DescribeServer, Server
 use crate::convert;
 use crate::delay::DelayContext;
 use crate::error::AmqpError;
-use crate::publisher::{LapinPublish, LapinPublishPolicy};
+use crate::publish_policy::{LapinPublish, LapinPublishPolicy};
 use crate::queue::{QueueType, RabbitQueue};
 use crate::requester::{LapinRequest, LapinRequester};
 use crate::subscriber::LapinSubscriber;

@@ -43,6 +43,7 @@ mod delay;
 mod error;
 mod exchange;
 mod message;
+mod publish_policy;
 mod publisher;
 mod queue;
 mod reply;
@@ -60,10 +61,8 @@ pub use delay::Delay;
 pub use error::AmqpError;
 pub use exchange::RabbitExchange;
 pub use message::{LapinMessage, PARTITION_KEY_HEADER};
-pub use publisher::{
-    ConfirmsPublish, ConfirmsPublisher, LapinPublish, LapinPublishPolicy, LapinPublisher,
-    ServerTxPublish, ServerTxPublisher,
-};
+pub use publish_policy::{ConfirmsPublish, LapinPublish, LapinPublishPolicy, ServerTxPublish};
+pub use publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
 pub use queue::{QueueType, RabbitQueue};
 pub use reply::DirectReplyTo;
 pub use requester::{LapinRequest, LapinRequester};

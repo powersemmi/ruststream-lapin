@@ -16,7 +16,7 @@ use crate::broker::{AmqpConnection, ConnectedLapinBroker};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::message::LapinMessage;
-use crate::publisher::{LapinPublishPolicy, PublishOptions};
+use crate::publish_policy::{LapinPublishPolicy, PublishOptions};
 
 /// The pseudo-queue `RabbitMQ` rewrites per-request for direct reply-to.
 const REPLY_TO: &str = "amq.rabbitmq.reply-to";
