@@ -3,9 +3,9 @@
 //! [`TestableBroker`](ruststream::testing::TestableBroker) impl; `lifecycle` proves the ladder
 //! (synchronous construction, consuming `connect`, subscribe through the crate's own descriptor,
 //! publish, ack, consuming `shutdown`, and a pre-shutdown publisher erroring afterwards) through
-//! the real `LapinBroker`; the capability suites prove the optional trait implementations. All
-//! but `run_suite` are gated behind `AMQP_TEST_URL` (see `docker-compose.test.yml` and
-//! `just test-brokers`).
+//! the real `LapinBroker`; the capability suites prove the optional trait implementations, both
+//! transaction kinds included. All but `run_suite` are gated behind `AMQP_TEST_URL` (see
+//! `docker-compose.test.yml` and `just test-brokers`).
 
 #![cfg(feature = "testing")]
 
@@ -53,6 +53,20 @@ async fn passes_lifecycle() {
 async fn passes_transactions_with_confirms() {
     let Some(url) = amqp_url() else { return };
     capabilities::transactions(
+        || LapinBroker::new(url.clone()).declare_topology(true),
+        conformance_queue,
+        |connected| connected.publisher(LapinPublish::default().confirms()),
+    )
+    .await;
+}
+
+// The owned kind, which only the confirms publisher offers: its transaction is a client-side
+// buffer, while `server_tx` puts the channel itself into transactional mode.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_owned_transactions_with_confirms() {
+    let Some(url) = amqp_url() else { return };
+    capabilities::owned_transactions(
         || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
         |connected| connected.publisher(LapinPublish::default().confirms()),

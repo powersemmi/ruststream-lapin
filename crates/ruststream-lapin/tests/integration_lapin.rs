@@ -23,8 +23,8 @@ use tokio::sync::Notify;
 
 use ruststream::runtime::{AppInfo, Ctx, HandlerResult, RustStream, State};
 use ruststream::{
-    Broker, ConnectedBroker, FromRef, Headers, IncomingMessage, OutgoingMessage, OwnedTransactions,
-    Partitioned, Publisher, Subscriber, Transaction, subscriber,
+    Broker, ConnectedBroker, FromRef, Headers, IncomingMessage, OutgoingMessage, Partitioned,
+    Publisher, Subscriber, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
@@ -346,119 +346,6 @@ async fn prefetch_caps_unacknowledged_deliveries() {
     second.ack().await.expect("ack second");
     let third = next(&mut stream).await;
     third.ack().await.expect("ack third");
-
-    drop(stream);
-    broker.shutdown().await.expect("shutdown");
-}
-
-// The owned transaction kind: two transactions open at once on ONE confirms handle, each owning
-// its buffer, so settling one never touches the other.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn owned_transactions_settle_independently_and_preserve_order() {
-    let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url)
-        .declare_topology(true)
-        .connect()
-        .await
-        .expect("connect");
-
-    let orders = unique("owned-orders");
-    let audit = unique("owned-audit");
-    let mut orders_sub = broker
-        .subscribe(transient_queue(&orders))
-        .await
-        .expect("subscribe orders");
-    let mut audit_sub = broker
-        .subscribe(transient_queue(&audit))
-        .await
-        .expect("subscribe audit");
-
-    let publisher = broker.publisher(LapinPublish::default().confirms());
-    let mut first = publisher.transaction().await.expect("open first");
-    let mut second = publisher.transaction().await.expect("open second");
-
-    // Interleaved: each publish lands in the transaction it was called on, not in a handle-wide
-    // buffer.
-    first
-        .publish(OutgoingMessage::new(&orders, b"o1"))
-        .await
-        .expect("buffer o1");
-    second
-        .publish(OutgoingMessage::new(&audit, b"a1"))
-        .await
-        .expect("buffer a1");
-    first
-        .publish(OutgoingMessage::new(&orders, b"o2"))
-        .await
-        .expect("buffer o2");
-    second
-        .publish(OutgoingMessage::new(&audit, b"a2"))
-        .await
-        .expect("buffer a2");
-
-    let mut orders_stream = Box::pin(orders_sub.stream());
-    let mut audit_stream = Box::pin(audit_sub.stream());
-    expect_silence(&mut orders_stream).await;
-    expect_silence(&mut audit_stream).await;
-
-    second.commit().await.expect("commit second");
-    let a1 = next(&mut audit_stream).await;
-    assert_eq!(a1.payload(), b"a1");
-    a1.ack().await.expect("ack a1");
-    let a2 = next(&mut audit_stream).await;
-    assert_eq!(a2.payload(), b"a2", "commit preserves publish order");
-    a2.ack().await.expect("ack a2");
-    // Committing one transaction must not flush the other.
-    expect_silence(&mut orders_stream).await;
-
-    first.commit().await.expect("commit first");
-    let o1 = next(&mut orders_stream).await;
-    assert_eq!(o1.payload(), b"o1");
-    o1.ack().await.expect("ack o1");
-    let o2 = next(&mut orders_stream).await;
-    assert_eq!(o2.payload(), b"o2", "commit preserves publish order");
-    o2.ack().await.expect("ack o2");
-
-    drop(orders_stream);
-    drop(audit_stream);
-    broker.shutdown().await.expect("shutdown");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn owned_transaction_abort_discards_while_the_handle_keeps_publishing() {
-    let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url)
-        .declare_topology(true)
-        .connect()
-        .await
-        .expect("connect");
-
-    let queue = unique("owned-abort");
-    let mut subscriber = broker
-        .subscribe(transient_queue(&queue))
-        .await
-        .expect("subscribe");
-
-    let publisher = broker.publisher(LapinPublish::default().confirms());
-    let mut txn = publisher.transaction().await.expect("open");
-    txn.publish(OutgoingMessage::new(&queue, b"buffered"))
-        .await
-        .expect("buffer");
-
-    // The handle publishes directly while an owned transaction is open: the transaction owns its
-    // buffer, so there is nothing on the handle for a direct publish to fall into.
-    publisher
-        .publish(OutgoingMessage::new(&queue, b"direct"))
-        .await
-        .expect("direct publish");
-
-    let mut stream = Box::pin(subscriber.stream());
-    let direct = next(&mut stream).await;
-    assert_eq!(direct.payload(), b"direct");
-    direct.ack().await.expect("ack direct");
-
-    txn.abort().await.expect("abort");
-    expect_silence(&mut stream).await;
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");
