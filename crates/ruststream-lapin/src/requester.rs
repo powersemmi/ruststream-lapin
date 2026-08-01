@@ -9,42 +9,102 @@ use futures::StreamExt;
 use lapin::Channel;
 use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
 use lapin::types::{FieldTable, ShortString};
-use ruststream::{OutgoingMessage, Publisher, RequestReply};
+use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
 use tokio::sync::{OnceCell, oneshot};
 
-use crate::broker::SharedConn;
+use crate::broker::{AmqpConnection, ConnectedLapinBroker};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::message::LapinMessage;
+use crate::publisher::{LapinPublishPolicy, PublishOptions};
 
 /// The pseudo-queue `RabbitMQ` rewrites per-request for direct reply-to.
 const REPLY_TO: &str = "amq.rabbitmq.reply-to";
 
 type Pending = Mutex<HashMap<String, oneshot::Sender<LapinMessage>>>;
 
-/// A request/reply client over `RabbitMQ` direct reply-to.
-///
-/// [`request`](RequestReply::request) publishes to the routing key named by
-/// [`OutgoingMessage::name`] (on the default exchange unless [`exchange`](Self::exchange) says
-/// otherwise) with `reply-to` set to the direct reply-to pseudo-queue and a generated
-/// `correlation-id`; the responder replies by publishing to the `reply-to` it received, echoing
-/// the `correlation-id`.
-///
-/// Direct reply-to is at-most-once: replies live in channel state on one broker node, so a
-/// dropped requester channel loses in-flight replies. The per-request timeout is the recovery
-/// mechanism.
+/// The request/reply policy: pure declaration, constructible anywhere, pairing into
+/// [`LapinRequester`].
 ///
 /// Requests are published transient (delivery mode 1) by default: a request nobody is waiting
 /// for after the timeout gains nothing from surviving a broker restart. Opt into persistence
 /// with [`persistent(true)`](Self::persistent).
 ///
-/// Obtained from [`LapinBroker::requester`](crate::LapinBroker::requester). Clones share the
-/// reply consumer and the pending-request table.
+/// # Examples
+///
+/// ```
+/// use ruststream_lapin::LapinRequest;
+///
+/// let inventory = LapinRequest::default().exchange("rpc");
+/// # let _ = inventory;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub struct LapinRequest(PublishOptions);
+
+impl Default for LapinRequest {
+    fn default() -> Self {
+        Self(PublishOptions {
+            persistent: false,
+            ..PublishOptions::default()
+        })
+    }
+}
+
+impl LapinRequest {
+    /// Publishes requests to `exchange` instead of the default exchange.
+    pub fn exchange(mut self, exchange: impl Into<String>) -> Self {
+        self.0.exchange = exchange.into();
+        self
+    }
+
+    /// Whether requests are marked persistent (delivery mode 2). Defaults to `false`.
+    pub fn persistent(mut self, persistent: bool) -> Self {
+        self.0.persistent = persistent;
+        self
+    }
+}
+
+impl PublishPolicy<ConnectedLapinBroker> for LapinRequest {
+    type Live = LapinRequester;
+
+    async fn pair(self, connected: &ConnectedLapinBroker) -> Result<Self::Live, PairError> {
+        Ok(self.bind(connected))
+    }
+}
+
+impl LapinPublishPolicy for LapinRequest {
+    fn bind(self, connected: &ConnectedLapinBroker) -> Self::Live {
+        LapinRequester {
+            conn: Arc::clone(connected.connection()),
+            options: self.0,
+            state: Arc::new(OnceCell::new()),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+/// The live request/reply client over `RabbitMQ` direct reply-to.
+///
+/// [`request`](RequestReply::request) publishes to the routing key named by
+/// [`OutgoingMessage::name`] (on the default exchange unless the policy's
+/// [`exchange`](LapinRequest::exchange) says otherwise) with `reply-to` set to the direct
+/// reply-to pseudo-queue and a generated `correlation-id`; the responder replies by publishing
+/// to the `reply-to` it received, echoing the `correlation-id`.
+///
+/// Direct reply-to is at-most-once: replies live in channel state on one broker node, so a
+/// dropped requester channel loses in-flight replies. The per-request timeout is the recovery
+/// mechanism.
+///
+/// Obtained by pairing [`LapinRequest`] with a connected broker
+/// ([`ConnectedLapinBroker::requester`](crate::ConnectedLapinBroker::requester)). Clones share
+/// the reply consumer and the pending-request table; like every live handle it aliases the
+/// connection and reports [`AmqpError::Closed`] once the broker has shut down.
 #[derive(Debug, Clone)]
 pub struct LapinRequester {
-    conn: SharedConn,
-    exchange: String,
-    persistent: bool,
+    conn: Arc<AmqpConnection>,
+    options: PublishOptions,
     state: Arc<OnceCell<ReqState>>,
     pending: Arc<Pending>,
     next_id: Arc<AtomicU64>,
@@ -56,41 +116,18 @@ struct ReqState {
 }
 
 impl LapinRequester {
-    pub(crate) fn new(conn: SharedConn) -> Self {
-        Self {
-            conn,
-            exchange: String::new(),
-            persistent: false,
-            state: Arc::new(OnceCell::new()),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            next_id: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    /// Publishes requests to `exchange` instead of the default exchange.
-    #[must_use]
-    pub fn exchange(mut self, exchange: impl Into<String>) -> Self {
-        self.exchange = exchange.into();
-        self
-    }
-
-    /// Whether requests are marked persistent (delivery mode 2). Defaults to `false`.
-    #[must_use]
-    pub fn persistent(mut self, persistent: bool) -> Self {
-        self.persistent = persistent;
-        self
-    }
-
     /// Opens the requester channel and starts the reply consumer, once.
     ///
     /// The consumer MUST be up before the first publish carrying the direct reply-to address;
-    /// `RabbitMQ` rejects such a publish with `PRECONDITION_FAILED` otherwise.
-    async fn state(&self) -> Result<&ReqState, AmqpError> {
+    /// `RabbitMQ` rejects such a publish with `PRECONDITION_FAILED` otherwise. Opening it on
+    /// first use rather than at pairing time keeps pairing a synchronous constructor call and
+    /// leaves an unused requester without a channel.
+    async fn state(&self, target: &str) -> Result<&ReqState, AmqpError> {
         self.state
             .get_or_try_init(|| async {
-                let state = self.conn.get().ok_or(AmqpError::NotConnected)?;
-                let channel = state
-                    .connection()
+                let channel = self
+                    .conn
+                    .live_connection(target)?
                     .create_channel()
                     .await
                     .map_err(AmqpError::request)?;
@@ -161,19 +198,20 @@ impl Publisher for LapinRequester {
     ///
     /// # Errors
     ///
-    /// Returns [`AmqpError::NotConnected`] before `Broker::connect` resolves the connection and
-    /// [`AmqpError::Publish`] when the channel rejects the frame.
+    /// Returns [`AmqpError::Closed`] once the broker has shut down and [`AmqpError::Publish`]
+    /// when the channel rejects the frame.
     ///
     /// # Cancel safety
     ///
     /// Not cancel safe: dropping the future may leave the message published or not.
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        let state = self.state().await?;
-        let properties = convert::properties_for_publish(msg.headers(), self.persistent)?;
+        self.conn.ensure_live(msg.name())?;
+        let state = self.state(msg.name()).await?;
+        let properties = convert::properties_for_publish(msg.headers(), self.options.persistent)?;
         let _confirm = state
             .channel
             .basic_publish(
-                convert::short(&self.exchange, "exchange name")?,
+                convert::short(&self.options.exchange, "exchange name")?,
                 convert::short(msg.name(), "routing key")?,
                 BasicPublishOptions::default(),
                 msg.payload(),
@@ -193,8 +231,8 @@ impl RequestReply for LapinRequester {
     /// # Errors
     ///
     /// Returns [`AmqpError::RequestTimeout`] when no reply arrives within `timeout`,
-    /// [`AmqpError::NotConnected`] before `Broker::connect` resolves the connection, and
-    /// [`AmqpError::Request`] / [`AmqpError::Publish`] on channel failures.
+    /// [`AmqpError::Closed`] once the broker has shut down, and [`AmqpError::Request`] /
+    /// [`AmqpError::Publish`] on channel failures.
     ///
     /// # Cancel safety
     ///
@@ -205,7 +243,8 @@ impl RequestReply for LapinRequester {
         msg: OutgoingMessage<'_>,
         timeout: Duration,
     ) -> Result<Self::Reply, Self::Error> {
-        let state = self.state().await?;
+        self.conn.ensure_live(msg.name())?;
+        let state = self.state(msg.name()).await?;
 
         let correlation_id = format!("rs-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
@@ -225,16 +264,17 @@ impl RequestReply for LapinRequester {
             pending.remove(&correlation_id);
         };
 
-        let properties = match convert::properties_for_publish(msg.headers(), self.persistent) {
-            Ok(properties) => properties
-                .with_reply_to(ShortString::from(REPLY_TO))
-                .with_correlation_id(ShortString::from(correlation_id.clone())),
-            Err(err) => {
-                cleanup();
-                return Err(err);
-            }
-        };
-        let exchange = match convert::short(&self.exchange, "exchange name") {
+        let properties =
+            match convert::properties_for_publish(msg.headers(), self.options.persistent) {
+                Ok(properties) => properties
+                    .with_reply_to(ShortString::from(REPLY_TO))
+                    .with_correlation_id(ShortString::from(correlation_id.clone())),
+                Err(err) => {
+                    cleanup();
+                    return Err(err);
+                }
+            };
+        let exchange = match convert::short(&self.options.exchange, "exchange name") {
             Ok(exchange) => exchange,
             Err(err) => {
                 cleanup();

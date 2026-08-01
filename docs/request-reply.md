@@ -9,18 +9,20 @@ and [`lapin_rpc_client`](https://github.com/powersemmi/ruststream-lapin/blob/mai
 
 ## The requester
 
-`broker.requester()` implements the `RequestReply` capability: every request goes out with
+`LapinRequest` is the requester's policy; paired with the connection it produces a
+`LapinRequester`, which implements the `RequestReply` capability: every request goes out with
 `reply-to` set to the direct reply-to pseudo-queue and a generated `correlation-id`, and the
-matching reply resolves the call. Wrap the raw capability in a small typed client and put it in
-the application state, like any other shared dependency:
+matching reply resolves the call. Wrap the raw capability in a small typed call:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_client.rs:client"
 ```
 
-Handlers then request it by type and call the other service in the middle of their own message
-flow. The RPC timeout is the failure boundary, and it maps straight onto settlement: a business
-answer settles the order, an unreachable service asks for redelivery:
+Attach the policy at the mount site (`b.include(handler).publisher(LapinRequest::default())`)
+and the live requester arrives in the handler as an `Out` parameter, so a handler calls the
+other service in the middle of its own message flow. The RPC timeout is the failure boundary,
+and it maps straight onto settlement: a business answer settles the order, an unreachable
+service asks for redelivery:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_client.rs:handler"
@@ -54,7 +56,7 @@ The handler stays a pure request-to-reply function, testable in-process like any
   error.
 - **Transient by default.** Requests are published with delivery mode 1: a request nobody is
   waiting for after the timeout gains nothing from surviving a broker restart. Opt into
-  persistence with `.persistent(true)` on the requester.
+  persistence with `.persistent(true)` on the policy.
 - **No infrastructure.** The pseudo-queue is never declared; the only real entity involved is
   the request queue the responder consumes. Responders on other stacks interoperate as long as
   they publish the reply to the received `reply-to` and echo `correlation-id`.

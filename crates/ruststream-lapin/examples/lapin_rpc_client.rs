@@ -2,10 +2,10 @@
 //! synchronously checks stock in the inventory service before accepting an order - a
 //! service-to-service call through the broker, with no HTTP sidechannel.
 //!
-//! The raw `RequestReply` capability is wrapped in a small typed client and stored in the
-//! application state, so handlers request it by type like any other dependency. The RPC
-//! timeout is the failure boundary: no reply means the handler asks for redelivery instead of
-//! guessing.
+//! The requester is declared as a policy at the mount site and injected into the handler as an
+//! `Out` parameter, so it is live by construction; a small typed wrapper turns the raw
+//! `RequestReply` capability into an encode-request / decode-reply call. The RPC timeout is the
+//! failure boundary: no reply means the handler asks for redelivery instead of guessing.
 //!
 //! Start the inventory service first (`lapin_rpc_server`), then:
 //!
@@ -23,9 +23,9 @@
 use std::time::Duration;
 
 use ruststream::codec::{Codec, JsonCodec};
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, State};
-use ruststream::{FromRef, IncomingMessage, OutgoingMessage, RequestReply, subscriber};
-use ruststream_lapin::{LapinBroker, LapinRequester};
+use ruststream::runtime::{App, AppInfo, HandlerResult, Out, RustStream};
+use ruststream::{IncomingMessage, OutgoingMessage, RequestReply, subscriber};
+use ruststream_lapin::{LapinBroker, LapinRequest, LapinRequester};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -48,48 +48,35 @@ struct Stock {
 }
 
 // --8<-- [start:client]
-/// A typed RPC client over the raw requester: encode the request, await the correlated reply,
-/// decode it. One reusable value, shared through the application state.
-#[derive(Clone)]
-struct Inventory {
-    requester: LapinRequester,
-}
-
-impl Inventory {
-    async fn check(
-        &self,
-        sku: &str,
-        quantity: u32,
-    ) -> Result<Stock, Box<dyn std::error::Error + Send + Sync>> {
-        let request = CheckStock {
-            sku: sku.to_owned(),
-            quantity,
-        };
-        let payload = JsonCodec.encode(&request)?;
-        let reply = self
-            .requester
-            .request(
-                OutgoingMessage::new("inventory.check", payload.as_ref()),
-                Duration::from_secs(2),
-            )
-            .await?;
-        Ok(JsonCodec.decode(reply.payload())?)
-    }
+/// A typed RPC call over the raw requester: encode the request, await the correlated reply,
+/// decode it.
+async fn check_stock(
+    requester: &LapinRequester,
+    sku: &str,
+    quantity: u32,
+) -> Result<Stock, Box<dyn std::error::Error + Send + Sync>> {
+    let request = CheckStock {
+        sku: sku.to_owned(),
+        quantity,
+    };
+    let payload = JsonCodec.encode(&request)?;
+    let reply = requester
+        .request(
+            OutgoingMessage::new("inventory.check", payload.as_ref()),
+            Duration::from_secs(2),
+        )
+        .await?;
+    Ok(JsonCodec.decode(reply.payload())?)
 }
 // --8<-- [end:client]
-
-#[derive(Clone, FromRef)]
-struct AppState {
-    inventory: Inventory,
-}
 
 // --8<-- [start:handler]
 // The business handler calls the other service synchronously. A business answer settles the
 // order either way; only an unreachable inventory service (the RPC timed out or failed) asks
 // the broker to redeliver and try again later.
 #[subscriber("orders")]
-async fn place_order(order: &Order, State(inventory): State<Inventory>) -> HandlerResult {
-    match inventory.check(&order.sku, order.quantity).await {
+async fn place_order(order: &Order, Out(inventory): Out<LapinRequester>) -> HandlerResult {
+    match check_stock(inventory, &order.sku, order.quantity).await {
         Ok(stock) if stock.available => {
             println!("order accepted: {} x{}", order.sku, order.quantity);
             HandlerResult::Ack
@@ -113,16 +100,10 @@ async fn place_order(order: &Order, State(inventory): State<Inventory>) -> Handl
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-    // Handed out before the runtime connects; it resolves the shared connection on first use.
-    let inventory = Inventory {
-        requester: broker.requester(),
-    };
-    RustStream::new(AppInfo::new("orders", "0.1.0"))
-        .on_startup(
-            move |()| async move { Ok::<_, std::convert::Infallible>(AppState { inventory }) },
-        )
-        .with_broker(broker, |b| {
-            b.include(place_order);
-        })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        // The requester is a policy here: the runtime pairs it with the connection at startup
+        // and hands the handler the live client.
+        b.include(place_order).publisher(LapinRequest::default());
+    })
 }
 // --8<-- [end:app]

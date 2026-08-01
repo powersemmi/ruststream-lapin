@@ -7,14 +7,15 @@ requeues, and dead-lettering are protocol frames, not republish workarounds. An 
 broker ships under the `testing` feature.
 
 ```toml
-ruststream = { version = "0.5", features = ["macros", "json"] }
-ruststream-lapin = "0.5"
+ruststream = { version = "0.6", features = ["macros", "json"] }
+ruststream-lapin = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 
 `LapinBroker::new` is synchronous and does no I/O, so a RabbitMQ service is assembled with the
 same `#[ruststream::app]` macro as any other broker. The runtime connects the broker once at
-startup, before opening subscriptions.
+startup, before opening subscriptions; connecting consumes the broker and yields
+`ConnectedLapinBroker`, the only value carrying a subscribe or publish surface.
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_quickstart.rs:handler"
@@ -30,7 +31,7 @@ startup, before opening subscriptions.
   queue named `orders`, and the [`RabbitQueue`](queues.md) descriptor adds bindings, queue types,
   and prefetch.
 - On the publish side the message name is the routing key; the exchange is a property of the
-  publisher (the default exchange unless configured). See [Publishing](publishing.md).
+  publish policy (the default exchange unless configured). See [Publishing](publishing.md).
 - Settlement is native: `ack` sends `basic.ack`, retry sends `basic.nack(requeue = true)`, drop
   sends `basic.reject(requeue = false)` - which dead-letters when the queue has a dead-letter
   exchange.

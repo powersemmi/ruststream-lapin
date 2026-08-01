@@ -24,8 +24,7 @@ fn app() -> impl App {
             .declare_topology(true)
             .prefetch(32),
         |b| {
-            let router = routes::events(b.broker());
-            b.include_router(router);
+            b.include_router(routes::events());
         },
     )
 }

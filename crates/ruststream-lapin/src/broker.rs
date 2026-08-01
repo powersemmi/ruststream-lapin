@@ -1,51 +1,86 @@
-//! The broker handle: connection lifecycle, subscriptions, and publisher constructors.
+//! The broker ladder: [`LapinBroker`] -> [`ConnectedLapinBroker`] -> [`ClosedLapinBroker`].
+//!
+//! Construction is synchronous and I/O-free; the connection is dialled by the consuming
+//! [`Broker::connect`], and the connected form is the only value carrying a subscribe or publish
+//! surface. [`ConnectedBroker::shutdown`] consumes it in turn and returns the terminal witness.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use lapin::options::{
-    BasicConsumeOptions, BasicQosOptions, ExchangeDeclareOptions, QueueBindOptions,
-    QueueDeclareOptions,
-};
-use lapin::types::{AMQPValue, FieldTable, ShortString};
+use lapin::options::{BasicConsumeOptions, BasicQosOptions};
+use lapin::types::{FieldTable, ShortString};
 use lapin::{Channel, Connection, ConnectionProperties};
-use ruststream::{Broker, DescribeServer, ServerSpec, Subscribe};
-use tokio::sync::OnceCell;
+use ruststream::{Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe};
 
 use crate::convert;
-use crate::delay::{Delay, DelayContext, DelayTarget};
+use crate::delay::DelayContext;
 use crate::error::AmqpError;
-use crate::publisher::LapinPublisher;
+use crate::publisher::{LapinPublish, LapinPublishPolicy};
 use crate::queue::{QueueType, RabbitQueue};
-use crate::requester::LapinRequester;
+use crate::requester::{LapinRequest, LapinRequester};
 use crate::subscriber::LapinSubscriber;
+use crate::topology;
 
 /// The live connection plus the shared fire-and-forget publish channel.
-#[derive(Debug)]
-pub(crate) struct ConnState {
+///
+/// Held behind an [`Arc`] by the connected broker and by every publisher, requester, and
+/// subscriber paired off it, so they all speak over the same connection.
+pub(crate) struct AmqpConnection {
     connection: Connection,
     publish_channel: Channel,
+    closed: AtomicBool,
 }
 
-impl ConnState {
-    pub(crate) fn connection(&self) -> &Connection {
-        &self.connection
+impl AmqpConnection {
+    fn new(connection: Connection, publish_channel: Channel) -> Arc<Self> {
+        Arc::new(Self {
+            connection,
+            publish_channel,
+            closed: AtomicBool::new(false),
+        })
     }
 
-    pub(crate) fn publish_channel(&self) -> &Channel {
-        &self.publish_channel
+    /// The connection, or [`AmqpError::Closed`] once the broker has shut down.
+    ///
+    /// Why this stays a runtime check: handles paired before the shutdown alias the connection
+    /// and may outlive it, and the typed ladder can only rule out misuse through the owner's
+    /// handle.
+    pub(crate) fn live_connection(&self, target: &str) -> Result<&Connection, AmqpError> {
+        self.ensure_live(target)?;
+        Ok(&self.connection)
+    }
+
+    /// The shared publish channel, or [`AmqpError::Closed`] once the broker has shut down.
+    pub(crate) fn live_publish_channel(&self, target: &str) -> Result<&Channel, AmqpError> {
+        self.ensure_live(target)?;
+        Ok(&self.publish_channel)
+    }
+
+    /// `Ok` while the connection is live, [`AmqpError::Closed`] once the broker has shut down.
+    pub(crate) fn ensure_live(&self, target: &str) -> Result<(), AmqpError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(AmqpError::closed(target));
+        }
+        Ok(())
     }
 }
 
-/// The connection cell shared by the broker and everything it hands out, so publishers obtained
-/// before `Broker::connect` resolve the connection on first use.
-pub(crate) type SharedConn = Arc<OnceCell<ConnState>>;
+impl std::fmt::Debug for AmqpConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AmqpConnection")
+            .field("closed", &self.closed.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
 
-/// A `RabbitMQ` broker backed by [`lapin`](https://docs.rs/lapin).
+/// A `RabbitMQ` broker backed by [`lapin`](https://docs.rs/lapin): configuration captured, no I/O
+/// performed yet.
 ///
-/// Follows the `RustStream` lazy startup contract: [`new`](Self::new) is synchronous and does no
-/// I/O; the network work happens in the idempotent async `Broker::connect`, which the runtime
-/// calls once at startup. Publishers handed out earlier share the connection cell and resolve it
-/// on first use.
+/// [`new`](Self::new) is synchronous and records only the connection settings, so a `RabbitMQ`
+/// service is assembled with the synchronous `#[ruststream::app]` builder like any other broker.
+/// The runtime calls [`Broker::connect`] once at startup, which consumes this value and yields
+/// the [`ConnectedLapinBroker`] witness: subscriptions, publishers, and requesters exist only
+/// from there, so "not connected" is not representable.
 ///
 /// By default the broker never creates infrastructure: descriptors describe the EXPECTED
 /// topology, and a missing queue is a subscribe error. Opt into declaration with
@@ -62,8 +97,8 @@ pub(crate) type SharedConn = Arc<OnceCell<ConnState>>;
 /// # let _ = broker;
 /// ```
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct LapinBroker {
-    conn: SharedConn,
     uri: String,
     connection_name: Option<String>,
     prefetch: Option<u16>,
@@ -72,14 +107,12 @@ pub struct LapinBroker {
 }
 
 impl LapinBroker {
-    /// Records the connection URI; no I/O happens until `Broker::connect`.
+    /// Records the connection URI; no I/O happens until [`Broker::connect`].
     ///
     /// The URI carries credentials, virtual host, and TLS scheme:
     /// `amqp://user:pass@host:5672/vhost` (or `amqps://` with a TLS feature enabled).
-    #[must_use]
     pub fn new(uri: impl Into<String>) -> Self {
         Self {
-            conn: Arc::new(OnceCell::new()),
             uri: uri.into(),
             connection_name: None,
             prefetch: None,
@@ -88,19 +121,7 @@ impl LapinBroker {
         }
     }
 
-    /// Connects eagerly: [`new`](Self::new) followed by `Broker::connect`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AmqpError::Connect`] when the connection cannot be established.
-    pub async fn connect(uri: impl Into<String>) -> Result<Self, AmqpError> {
-        let broker = Self::new(uri);
-        Broker::connect(&broker).await?;
-        Ok(broker)
-    }
-
     /// A connection name shown in the `RabbitMQ` management UI.
-    #[must_use]
     pub fn connection_name(mut self, name: impl Into<String>) -> Self {
         self.connection_name = Some(name.into());
         self
@@ -110,7 +131,6 @@ impl LapinBroker {
     ///
     /// This is the back-pressure window for subscriber streams; individual queue descriptors
     /// can override it. Without it the server imposes no prefetch limit.
-    #[must_use]
     pub fn prefetch(mut self, prefetch: u16) -> Self {
         self.prefetch = Some(prefetch);
         self
@@ -121,7 +141,6 @@ impl LapinBroker {
     ///
     /// When enabled, subscribing declares the bound exchanges (except the built-in `amq.*`
     /// ones and the default exchange), the queue, and the bindings.
-    #[must_use]
     pub fn declare_topology(mut self, declare: bool) -> Self {
         self.declare = declare;
         self
@@ -132,34 +151,96 @@ impl LapinBroker {
     /// Only consulted when [`declare_topology`](Self::declare_topology) is enabled. Without a
     /// broker default or a per-queue type, no `x-queue-type` argument is sent and the server
     /// default applies.
-    #[must_use]
     pub fn default_queue_type(mut self, queue_type: QueueType) -> Self {
         self.default_queue_type = Some(queue_type);
         self
     }
+}
 
-    fn connected(&self) -> Result<&ConnState, AmqpError> {
-        self.conn.get().ok_or(AmqpError::NotConnected)
+impl Broker for LapinBroker {
+    type Error = AmqpError;
+    type Connected = ConnectedLapinBroker;
+
+    /// Opens the connection and its shared publish channel, consuming the configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmqpError::Connect`] when the URI cannot be parsed or the connection fails.
+    async fn connect(self) -> Result<Self::Connected, Self::Error> {
+        let mut properties = ConnectionProperties::default();
+        if let Some(name) = &self.connection_name {
+            properties = properties.with_connection_name(name.as_str().into());
+        }
+        let connection = Connection::connect(&self.uri, properties)
+            .await
+            .map_err(AmqpError::connect)?;
+        let publish_channel = connection
+            .create_channel()
+            .await
+            .map_err(AmqpError::connect)?;
+
+        Ok(ConnectedLapinBroker {
+            conn: AmqpConnection::new(connection, publish_channel),
+            uri: self.uri,
+            prefetch: self.prefetch,
+            declare: self.declare,
+            default_queue_type: self.default_queue_type,
+        })
+    }
+}
+
+/// `DescribeServer` reports the configured AMQP address, which is what the `AsyncAPI` document
+/// records for the service.
+impl DescribeServer for LapinBroker {
+    fn describe_server(&self) -> ServerSpec {
+        ServerSpec::new(host_of(&self.uri), "amqp")
+    }
+}
+
+/// The typed witness that [`Broker::connect`] succeeded: holds the live connection.
+///
+/// Everything connection-bound hangs off this value: subscriptions ([`Subscribe`],
+/// [`subscribe`](Self::subscribe)), publishers ([`publisher`](Self::publisher)), and requesters
+/// ([`requester`](Self::requester)). [`ConnectedBroker::shutdown`] consumes it, so a publish or
+/// subscribe after shutdown is a compile error for the owner of the handle.
+#[derive(Debug)]
+pub struct ConnectedLapinBroker {
+    conn: Arc<AmqpConnection>,
+    uri: String,
+    prefetch: Option<u16>,
+    declare: bool,
+    default_queue_type: Option<QueueType>,
+}
+
+impl ConnectedLapinBroker {
+    pub(crate) fn connection(&self) -> &Arc<AmqpConnection> {
+        &self.conn
+    }
+
+    /// The `AsyncAPI` server description of the connection this broker dialled.
+    #[must_use]
+    pub fn server_spec(&self) -> ServerSpec {
+        ServerSpec::new(host_of(&self.uri), "amqp")
     }
 
     /// Opens a subscription for `def`, declaring its topology first when the broker opted in.
     ///
     /// # Errors
     ///
-    /// Returns [`AmqpError::NotConnected`] before `Broker::connect`, [`AmqpError::Declare`] when
-    /// opted-in declaration fails, [`AmqpError::InvalidOptions`] for contradictory descriptor
-    /// options, and [`AmqpError::Subscribe`] when the channel or consumer cannot be opened (for
-    /// example the queue does not exist and declaration was not opted into).
+    /// Returns [`AmqpError::Closed`] after shutdown, [`AmqpError::Declare`] when opted-in
+    /// declaration fails, [`AmqpError::InvalidOptions`] for contradictory descriptor options,
+    /// and [`AmqpError::Subscribe`] when the channel or consumer cannot be opened (for example
+    /// the queue does not exist and declaration was not opted into).
     pub async fn subscribe(&self, def: RabbitQueue) -> Result<LapinSubscriber, AmqpError> {
-        let state = self.connected()?;
-        let channel = state
-            .connection
+        let channel = self
+            .conn
+            .live_connection(def.name())?
             .create_channel()
             .await
             .map_err(AmqpError::subscribe)?;
 
         if self.declare {
-            declare_topology(&channel, &def, self.default_queue_type).await?;
+            topology::declare(&channel, &def, self.default_queue_type).await?;
         }
         if let Some(prefetch) = def.prefetch_or(self.prefetch) {
             channel
@@ -189,88 +270,101 @@ impl LapinBroker {
         Ok(LapinSubscriber::new(channel, consumer, queue, delay))
     }
 
-    /// A fire-and-forget publisher on the shared publish channel.
+    /// A live publisher for `policy`.
     ///
-    /// Upgrade with [`confirms`](LapinPublisher::confirms) or
-    /// [`server_tx`](LapinPublisher::server_tx) for transactional publishing.
+    /// [`LapinPublish`] pairs into the fire-and-forget publisher,
+    /// [`ConfirmsPublish`](crate::ConfirmsPublish) into the confirm-transactional one, and
+    /// [`ServerTxPublish`](crate::ServerTxPublish) into the AMQP-server-transactional one. All
+    /// three are cheap to build and cheap to clone.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ruststream::Broker;
+    /// use ruststream_lapin::{LapinBroker, LapinPublish};
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
+    /// let orders = connected.publisher(LapinPublish::default().exchange("orders"));
+    /// let shipments = connected.publisher(LapinPublish::default().confirms());
+    /// # let _ = (orders, shipments);
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
-    pub fn publisher(&self) -> LapinPublisher {
-        LapinPublisher::new(Arc::clone(&self.conn))
+    pub fn publisher<P: LapinPublishPolicy>(&self, policy: P) -> P::Live {
+        policy.bind(self)
     }
 
-    /// A request/reply client over `RabbitMQ` direct reply-to.
+    /// A live request/reply client over `RabbitMQ` direct reply-to.
+    ///
+    /// The requester half of [`LapinRequest`]; [`publisher`](Self::publisher) accepts the same
+    /// policy, this accessor only names the result.
     #[must_use]
-    pub fn requester(&self) -> LapinRequester {
-        LapinRequester::new(Arc::clone(&self.conn))
+    pub fn requester(&self, policy: LapinRequest) -> LapinRequester {
+        policy.bind(self)
     }
 }
 
-impl Broker for LapinBroker {
+impl ConnectedBroker for ConnectedLapinBroker {
     type Error = AmqpError;
+    type Closed = ClosedLapinBroker;
 
-    /// Establishes the connection and the shared publish channel; idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AmqpError::Connect`] when the URI cannot be parsed or the connection fails.
-    async fn connect(&self) -> Result<(), Self::Error> {
-        self.conn
-            .get_or_try_init(|| async {
-                let mut properties = ConnectionProperties::default();
-                if let Some(name) = &self.connection_name {
-                    properties = properties.with_connection_name(name.as_str().into());
-                }
-                let connection = Connection::connect(&self.uri, properties)
-                    .await
-                    .map_err(AmqpError::connect)?;
-                let publish_channel = connection
-                    .create_channel()
-                    .await
-                    .map_err(AmqpError::connect)?;
-                Ok(ConnState {
-                    connection,
-                    publish_channel,
-                })
-            })
-            .await?;
-        Ok(())
-    }
-
-    /// Closes the connection; further operations fail with [`AmqpError::NotConnected`] or a
-    /// channel error. Idempotent: closing an already-closed connection succeeds.
+    /// Closes the connection, consuming the connected form.
     ///
     /// # Errors
     ///
     /// Returns [`AmqpError::Connect`] when the close handshake fails.
-    async fn shutdown(&self) -> Result<(), Self::Error> {
-        if let Some(state) = self.conn.get()
-            && state.connection.status().connected()
-        {
-            state
+    async fn shutdown(self) -> Result<Self::Closed, Self::Error> {
+        // Marked closed before the handshake: a publisher aliasing the connection must not slip
+        // a message into a connection that is already going away.
+        self.conn.closed.store(true, Ordering::Release);
+        let handshake = self.conn.connection.status().connected();
+        if handshake {
+            self.conn
                 .connection
                 .close(200, ShortString::from("OK"))
                 .await
                 .map_err(AmqpError::connect)?;
         }
-        Ok(())
+        Ok(ClosedLapinBroker { handshake })
     }
 }
 
+// By-name subscription capability: the runtime's default `Name` source resolves through this for
+// the bare-string `#[subscriber("queue")]` form.
+//
 // `Self::subscribe` inside this impl would resolve to the trait method and recurse; the type
 // name is the only way to reach the inherent one.
 #[allow(clippy::use_self)]
-impl Subscribe for LapinBroker {
+impl Subscribe for ConnectedLapinBroker {
     type Subscriber = LapinSubscriber;
 
     /// Subscribes to the queue `name` with descriptor defaults (durable, shared).
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        LapinBroker::subscribe(self, RabbitQueue::new(name)).await
+        ConnectedLapinBroker::subscribe(self, RabbitQueue::new(name)).await
     }
 }
 
-impl DescribeServer for LapinBroker {
-    fn describe_server(&self) -> ServerSpec {
-        ServerSpec::new(host_of(&self.uri), "amqp")
+impl DefaultPublish for ConnectedLapinBroker {
+    type Policy = LapinPublish;
+}
+
+/// The terminal witness returned by shutting down a [`ConnectedLapinBroker`].
+///
+/// It has no publish or subscribe surface; it carries whether the close handshake actually ran,
+/// which distinguishes an orderly teardown from closing a connection the server had already
+/// dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosedLapinBroker {
+    handshake: bool,
+}
+
+impl ClosedLapinBroker {
+    /// Whether the AMQP close handshake ran, as opposed to the connection already being down.
+    #[must_use]
+    pub const fn handshake(&self) -> bool {
+        self.handshake
     }
 }
 
@@ -285,174 +379,9 @@ fn host_of(uri: &str) -> String {
     host.to_owned()
 }
 
-async fn declare_topology(
-    channel: &Channel,
-    def: &RabbitQueue,
-    broker_default: Option<QueueType>,
-) -> Result<(), AmqpError> {
-    for (exchange, _) in def.bindings() {
-        // The default exchange and the amq.* built-ins exist on every broker and must not be
-        // redeclared.
-        if exchange.name().is_empty() || exchange.name().starts_with("amq.") {
-            continue;
-        }
-        channel
-            .exchange_declare(
-                convert::short(exchange.name(), "exchange name")?,
-                exchange.kind().clone(),
-                ExchangeDeclareOptions {
-                    durable: exchange.is_durable(),
-                    auto_delete: exchange.is_auto_delete(),
-                    ..ExchangeDeclareOptions::default()
-                },
-                FieldTable::default(),
-            )
-            .await
-            .map_err(AmqpError::declare)?;
-    }
-
-    let queue_type = def.queue_type_or(broker_default);
-    if queue_type == Some(QueueType::Quorum) && !def.is_durable() {
-        return Err(AmqpError::InvalidOptions(format!(
-            "queue {:?} is a quorum queue and must stay durable; drop `.durable(false)` or pick \
-             `QueueType::Classic`",
-            def.name(),
-        )));
-    }
-
-    let mut arguments = def.declare_arguments().clone();
-    if let Some(queue_type) = queue_type {
-        arguments.insert(
-            ShortString::from("x-queue-type"),
-            AMQPValue::LongString(queue_type.as_str().into()),
-        );
-    }
-    channel
-        .queue_declare(
-            convert::short(def.name(), "queue name")?,
-            QueueDeclareOptions {
-                durable: def.is_durable(),
-                exclusive: def.is_exclusive(),
-                auto_delete: def.is_auto_delete(),
-                ..QueueDeclareOptions::default()
-            },
-            arguments,
-        )
-        .await
-        .map_err(AmqpError::declare)?;
-
-    for (exchange, routing_key) in def.bindings() {
-        channel
-            .queue_bind(
-                convert::short(def.name(), "queue name")?,
-                convert::short(exchange.name(), "exchange name")?,
-                convert::short(routing_key, "routing key")?,
-                QueueBindOptions::default(),
-                FieldTable::default(),
-            )
-            .await
-            .map_err(AmqpError::declare)?;
-    }
-
-    if let Some(delay) = def.delay_config() {
-        declare_delay_backend(channel, delay, def.name()).await?;
-    }
-
-    Ok(())
-}
-
-/// Declares the infrastructure the delay backend needs to route a delayed copy back to `origin`.
-async fn declare_delay_backend(
-    channel: &Channel,
-    delay: &Delay,
-    origin: &str,
-) -> Result<(), AmqpError> {
-    match delay.target_for(origin) {
-        DelayTarget::WaitingQueue { waiting_queue } => {
-            declare_delay_queue(channel, &waiting_queue, origin).await
-        }
-        #[cfg(feature = "plugin-dme")]
-        DelayTarget::DelayedExchange {
-            exchange,
-            routing_key,
-        } => declare_delayed_exchange(channel, &exchange, origin, &routing_key).await,
-    }
-}
-
-/// Declares the delay waiting queue: durable, with a per-message TTL applied by the sender and a
-/// dead-letter route back to `origin` on the default exchange (so an expired message returns to
-/// the queue it came from).
-async fn declare_delay_queue(
-    channel: &Channel,
-    waiting_queue: &str,
-    origin: &str,
-) -> Result<(), AmqpError> {
-    let mut arguments = FieldTable::default();
-    arguments.insert(
-        ShortString::from("x-dead-letter-exchange"),
-        AMQPValue::LongString(String::new().into()),
-    );
-    arguments.insert(
-        ShortString::from("x-dead-letter-routing-key"),
-        AMQPValue::LongString(origin.into()),
-    );
-    channel
-        .queue_declare(
-            convert::short(waiting_queue, "waiting queue name")?,
-            QueueDeclareOptions {
-                durable: true,
-                ..QueueDeclareOptions::default()
-            },
-            arguments,
-        )
-        .await
-        .map_err(AmqpError::declare)?;
-    Ok(())
-}
-
-/// Declares the `x-delayed-message` exchange (direct-typed) and binds `origin` to it under
-/// `routing_key`, so a delayed copy the plugin releases returns to the origin queue.
-#[cfg(feature = "plugin-dme")]
-async fn declare_delayed_exchange(
-    channel: &Channel,
-    exchange: &str,
-    origin: &str,
-    routing_key: &str,
-) -> Result<(), AmqpError> {
-    let mut arguments = FieldTable::default();
-    // The delayed exchange wraps an underlying routing type; direct routes by the exact key.
-    arguments.insert(
-        ShortString::from("x-delayed-type"),
-        AMQPValue::LongString("direct".into()),
-    );
-    channel
-        .exchange_declare(
-            convert::short(exchange, "delayed exchange name")?,
-            lapin::ExchangeKind::Custom("x-delayed-message".to_owned()),
-            ExchangeDeclareOptions {
-                durable: true,
-                ..ExchangeDeclareOptions::default()
-            },
-            arguments,
-        )
-        .await
-        .map_err(AmqpError::declare)?;
-    channel
-        .queue_bind(
-            convert::short(origin, "queue name")?,
-            convert::short(exchange, "delayed exchange name")?,
-            convert::short(routing_key, "routing key")?,
-            QueueBindOptions::default(),
-            FieldTable::default(),
-        )
-        .await
-        .map_err(AmqpError::declare)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::host_of;
+    use super::{DescribeServer, LapinBroker, host_of};
 
     #[test]
     fn host_extraction_handles_auth_vhost_and_bare_forms() {
@@ -460,5 +389,14 @@ mod tests {
         assert_eq!(host_of("amqp://user:pass@rabbit:5672/prod"), "rabbit:5672");
         assert_eq!(host_of("amqps://rabbit/vhost"), "rabbit");
         assert_eq!(host_of("rabbit:5672"), "rabbit:5672");
+    }
+
+    // `new` records the settings without connecting: no server is needed to build the broker or
+    // to describe it, which is what lets it slot into the synchronous app builder.
+    #[test]
+    fn new_performs_no_io_and_describes_the_configured_address() {
+        let spec = LapinBroker::new("amqp://127.0.0.1:5672").describe_server();
+        assert_eq!(spec.protocol, "amqp");
+        assert_eq!(spec.host.as_deref(), Some("127.0.0.1:5672"));
     }
 }

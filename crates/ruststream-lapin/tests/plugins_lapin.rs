@@ -15,8 +15,10 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use ruststream::{Broker, IncomingMessage, OutgoingMessage, Publisher, Subscriber};
-use ruststream_lapin::{LapinBroker, RabbitQueue};
+use ruststream::{
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+};
+use ruststream_lapin::{LapinBroker, LapinPublish, RabbitQueue};
 
 fn plugins_url() -> Option<String> {
     std::env::var("AMQP_PLUGINS_TEST_URL").ok()
@@ -50,8 +52,11 @@ async fn consistent_hash_exchange_distributes_across_shards() {
     }
 
     let Some(url) = plugins_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let exchange = unique("hash");
     let shard_a = unique("shard-a");
@@ -82,7 +87,7 @@ async fn consistent_hash_exchange_distributes_across_shards() {
         .expect("subscribe shard b");
 
     // Publish many distinct routing keys so the hash spreads them across both shards.
-    let publisher = broker.publisher().exchange(&exchange);
+    let publisher = broker.publisher(LapinPublish::default().exchange(&exchange));
     let total = 40u32;
     for i in 0..total {
         publisher
@@ -119,8 +124,11 @@ async fn delayed_message_exchange_holds_then_redelivers() {
     use ruststream_lapin::Delay;
 
     let Some(url) = plugins_url() else { return };
-    let broker = LapinBroker::new(url.clone()).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("dme");
     let def = RabbitQueue::new(&queue)
@@ -130,7 +138,7 @@ async fn delayed_message_exchange_holds_then_redelivers() {
     let mut subscriber = broker.subscribe(def).await.expect("subscribe");
 
     broker
-        .publisher()
+        .publisher(LapinPublish::default())
         .publish(OutgoingMessage::new(&queue, b"later"))
         .await
         .expect("publish");

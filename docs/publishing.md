@@ -1,6 +1,11 @@
 # Publishing
 
-The message name is the routing key. The exchange is a property of the publisher: the default
+A publisher is declared as a policy and comes alive against the connection. `LapinPublish` holds
+the options only, so it is constructible anywhere - in a router definition, at a mount site, in
+configuration - and the runtime pairs it with the connected broker at startup. There is no
+publisher without a connection to publish through.
+
+The message name is the routing key. The exchange is a property of the policy: the default
 exchange unless `.exchange("events")` says otherwise. On the default exchange the routing key
 addresses the queue with that name, which is why the quickstart works with no topology at all.
 
@@ -22,15 +27,16 @@ reply to the requester's private address.
 
 ## Three publishers
 
-`broker.publisher()` is fire-and-forget: the publish resolves when the frame is written, with no
-broker feedback. Upgrade on the publisher when the guarantee matters:
+`LapinPublish::default()` is fire-and-forget: the publish resolves when the frame is written,
+with no broker feedback. The publishing mode is a policy transition, so picking a stronger
+guarantee changes the type:
 
-- `.confirms()` - publisher confirms: every publish resolves only once the broker confirmed it.
-  Transactions buffer client-side and flush on commit. Durable and fast; the recommended
-  transactional publisher.
-- `.server_tx()` - AMQP channel transactions (`tx.select` / `tx.commit` / `tx.rollback`):
-  messages become visible atomically at commit. Slower (a synchronous round trip per commit),
-  but the only option when partial flushes are unacceptable.
+- `.confirms()` - `ConfirmsPublish`, publisher confirms: every publish resolves only once the
+  broker confirmed it. Transactions buffer client-side and flush on commit. Durable and fast;
+  the recommended transactional publisher.
+- `.server_tx()` - `ServerTxPublish`, AMQP channel transactions (`tx.select` / `tx.commit` /
+  `tx.rollback`): messages become visible atomically at commit. Slower (a synchronous round trip
+  per commit), but the only option when partial flushes are unacceptable.
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:confirms"
@@ -41,12 +47,11 @@ earlier messages published), server transactions give all-or-nothing visibility.
 
 ## Transactional fan-out from a handler
 
-A publisher is a value like any other shared resource: build it once, wire it into the typed
-application state at startup, and let handlers request it by type (`State<Shipments>` below).
-Here an order fans out into per-item shipment commands, published all-or-nothing:
+Attach the policy at the mount site and the handler receives the live publisher as an `Out`
+parameter. Here an order fans out into per-item shipment commands, published all-or-nothing:
 
 ```rust
---8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:state"
+--8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:dispatch"
 ```
 
 ```rust
@@ -54,5 +59,7 @@ Here an order fans out into per-item shipment commands, published all-or-nothing
 ```
 
 Both transactional publishers implement the framework's `TransactionalPublisher`, so either
-plugs into the same `begin_transaction / commit / abort` call sites. Clones of a publisher share
-the underlying channel and transaction state.
+plugs into the same `begin_transaction / commit / abort` call sites. A call that makes no sense
+in the current state errors instead of passing silently: a commit or abort with no open
+transaction, and a second begin while one is open (which leaves the open transaction intact).
+Clones of a publisher share the underlying channel and transaction state.

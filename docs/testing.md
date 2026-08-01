@@ -1,14 +1,15 @@
 # Testing
 
 The `testing` feature ships `LapinTestBroker`, an in-process stand-in for RabbitMQ in
-application tests: the same handlers, descriptors, and wiring, no server. It routes by exact
-queue name (the default-exchange model), records every publish, and plugs into the framework's
-`TestApp` harness, which drives each publish to quiescence so assertions never race the
-handlers.
+application tests: the same handlers, descriptors, and wiring, no server. It follows the same
+ladder as the real broker (synchronous `new`, consuming `connect`, consuming `shutdown`), routes
+by exact queue name (the default-exchange model), records every publish, and plugs into the
+framework's `TestApp` harness, which drives each publish to quiescence so assertions never race
+the handlers.
 
 ```toml
 [dev-dependencies]
-ruststream-lapin = { version = "0.5", features = ["testing"] }
+ruststream-lapin = { version = "0.6", features = ["testing"] }
 ```
 
 ```rust
