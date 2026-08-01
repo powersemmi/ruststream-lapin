@@ -8,7 +8,8 @@
 //! * [`LapinTestBroker`] / [`ConnectedLapinTestBroker`] - the ladder; the connected form
 //!   implements [`TestableBroker`](ruststream::testing::TestableBroker), so it drives both the
 //!   [`TestApp`](ruststream::testing::TestApp) harness and the framework's conformance suite;
-//! * [`LapinTestPublish`] / [`LapinTestPublisher`] - the publish pair, with buffered transactions;
+//! * [`LapinTestPublish`] / [`LapinTestPublisher`] - the publish pair, carrying both transaction
+//!   kinds: the handle-level borrowed one and the owned [`LapinTestTransaction`];
 //! * [`LapinTestSubscriber`] / [`LapinTestMessage`] - the `Subscriber` and `IncomingMessage`
 //!   impls, settling like the real transport.
 //!
@@ -22,5 +23,5 @@ mod router;
 mod subscriber;
 
 pub use broker::{ConnectedLapinTestBroker, LapinTestBroker};
-pub use publisher::{LapinTestPublish, LapinTestPublisher};
+pub use publisher::{LapinTestPublish, LapinTestPublisher, LapinTestTransaction};
 pub use subscriber::{LapinTestMessage, LapinTestSubscriber};

@@ -301,6 +301,37 @@ async fn transaction_abort_discards_buffer() {
     assert!(observed.is_empty(), "aborted messages must be discarded");
 }
 
+// The owned kind through the framework's typed sugar: `TypedPublisher::transaction()` opens one
+// transaction per call, each owning its buffer, so settling one never touches another.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owned_transactions_settle_independently_through_the_typed_sugar() {
+    use ruststream::runtime::TypedPublisher;
+
+    let broker = connected().await;
+    let publisher = TypedPublisher::new(broker.publisher(LapinTestPublish));
+
+    let mut kept = publisher.transaction().await.expect("open kept");
+    let mut discarded = publisher.transaction().await.expect("open discarded");
+    kept.publish("orders", &Order { id: 1 })
+        .await
+        .expect("buffer kept");
+    discarded
+        .publish("orders", &Order { id: 2 })
+        .await
+        .expect("buffer discarded");
+
+    discarded.abort().await.expect("abort");
+    kept.commit().await.expect("commit");
+
+    let observed = expect_published(&broker, "orders", 1, WAIT).await;
+    assert_eq!(
+        observed.len(),
+        1,
+        "only the committed transaction is routed"
+    );
+    assert_eq!(observed[0].payload(), br#"{"id":1}"#);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transaction_misuse_is_reported() {
     let broker = connected().await;

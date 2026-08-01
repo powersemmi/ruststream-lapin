@@ -36,7 +36,7 @@ mod sealed {
 }
 
 /// One buffered publish: routing key, payload, headers.
-type Buffered = (String, Bytes, Headers);
+pub(crate) type Buffered = (String, Bytes, Headers);
 
 /// The options every `RabbitMQ` publish policy carries: where to publish and how durably.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,15 +252,23 @@ impl LapinPublishPolicy for ConfirmsPublish {
 /// The live publisher that awaits broker confirms for every message.
 ///
 /// Outside a transaction each [`publish`](Publisher::publish) resolves only once the broker
-/// confirmed the message. Between
-/// [`begin_transaction`](TransactionalPublisher::begin_transaction) and
-/// [`commit`](TransactionalPublisher::commit) messages buffer in memory; `commit` publishes them
-/// in order and awaits all confirms, and [`abort`](TransactionalPublisher::abort) discards the
-/// buffer without touching the broker.
+/// confirmed the message. Confirms buffer client-side, so this publisher offers both transaction
+/// kinds:
 ///
-/// Clones share one confirm channel and one transaction buffer. Like every live publisher it
-/// aliases the connection and may outlive it: after shutdown every operation reports
-/// [`AmqpError::Closed`].
+/// * owned ([`OwnedTransactions`](ruststream::OwnedTransactions), the natural fit): every
+///   [`transaction`](ruststream::OwnedTransactions::transaction) call opens an independent
+///   [`ConfirmsTransaction`](crate::ConfirmsTransaction) that owns its buffer, so any number can
+///   be open on one handle and the handle keeps publishing directly meanwhile;
+/// * borrowed ([`TransactionalPublisher`]): the handle carries one buffer between
+///   [`begin_transaction`](TransactionalPublisher::begin_transaction) and
+///   [`commit`](TransactionalPublisher::commit), so a second begin while one is open errors.
+///
+/// Either way `commit` publishes the buffer in order and awaits all confirms, and `abort`
+/// discards it without touching the broker.
+///
+/// Clones share one confirm channel and one handle-level transaction buffer. Like every live
+/// publisher it aliases the connection and may outlive it: after shutdown every operation
+/// reports [`AmqpError::Closed`].
 #[derive(Debug, Clone)]
 pub struct ConfirmsPublisher {
     conn: Arc<AmqpConnection>,
@@ -290,6 +298,41 @@ impl ConfirmsPublisher {
                 Ok(channel)
             })
             .await
+    }
+
+    /// Publishes `buffered` in order on the confirm channel and awaits every confirm.
+    ///
+    /// The flush of the owned transaction kind ([`ConfirmsTransaction`]), whose contract loses
+    /// the buffer on a failed commit - redelivery of the inputs is the recovery path - so it
+    /// needs no bookkeeping about what was sent. The borrowed kind keeps its own flush: its
+    /// buffer is shared with the handle, which is state this one does not have.
+    pub(crate) async fn flush_owned(&self, buffered: &[Buffered]) -> Result<(), AmqpError> {
+        // The whole buffer rides one channel; the first routing key names the flush in any
+        // connection-level diagnostic.
+        let Some((first_key, _, _)) = buffered.first() else {
+            return Ok(());
+        };
+        self.conn.ensure_live(first_key)?;
+        let channel = self.channel(first_key).await?;
+
+        let mut confirms = Vec::with_capacity(buffered.len());
+        for (routing_key, payload, headers) in buffered {
+            let properties = convert::properties_for_publish(headers, self.options.persistent)?;
+            let confirm = do_publish(
+                channel,
+                &self.options.exchange,
+                routing_key,
+                payload,
+                properties,
+            )
+            .await?;
+            confirms.push((routing_key, confirm));
+        }
+        for (routing_key, confirm) in confirms {
+            let confirmation = confirm.await.map_err(AmqpError::publish)?;
+            confirmation_ok(&confirmation, routing_key)?;
+        }
+        Ok(())
     }
 
     async fn publish_confirmed(
@@ -505,6 +548,11 @@ impl LapinPublishPolicy for ServerTxPublish {
 /// channel transaction and become visible atomically at commit;
 /// [`abort`](TransactionalPublisher::abort) rolls them back server-side. Outside a transaction
 /// [`publish`](Publisher::publish) behaves like the fire-and-forget publisher.
+///
+/// Only the borrowed transaction kind ([`TransactionalPublisher`]) applies here, unlike
+/// [`ConfirmsPublisher`]: `tx.select` puts the channel itself into transactional mode, so the
+/// transaction is channel state with exactly one instance, and there is no buffer for an owned
+/// [`Transaction`](ruststream::Transaction) value to own.
 ///
 /// Clones share the transactional channel and its open/closed state. Interleaving `publish`
 /// and `begin_transaction`/`commit` from concurrent tasks is not supported: which side of the

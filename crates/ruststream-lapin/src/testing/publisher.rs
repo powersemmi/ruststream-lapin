@@ -5,8 +5,10 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use ruststream::{
-    Headers, OutgoingMessage, PairError, PublishPolicy, Publisher, TransactionalPublisher,
+    Headers, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher, Transaction,
+    TransactionalPublisher,
 };
+use tracing::warn;
 
 use super::broker::{ConnectedLapinTestBroker, TestBrokerState};
 use crate::error::AmqpError;
@@ -173,6 +175,130 @@ impl TransactionalPublisher for LapinTestPublisher {
                 "abort with no open transaction on this test publisher".to_owned(),
             ));
         }
+        Ok(())
+    }
+}
+
+/// Owned transactions, mirroring [`ConfirmsPublisher`](crate::ConfirmsPublisher): every call
+/// opens an independent buffer-owning [`LapinTestTransaction`], so any number can be open at
+/// once and the publisher keeps routing directly meanwhile.
+impl OwnedTransactions for LapinTestPublisher {
+    type Transaction = LapinTestTransaction;
+
+    /// Opens a transaction owned by the returned value.
+    ///
+    /// # Errors
+    ///
+    /// Never fails: opening allocates a buffer and never touches the router.
+    async fn transaction(&self) -> Result<Self::Transaction, Self::Error> {
+        Ok(LapinTestTransaction {
+            publisher: self.clone(),
+            buffered: Vec::new(),
+            settled: false,
+        })
+    }
+}
+
+/// An owned in-process transaction, opened by
+/// [`transaction`](OwnedTransactions::transaction) on a [`LapinTestPublisher`].
+///
+/// A private buffer routed in publish order on commit and discarded on abort, mirroring
+/// [`ConfirmsTransaction`](crate::ConfirmsTransaction).
+///
+/// # Examples
+///
+/// ```
+/// use ruststream::{Broker, OutgoingMessage, OwnedTransactions, Transaction};
+/// use ruststream_lapin::testing::{LapinTestBroker, LapinTestPublish};
+///
+/// # async fn demo() -> Result<(), ruststream_lapin::AmqpError> {
+/// let broker = LapinTestBroker::new().connect().await?;
+/// let mut txn = broker.publisher(LapinTestPublish).transaction().await?;
+/// txn.publish(OutgoingMessage::new("orders", b"{}".as_slice())).await?;
+/// txn.commit().await?;
+/// # Ok(())
+/// # }
+/// ```
+#[must_use = "a transaction does nothing until settled with commit() or abort()"]
+pub struct LapinTestTransaction {
+    publisher: LapinTestPublisher,
+    buffered: Vec<Buffered>,
+    settled: bool,
+}
+
+impl std::fmt::Debug for LapinTestTransaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LapinTestTransaction")
+            .field("buffered", &self.buffered.len())
+            .field("settled", &self.settled)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for LapinTestTransaction {
+    fn drop(&mut self) {
+        // Same contract as the live transaction: a drop can only discard, and the warning marks
+        // that as an abort the caller never wrote.
+        if !self.settled {
+            warn!(
+                target: "ruststream_lapin",
+                buffered = self.buffered.len(),
+                "owned transaction dropped without commit or abort; its buffered messages are \
+                 discarded"
+            );
+        }
+    }
+}
+
+impl Transaction for LapinTestTransaction {
+    type Error = AmqpError;
+
+    /// Buffers `msg` in this transaction; nothing reaches the router before
+    /// [`commit`](Self::commit).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmqpError::InvalidOptions`] when the routing key is empty, the one check the
+    /// live publisher also makes before the broker would.
+    async fn publish(&mut self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+        if msg.name().is_empty() {
+            return Err(AmqpError::InvalidOptions(
+                "routing key must not be empty; on the default exchange it names the target queue"
+                    .to_owned(),
+            ));
+        }
+        self.buffered.push((
+            msg.name().to_owned(),
+            Bytes::copy_from_slice(msg.payload()),
+            msg.headers().clone(),
+        ));
+        Ok(())
+    }
+
+    /// Routes the buffered messages in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmqpError::Closed`] once the transport has shut down; the transaction is
+    /// consumed either way.
+    async fn commit(mut self) -> Result<(), Self::Error> {
+        // Settled before the flush, like the live transaction: a failed commit has still
+        // consumed the value.
+        self.settled = true;
+        for (queue, payload, headers) in &self.buffered {
+            self.publisher.state.ensure_live(queue)?;
+            self.publisher.route(queue, payload, headers);
+        }
+        Ok(())
+    }
+
+    /// Discards the buffered messages.
+    ///
+    /// # Errors
+    ///
+    /// Never fails.
+    async fn abort(mut self) -> Result<(), Self::Error> {
+        self.settled = true;
         Ok(())
     }
 }

@@ -49,6 +49,7 @@ mod reply;
 mod requester;
 mod subscriber;
 mod topology;
+mod transaction;
 
 pub mod context;
 #[cfg(feature = "testing")]
@@ -67,6 +68,7 @@ pub use queue::{QueueType, RabbitQueue};
 pub use reply::DirectReplyTo;
 pub use requester::{LapinRequest, LapinRequester};
 pub use subscriber::LapinSubscriber;
+pub use transaction::ConfirmsTransaction;
 
 // Raw declaration-argument passthrough (`RabbitQueue::argument` / `arguments`).
 pub use lapin::types::{AMQPValue, FieldTable};

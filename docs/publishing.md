@@ -63,3 +63,25 @@ plugs into the same `begin_transaction / commit / abort` call sites. A call that
 in the current state errors instead of passing silently: a commit or abort with no open
 transaction, and a second begin while one is open (which leaves the open transaction intact).
 Clones of a publisher share the underlying channel and transaction state.
+
+## Owned or borrowed transactions
+
+The framework has two transaction shapes, and which ones a publisher offers follows the
+transport:
+
+- **Borrowed** - the handle carries the transaction. `TypedPublisher::transactional()` then
+  `begin()` gives a scope over it, or call `begin_transaction / commit / abort` on the raw
+  publisher. Exactly one can be open per handle, so a second begin errors. Both publishers
+  support this.
+- **Owned** - the transaction is a value that owns its buffer, opened by
+  `TypedPublisher::transaction()` (or `OwnedTransactions::transaction` on the raw publisher).
+  Any number can be open on one handle at a time, settling one never touches another, and the
+  handle keeps publishing directly meanwhile. `commit` and `abort` consume the value, so a
+  double commit or a publish after settling is a compile error. Only the confirms publisher
+  supports this: its transaction is a client-side buffer, while `server_tx` puts the channel
+  itself into transactional mode, which is channel state with exactly one instance.
+
+Use the owned kind when one handler drives several independent groups of messages; use the
+borrowed one when a whole scope of code should publish into "the" transaction. On a failed
+commit the owned transaction is consumed and its buffer is lost - redelivery of the inputs, not
+resubmission of the buffer, is the recovery path.
