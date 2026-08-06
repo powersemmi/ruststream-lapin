@@ -3,8 +3,8 @@
 `ruststream-lapin` is the RabbitMQ / AMQP 0.9.1 broker for the
 [RustStream](https://powersemmi.github.io/ruststream/) framework, backed by
 [`lapin`](https://docs.rs/lapin). AMQP fits the framework's settlement contract natively: acks,
-requeues, and dead-lettering are protocol frames, not republish workarounds. An in-process test
-broker ships under the `testing` feature.
+requeues, and dead-lettering are protocol frames rather than client-side republishing. An
+in-process test broker ships under the `testing` feature.
 
 ```toml
 ruststream = { version = "0.6", features = ["macros", "json"] }

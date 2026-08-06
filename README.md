@@ -23,7 +23,7 @@
 
 ## Features
 
-- **Native settlement, no republish tricks.** AMQP has per-message acknowledgement built in:
+- **Native settlement.** AMQP has per-message acknowledgement built in:
   `ack` is `basic.ack`, retry is `basic.nack(requeue = true)`, drop is
   `basic.reject(requeue = false)` - straight into the queue's dead-letter exchange when one is
   configured.

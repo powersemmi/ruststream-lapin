@@ -38,8 +38,8 @@ an existing queue can never change. The descriptor exposes it as a typed option:
 A broker-wide `.default_queue_type(..)` applies to descriptors that do not pick a type; with
 neither set, no `x-queue-type` is sent and the server default applies.
 
-Note that RabbitMQ 4 denies transient (non-durable) non-exclusive queues by default: keep the
-durable default unless the queue is `.exclusive(true)`.
+RabbitMQ 4 denies transient (non-durable) non-exclusive queues by default: keep the durable
+default unless the queue is `.exclusive(true)`.
 
 ## Prefetch
 
@@ -48,9 +48,9 @@ deliveries in flight unacknowledged. This is the back-pressure valve for the sub
 consuming slower slows the broker's pushes instead of buffering without bound. A descriptor
 overrides it per queue with `.prefetch(n)`. Without either, the server imposes no limit.
 
-The count is a `NonZeroU16`: AMQP reads `basic.qos(0)` as "no limit", the exact opposite of a
-cap, so the zero sentinel cannot be written at all - leaving the prefetch unset is how
-"unlimited" is spelled. Write the literal with the framework's `nonzero!` macro, which rejects
+The count is a `NonZeroU16`: AMQP reads `basic.qos(0)` as "no limit" rather than as a cap of
+zero, so the zero sentinel cannot be written at all - leaving the prefetch unset is how
+"unlimited" is expressed. Write the literal with the framework's `nonzero!` macro, which rejects
 zero at compile time, as the descriptor above does.
 
 ## Delivery metadata
@@ -89,7 +89,7 @@ native dead-letter target. A handler that drops a message settles with
 ## Delayed retry
 
 A handler that returns `HandlerResult::retry_after(delay)` asks for redelivery no sooner than
-`delay` - the not-ready-yet case, where an immediate requeue would just spin. By default the
+`delay` - the not-ready-yet case, where an immediate requeue would spin. By default the
 runtime handles this with its broker-agnostic fallback (the delayed copy waits in the service
 process, at-most-once over the window). `.delay(..)` makes it native instead: the message parks
 in a broker waiting queue with a per-message TTL and dead-letters back to the origin queue when

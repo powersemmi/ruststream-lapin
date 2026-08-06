@@ -42,8 +42,8 @@ guarantee changes the type:
 --8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:confirms"
 ```
 
-The trade-off in one sentence: confirms give per-message durability (a failed commit may leave
-earlier messages published), server transactions give all-or-nothing visibility.
+The trade-off: confirms give per-message durability (a failed commit may leave earlier messages
+published), server transactions give all-or-nothing visibility.
 
 ## Transactional fan-out from a handler
 
@@ -59,8 +59,8 @@ parameter. Here an order fans out into per-item shipment commands, published all
 ```
 
 Both transactional publishers implement the framework's `TransactionalPublisher`, so either
-plugs into the same `begin_transaction / commit / abort` call sites. A call that makes no sense
-in the current state errors instead of passing silently: a commit or abort with no open
+plugs into the same `begin_transaction / commit / abort` call sites. A call that is invalid in
+the current state errors instead of passing silently: a commit or abort with no open
 transaction, and a second begin while one is open (which leaves the open transaction intact).
 Clones of a publisher share the underlying channel and transaction state.
 
@@ -82,6 +82,6 @@ transport:
   itself into transactional mode, which is channel state with exactly one instance.
 
 Use the owned kind when one handler drives several independent groups of messages; use the
-borrowed one when a whole scope of code should publish into "the" transaction. On a failed
+borrowed one when a whole scope of code should publish into one shared transaction. On a failed
 commit the owned transaction is consumed and its buffer is lost - redelivery of the inputs, not
 resubmission of the buffer, is the recovery path.
