@@ -13,6 +13,7 @@
 mod events;
 mod routes;
 
+use ruststream::nonzero;
 use ruststream::runtime::{App, AppInfo, RustStream};
 use ruststream_lapin::LapinBroker;
 
@@ -22,7 +23,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("{{project-name}}", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672")
             .declare_topology(true)
-            .prefetch(32),
+            .prefetch(nonzero!(32)),
         |b| {
             b.include_router(routes::events());
         },

@@ -48,6 +48,11 @@ deliveries in flight unacknowledged. This is the back-pressure valve for the sub
 consuming slower slows the broker's pushes instead of buffering without bound. A descriptor
 overrides it per queue with `.prefetch(n)`. Without either, the server imposes no limit.
 
+The count is a `NonZeroU16`: AMQP reads `basic.qos(0)` as "no limit", the exact opposite of a
+cap, so the zero sentinel cannot be written at all - leaving the prefetch unset is how
+"unlimited" is spelled. Write the literal with the framework's `nonzero!` macro, which rejects
+zero at compile time, as the descriptor above does.
+
 ## Delivery metadata
 
 `AmqpContext` carries the AMQP delivery metadata that is not part of the payload or the

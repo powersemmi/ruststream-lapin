@@ -23,7 +23,7 @@
 
 // --8<-- [start:handler]
 use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
+use ruststream::{nonzero, subscriber};
 use ruststream_lapin::LapinBroker;
 use serde::Deserialize;
 
@@ -43,7 +43,7 @@ async fn handle(order: &Order) -> HandlerResult {
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672").prefetch(64),
+        LapinBroker::new("amqp://localhost:5672").prefetch(nonzero!(64)),
         |b| {
             b.include(handle);
         },
