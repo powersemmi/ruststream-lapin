@@ -4,6 +4,7 @@
 //! [`Broker::connect`], and the connected form is the only value carrying a subscribe or publish
 //! surface. [`ConnectedBroker::shutdown`] consumes it in turn and returns the terminal witness.
 
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -89,10 +90,11 @@ impl std::fmt::Debug for AmqpConnection {
 /// # Examples
 ///
 /// ```no_run
+/// use ruststream::nonzero;
 /// use ruststream_lapin::{LapinBroker, QueueType};
 ///
 /// let broker = LapinBroker::new("amqp://localhost:5672")
-///     .prefetch(64)
+///     .prefetch(nonzero!(64))
 ///     .default_queue_type(QueueType::Quorum);
 /// # let _ = broker;
 /// ```
@@ -101,7 +103,7 @@ impl std::fmt::Debug for AmqpConnection {
 pub struct LapinBroker {
     uri: String,
     connection_name: Option<String>,
-    prefetch: Option<u16>,
+    prefetch: Option<NonZeroU16>,
     declare: bool,
     default_queue_type: Option<QueueType>,
 }
@@ -131,7 +133,11 @@ impl LapinBroker {
     ///
     /// This is the back-pressure window for subscriber streams; individual queue descriptors
     /// can override it. Without it the server imposes no prefetch limit.
-    pub fn prefetch(mut self, prefetch: u16) -> Self {
+    ///
+    /// The count is a [`NonZeroU16`] because AMQP reads `basic.qos(0)` as "no limit", the exact
+    /// opposite of a cap: the zero sentinel is unrepresentable here, and leaving the prefetch
+    /// unset is how "unlimited" is spelled.
+    pub fn prefetch(mut self, prefetch: NonZeroU16) -> Self {
         self.prefetch = Some(prefetch);
         self
     }
@@ -207,7 +213,7 @@ impl DescribeServer for LapinBroker {
 pub struct ConnectedLapinBroker {
     conn: Arc<AmqpConnection>,
     uri: String,
-    prefetch: Option<u16>,
+    prefetch: Option<NonZeroU16>,
     declare: bool,
     default_queue_type: Option<QueueType>,
 }
@@ -244,7 +250,7 @@ impl ConnectedLapinBroker {
         }
         if let Some(prefetch) = def.prefetch_or(self.prefetch) {
             channel
-                .basic_qos(prefetch, BasicQosOptions::default())
+                .basic_qos(prefetch.get(), BasicQosOptions::default())
                 .await
                 .map_err(AmqpError::subscribe)?;
         }

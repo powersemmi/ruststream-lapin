@@ -1,5 +1,7 @@
 //! The queue descriptor: what a subscription binds to and, optionally, expects to exist.
 
+use std::num::NonZeroU16;
+
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::SubscriptionSource;
 
@@ -57,7 +59,7 @@ pub struct RabbitQueue {
     queue_type: Option<QueueType>,
     bindings: Vec<(RabbitExchange, String)>,
     arguments: FieldTable,
-    prefetch: Option<u16>,
+    prefetch: Option<NonZeroU16>,
     delay: Option<Delay>,
 }
 
@@ -166,8 +168,12 @@ impl RabbitQueue {
     ///
     /// This is the back-pressure window for the subscriber stream. When neither is set the
     /// server imposes no prefetch limit.
+    ///
+    /// The count is a [`NonZeroU16`] because AMQP reads `basic.qos(0)` as "no limit", the exact
+    /// opposite of a cap: the zero sentinel is unrepresentable here, and leaving the prefetch
+    /// unset is how "unlimited" is spelled.
     #[must_use]
-    pub fn prefetch(mut self, prefetch: u16) -> Self {
+    pub fn prefetch(mut self, prefetch: NonZeroU16) -> Self {
         self.prefetch = Some(prefetch);
         self
     }
@@ -218,7 +224,7 @@ impl RabbitQueue {
         &self.arguments
     }
 
-    pub(crate) fn prefetch_or(&self, broker_default: Option<u16>) -> Option<u16> {
+    pub(crate) fn prefetch_or(&self, broker_default: Option<NonZeroU16>) -> Option<NonZeroU16> {
         self.prefetch.or(broker_default)
     }
 

@@ -13,6 +13,7 @@
 mod orders;
 mod routes;
 
+use ruststream::nonzero;
 use ruststream::runtime::{App, AppInfo, RustStream};
 use ruststream_lapin::LapinBroker;
 
@@ -20,7 +21,7 @@ use ruststream_lapin::LapinBroker;
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("{{project-name}}", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672").prefetch(32),
+        LapinBroker::new("amqp://localhost:5672").prefetch(nonzero!(32)),
         |b| {
             b.include_router(routes::orders());
         },

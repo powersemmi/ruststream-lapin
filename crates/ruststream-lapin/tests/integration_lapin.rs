@@ -24,7 +24,7 @@ use tokio::sync::Notify;
 use ruststream::runtime::{AppInfo, Ctx, HandlerResult, RustStream, State};
 use ruststream::{
     Broker, ConnectedBroker, FromRef, Headers, IncomingMessage, OutgoingMessage, Partitioned,
-    Publisher, Subscriber, subscriber,
+    Publisher, Subscriber, nonzero, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
@@ -321,7 +321,7 @@ async fn prefetch_caps_unacknowledged_deliveries() {
 
     let queue = unique("prefetch");
     let mut subscriber = broker
-        .subscribe(transient_queue(&queue).prefetch(1))
+        .subscribe(transient_queue(&queue).prefetch(nonzero!(1)))
         .await
         .expect("subscribe");
 

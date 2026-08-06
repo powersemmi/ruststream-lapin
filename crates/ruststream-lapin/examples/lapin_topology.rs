@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
+use ruststream::{nonzero, subscriber};
 use serde::Deserialize;
 
 // --8<-- [start:descriptor]
@@ -29,7 +29,7 @@ struct OrderPlaced {
     .queue_type(QueueType::Quorum)
     .bind(RabbitExchange::topic("events"), "order.*")
     .dead_letter_exchange("dead-letters")
-    .prefetch(16))]
+    .prefetch(nonzero!(16)))]
 async fn on_order(event: &OrderPlaced) -> HandlerResult {
     println!("order event {}", event.id);
     HandlerResult::Ack
@@ -69,7 +69,7 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672")
         .declare_topology(true)
         .default_queue_type(QueueType::Quorum)
-        .prefetch(64);
+        .prefetch(nonzero!(64));
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(on_order);
         b.include(on_bounded);
