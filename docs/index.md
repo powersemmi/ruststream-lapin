@@ -38,6 +38,21 @@ startup, before opening subscriptions; connecting consumes the broker and yields
 - Nothing is declared on the broker unless the service opts in with `.declare_topology(true)`:
   infrastructure stays the user's job.
 
+## Capabilities
+
+Which of the framework's optional capability traits this broker implements natively:
+
+| Capability | Native | Notes |
+| --- | --- | --- |
+| `Subscribe` | yes | Consumes the queue the subscription names; [`RabbitQueue`](queues.md) adds bindings, queue type, and prefetch. |
+| `BatchSubscriber` | no | AMQP pushes one `basic.deliver` at a time, so there is no wire-level batch. [Prefetch](queues.md#prefetch) is the flow-control window instead. |
+| `TransactionalPublisher` | yes | Both transactional publishers: `.confirms()` buffers client-side and awaits every confirm on commit, `.server_tx()` uses AMQP channel transactions. See [Three publishers](publishing.md#three-publishers). |
+| `OwnedTransactions` | yes (confirms only) | A confirms transaction is a client-side buffer, so any number can be open on one handle. `server_tx` puts the channel itself into transactional mode, which is channel state with exactly one instance. |
+| `RequestReply` | yes | `LapinRequest` pairs into a requester over direct reply-to with correlation-id multiplexing. See [Request/reply](request-reply.md). |
+| `Partitioned` | yes | The key travels in the `amqp-partition-key` header and feeds the runtime's worker lanes; AMQP does not interpret it, so the producer sets it. See [Keyed worker lanes](queues.md#keyed-worker-lanes). |
+| `Seekable` + `Positioned` | no | An AMQP queue is destructive: a delivery is removed from the queue when it is acked, so there is no retained history to reposition into. |
+| `DescribeServer` | yes | Reports the configured AMQP address, which is what the AsyncAPI document records. |
+
 ## Scaffold a service
 
 Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate),
