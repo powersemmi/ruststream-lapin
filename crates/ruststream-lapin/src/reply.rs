@@ -14,10 +14,9 @@ use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
 ///
 /// ```
 /// use ruststream::runtime::TypedPublisher;
-/// use ruststream_lapin::{DirectReplyTo, LapinBroker};
+/// use ruststream_lapin::{DirectReplyTo, LapinPublish};
 ///
-/// let broker = LapinBroker::new("amqp://localhost:5672");
-/// let replies = TypedPublisher::new(broker.publisher()).transform(DirectReplyTo);
+/// let replies = TypedPublisher::new(LapinPublish::default()).transform(DirectReplyTo);
 /// # let _ = replies;
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -16,8 +16,9 @@ workspace = true
 
 [features]
 default = []
-# Ships the in-process test broker (`testing` module) plus the core harness wiring it needs.
-testing = ["ruststream/conformance", "ruststream/testing"]
+# Ships the in-process test broker (`testing` module). The conformance harness stays a
+# dev-dependency: it is broker-author tooling, not part of the user-facing testing surface.
+testing = ["ruststream/testing"]
 # TLS backends, mapped 1:1 onto lapin's cargo features.
 tls-native-tls = ["lapin/native-tls"]
 tls-rustls = ["lapin/rustls"]

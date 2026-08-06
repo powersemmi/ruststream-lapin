@@ -16,7 +16,7 @@
 
 use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
 use ruststream::subscriber;
-use ruststream_lapin::{DirectReplyTo, LapinBroker};
+use ruststream_lapin::{DirectReplyTo, LapinBroker, LapinPublish};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -52,8 +52,10 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     // --8<-- [start:mount]
     RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
-        let replies = TypedPublisher::new(b.broker().publisher()).transform(DirectReplyTo);
-        b.include_publishing(check, replies);
+        // The reply publisher is a policy: it holds no connection, so it is declared here and
+        // paired with the broker by the runtime at startup.
+        let replies = TypedPublisher::new(LapinPublish::default()).transform(DirectReplyTo);
+        b.include(check).publisher(replies);
     })
     // --8<-- [end:mount]
 }

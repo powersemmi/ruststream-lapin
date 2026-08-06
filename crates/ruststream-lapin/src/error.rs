@@ -42,13 +42,24 @@ pub enum AmqpError {
     #[error("amqp request timed out after {0:?} without a reply")]
     RequestTimeout(Duration),
 
-    /// An operation needed the live connection before `Broker::connect` resolved it.
+    /// An operation ran against a connection that has already shut down.
     ///
-    /// The runtime connects the broker once at startup; a publisher handed out earlier resolves
-    /// the shared connection on first use. Seeing this error means the operation ran before
-    /// `connect` completed (or after `shutdown`).
-    #[error("amqp broker is not connected; `Broker::connect` must complete first")]
-    NotConnected,
+    /// The ladder makes misuse through the owner of the connected broker a compile error, so
+    /// this reports the case it cannot cover: a handle aliasing the connection (a publisher
+    /// paired before the shutdown, a requester clone) used afterwards, which must fail rather
+    /// than silently succeed against a dead connection.
+    #[error("amqp connection is closed; the operation targeting {target:?} cannot proceed")]
+    Closed {
+        /// The routing key, queue, or exchange the operation targeted.
+        target: String,
+    },
+
+    /// A transaction call ran out of order on a transactional publisher.
+    ///
+    /// A commit or an abort with no open transaction, or a second begin while one is open. The
+    /// message names the offending call.
+    #[error("invalid transaction state: {0}")]
+    Transaction(String),
 
     /// The requested combination of options cannot be executed.
     ///
@@ -80,5 +91,11 @@ impl AmqpError {
 
     pub(crate) fn request(err: lapin::Error) -> Self {
         Self::Request(Box::new(err))
+    }
+
+    pub(crate) fn closed(target: &str) -> Self {
+        Self::Closed {
+            target: target.to_owned(),
+        }
     }
 }

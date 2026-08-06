@@ -34,13 +34,22 @@
 - **Durable delayed retry.** `.delay(..)` routes `retry_after` through a broker TTL waiting queue
   that dead-letters back to the origin, keeping the delayed copy on the broker instead of the
   core in-process fallback.
-- **Two transactional publishers, chosen on the publisher.** `.confirms()` buffers and awaits
-  every broker confirm on commit (durable, fast, recommended); `.server_tx()` uses AMQP channel
-  transactions for server-side atomicity.
-- **Request/reply over direct reply-to.** `broker.requester()` implements the framework's
-  `RequestReply` capability on `amq.rabbitmq.reply-to` with correlation-id multiplexing.
-- **Lazy startup contract.** `LapinBroker::new(uri)` is synchronous and does no I/O; the runtime
-  connects once at startup, so the broker composes with `#[ruststream::app]`.
+- **Two transactional publishers, chosen on the policy.** `LapinPublish::default().confirms()`
+  buffers and awaits every broker confirm on commit (durable, fast, recommended);
+  `.server_tx()` uses AMQP channel transactions for server-side atomicity.
+- **Owned and borrowed transactions.** Confirms buffer client-side, so the confirms publisher
+  also offers the owned kind: `transaction()` hands back a value owning its buffer, so any
+  number can be open on one handle, settling one never touches another, and the handle keeps
+  publishing directly meanwhile. `server_tx` keeps only the borrowed kind - `tx.select` is
+  channel state, one per channel.
+- **Request/reply over direct reply-to.** `LapinRequest` pairs into a requester implementing the
+  framework's `RequestReply` capability on `amq.rabbitmq.reply-to` with correlation-id
+  multiplexing.
+- **A typed lifecycle.** `LapinBroker::new(uri)` is synchronous and does no I/O, so the broker
+  composes with `#[ruststream::app]`; connecting consumes it into `ConnectedLapinBroker` and
+  shutting that down consumes it again, so subscribing before connect or publishing after
+  shutdown does not compile. Publishers are policies that hold no connection and pair with the
+  connected broker at startup.
 - **In-process test broker.** The `testing` feature ships `LapinTestBroker`, an in-process
   stand-in for RabbitMQ that plugs into the framework's `TestApp` harness, so handlers are
   unit-tested with the same wiring they ship with - no server needed.
@@ -49,8 +58,8 @@
 
 ```toml
 [dependencies]
-ruststream = { version = "0.5", features = ["macros", "json"] }
-ruststream-lapin = "0.5"
+ruststream = { version = "0.6", features = ["macros", "json"] }
+ruststream-lapin = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 

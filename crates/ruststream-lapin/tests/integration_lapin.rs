@@ -23,12 +23,13 @@ use tokio::sync::Notify;
 
 use ruststream::runtime::{AppInfo, Ctx, HandlerResult, RustStream, State};
 use ruststream::{
-    Broker, FromRef, Headers, IncomingMessage, OutgoingMessage, Partitioned, Publisher, Subscriber,
-    subscriber,
+    Broker, ConnectedBroker, FromRef, Headers, IncomingMessage, OutgoingMessage, Partitioned,
+    Publisher, Subscriber, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
-    Delay, LapinBroker, LapinMessage, PARTITION_KEY_HEADER, QueueType, RabbitExchange, RabbitQueue,
+    Delay, LapinBroker, LapinMessage, LapinPublish, PARTITION_KEY_HEADER, QueueType,
+    RabbitExchange, RabbitQueue,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -73,8 +74,11 @@ where
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn round_trip_on_default_exchange() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("round-trip");
     let mut subscriber = broker
@@ -85,7 +89,7 @@ async fn round_trip_on_default_exchange() {
     let mut headers = Headers::new();
     headers.insert("content-type", "application/json");
     broker
-        .publisher()
+        .publisher(LapinPublish::default())
         .publish(OutgoingMessage::new(&queue, b"{\"id\":1}").with_headers(headers))
         .await
         .expect("publish");
@@ -105,8 +109,11 @@ async fn round_trip_on_default_exchange() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn topic_binding_routes_by_pattern() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let exchange = unique("events");
     let queue = unique("orders");
@@ -118,7 +125,7 @@ async fn topic_binding_routes_by_pattern() {
     );
     let mut subscriber = broker.subscribe(def).await.expect("subscribe");
 
-    let publisher = broker.publisher().exchange(&exchange);
+    let publisher = broker.publisher(LapinPublish::default().exchange(&exchange));
     publisher
         .publish(OutgoingMessage::new("order.created", b"hit"))
         .await
@@ -144,8 +151,11 @@ async fn topic_binding_routes_by_pattern() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quorum_queue_declares_and_delivers() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url.clone()).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     // Quorum queues must be durable and never auto-delete, so this one needs explicit cleanup.
     let queue = unique("quorum");
@@ -153,7 +163,7 @@ async fn quorum_queue_declares_and_delivers() {
     let mut subscriber = broker.subscribe(def).await.expect("subscribe");
 
     broker
-        .publisher()
+        .publisher(LapinPublish::default())
         .publish(OutgoingMessage::new(&queue, b"q1"))
         .await
         .expect("publish");
@@ -187,8 +197,11 @@ async fn quorum_queue_declares_and_delivers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nack_requeue_marks_redelivered() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("requeue");
     let mut subscriber = broker
@@ -196,7 +209,7 @@ async fn nack_requeue_marks_redelivered() {
         .await
         .expect("subscribe");
     broker
-        .publisher()
+        .publisher(LapinPublish::default())
         .publish(OutgoingMessage::new(&queue, b"again"))
         .await
         .expect("publish");
@@ -221,8 +234,11 @@ async fn nack_requeue_marks_redelivered() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reject_dead_letters_into_dlx() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let dead = unique("dead");
     let mut dead_subscriber = broker
@@ -238,7 +254,7 @@ async fn reject_dead_letters_into_dlx() {
     let mut subscriber = broker.subscribe(def).await.expect("subscribe work queue");
 
     broker
-        .publisher()
+        .publisher(LapinPublish::default())
         .publish(OutgoingMessage::new(&queue, b"poison"))
         .await
         .expect("publish");
@@ -260,8 +276,11 @@ async fn reject_dead_letters_into_dlx() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_header_values_round_trip() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("binary");
     let mut subscriber = broker
@@ -273,7 +292,7 @@ async fn binary_header_values_round_trip() {
     headers.insert("x-blob", vec![0u8, 159, 146, 150]);
     headers.insert("x-tenant", "acme");
     broker
-        .publisher()
+        .publisher(LapinPublish::default())
         .publish(OutgoingMessage::new(&queue, b"payload").with_headers(headers))
         .await
         .expect("publish");
@@ -294,8 +313,11 @@ async fn binary_header_values_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prefetch_caps_unacknowledged_deliveries() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("prefetch");
     let mut subscriber = broker
@@ -303,7 +325,7 @@ async fn prefetch_caps_unacknowledged_deliveries() {
         .await
         .expect("subscribe");
 
-    let publisher = broker.publisher();
+    let publisher = broker.publisher(LapinPublish::default());
     for payload in [b"m1".as_slice(), b"m2", b"m3"] {
         publisher
             .publish(OutgoingMessage::new(&queue, payload))
@@ -332,8 +354,11 @@ async fn prefetch_caps_unacknowledged_deliveries() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_tx_publisher_is_plain_outside_a_transaction() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("server-tx-plain");
     let mut subscriber = broker
@@ -341,7 +366,7 @@ async fn server_tx_publisher_is_plain_outside_a_transaction() {
         .await
         .expect("subscribe");
 
-    let publisher = broker.publisher().server_tx();
+    let publisher = broker.publisher(LapinPublish::default().server_tx());
     publisher
         .publish(OutgoingMessage::new(&queue, b"direct"))
         .await
@@ -359,8 +384,11 @@ async fn server_tx_publisher_is_plain_outside_a_transaction() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn partition_key_round_trips_through_the_header() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("keyed");
     let mut subscriber = broker
@@ -371,7 +399,7 @@ async fn partition_key_round_trips_through_the_header() {
     let mut headers = Headers::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
-        .publisher()
+        .publisher(LapinPublish::default())
         .publish(OutgoingMessage::new(&queue, b"payload").with_headers(headers))
         .await
         .expect("publish");
@@ -391,15 +419,18 @@ async fn partition_key_round_trips_through_the_header() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nack_after_redelivers_through_the_delay_queue() {
     let Some(url) = amqp_url() else { return };
-    let broker = LapinBroker::new(url.clone()).declare_topology(true);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("delayed");
     let def = transient_queue(&queue).delay(Delay::dlx_ttl());
     let mut subscriber = broker.subscribe(def).await.expect("subscribe");
 
     broker
-        .publisher()
+        .publisher(LapinPublish::default())
         .publish(OutgoingMessage::new(&queue, b"later"))
         .await
         .expect("publish");
@@ -576,9 +607,11 @@ async fn declare_empty_keyed_queue(url: &str) {
 /// Pre-queues every delivery round-robin, so each key's ids ascend while keys interleave. Publishes
 /// through the broker so the partition-key header is written exactly as the consumer reads it.
 async fn prequeue_keyed_deliveries(url: &str) {
-    let producer = LapinBroker::new(url.to_owned());
-    Broker::connect(&producer).await.expect("producer connect");
-    let publisher = producer.publisher();
+    let producer = LapinBroker::new(url.to_owned())
+        .connect()
+        .await
+        .expect("producer connect");
+    let publisher = producer.publisher(LapinPublish::default());
     for round in 0..KEYED_PER_TENANT {
         for tenant in 0..KEYED_TENANTS {
             let id = (round * KEYED_TENANTS + tenant) as u64;
@@ -699,8 +732,11 @@ async fn keyed_lanes_pin_each_partition_to_one_ordered_worker() {
 async fn subscribe_fails_without_declaration_when_queue_is_missing() {
     let Some(url) = amqp_url() else { return };
     // No declare_topology: the framework must not create infrastructure on its own.
-    let broker = LapinBroker::new(url).declare_topology(false);
-    Broker::connect(&broker).await.expect("connect");
+    let broker = LapinBroker::new(url)
+        .declare_topology(false)
+        .connect()
+        .await
+        .expect("connect");
 
     let queue = unique("missing");
     let result = broker.subscribe(RabbitQueue::new(&queue)).await;

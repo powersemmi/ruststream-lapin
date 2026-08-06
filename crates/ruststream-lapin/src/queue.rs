@@ -3,7 +3,7 @@
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::SubscriptionSource;
 
-use crate::broker::LapinBroker;
+use crate::broker::ConnectedLapinBroker;
 use crate::delay::Delay;
 use crate::error::AmqpError;
 use crate::exchange::RabbitExchange;
@@ -35,7 +35,7 @@ impl QueueType {
 ///
 /// Descriptors describe the EXPECTED topology for routing; by default nothing is created on the
 /// broker (managing infrastructure is the user's job). Opt in to declaration per broker with
-/// [`declare_topology(true)`](LapinBroker::declare_topology).
+/// [`declare_topology(true)`](crate::LapinBroker::declare_topology).
 ///
 /// # Examples
 ///
@@ -100,7 +100,7 @@ impl RabbitQueue {
     }
 
     /// The queue type to declare, overriding the broker-wide
-    /// [`default_queue_type`](LapinBroker::default_queue_type).
+    /// [`default_queue_type`](crate::LapinBroker::default_queue_type).
     ///
     /// When neither is set no `x-queue-type` argument is sent and the server default applies.
     #[must_use]
@@ -162,7 +162,7 @@ impl RabbitQueue {
     }
 
     /// Caps unacknowledged deliveries in flight for this subscription (`basic.qos`),
-    /// overriding the broker-wide [`prefetch`](LapinBroker::prefetch).
+    /// overriding the broker-wide [`prefetch`](crate::LapinBroker::prefetch).
     ///
     /// This is the back-pressure window for the subscriber stream. When neither is set the
     /// server imposes no prefetch limit.
@@ -181,7 +181,7 @@ impl RabbitQueue {
     /// to this queue when it fires, so the delayed copy lives on the broker.
     ///
     /// The waiting queue is infrastructure: it is declared only when the broker opts into
-    /// [`declare_topology`](LapinBroker::declare_topology); otherwise provision it yourself.
+    /// [`declare_topology`](crate::LapinBroker::declare_topology); otherwise provision it yourself.
     #[must_use]
     pub fn delay(mut self, delay: Delay) -> Self {
         self.delay = Some(delay);
@@ -227,20 +227,23 @@ impl RabbitQueue {
     }
 }
 
-impl SubscriptionSource<LapinBroker> for RabbitQueue {
+impl SubscriptionSource<ConnectedLapinBroker> for RabbitQueue {
     type Subscriber = LapinSubscriber;
 
     fn name(&self) -> &str {
         &self.name
     }
 
-    async fn subscribe(self, broker: &LapinBroker) -> Result<Self::Subscriber, AmqpError> {
-        broker.subscribe(self).await
+    async fn subscribe(
+        self,
+        connected: &ConnectedLapinBroker,
+    ) -> Result<Self::Subscriber, AmqpError> {
+        connected.subscribe(self).await
     }
 }
 
 #[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::LapinTestBroker> for RabbitQueue {
+impl SubscriptionSource<crate::testing::ConnectedLapinTestBroker> for RabbitQueue {
     type Subscriber = crate::testing::LapinTestSubscriber;
 
     fn name(&self) -> &str {
@@ -249,8 +252,8 @@ impl SubscriptionSource<crate::testing::LapinTestBroker> for RabbitQueue {
 
     async fn subscribe(
         self,
-        broker: &crate::testing::LapinTestBroker,
+        connected: &crate::testing::ConnectedLapinTestBroker,
     ) -> Result<Self::Subscriber, AmqpError> {
-        broker.subscribe(self.name).await
+        connected.subscribe(self.name).await
     }
 }
