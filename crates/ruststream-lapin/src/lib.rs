@@ -10,7 +10,7 @@
 //! to the publisher's exchange (the default exchange unless configured, where the routing key
 //! addresses the queue with that name).
 //!
-//! Settlement uses the protocol natively, with no republish tricks:
+//! Settlement uses the protocol natively, without client-side republishing:
 //!
 //! - ack sends `basic.ack`
 //! - retry (`nack(true)`) sends `basic.nack` with requeue
