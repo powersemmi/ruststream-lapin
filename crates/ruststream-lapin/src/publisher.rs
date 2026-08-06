@@ -282,7 +282,8 @@ impl TransactionalPublisher for ConfirmsPublisher {
     /// Returns [`AmqpError::Transaction`] when no transaction is open, and
     /// [`AmqpError::Publish`] when any message fails to publish or the broker returns a negative
     /// confirm. Messages already flushed stay published: publisher confirms give durability per
-    /// message, not atomicity across them (use [`ServerTxPublish`] for that).
+    /// message, not atomicity across them (use [`ServerTxPublish`](crate::ServerTxPublish) for
+    /// that).
     async fn commit(&self) -> Result<(), Self::Error> {
         let buffered = {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
