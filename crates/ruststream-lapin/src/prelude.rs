@@ -44,6 +44,22 @@ pub use crate::{
     LapinPublishExt, LapinRequest, QueueType, RabbitExchange, RabbitQueue, ServerTxPublish,
 };
 
+/// The policy vocabulary under prefix-free concept names, so a composition root attaches a policy
+/// by concept instead of by broker.
+///
+/// `Publish` is the plain publish *policy* ([`LapinPublish`]), not the
+/// framework's `runtime::Publish` builder, which a service never names; `Request` is the
+/// request/reply policy. The rule is the manifest principle one layer down: every policy this
+/// broker has appears here under its concept name, and a concept missing from this list is one the
+/// transport does not have.
+///
+/// Mode stays visible. [`ConfirmsPublish`] and [`ServerTxPublish`] are already prefix-free concept
+/// names and keep them - AMQP genuinely has two transactional concepts, and choosing publisher
+/// confirms or server transactions is a decision the include site should show, so only the broker
+/// prefix is dropped, never the distinction. The prefixed originals stay at the crate root for a
+/// file that names more than one broker.
+pub use crate::{LapinPublish as Publish, LapinRequest as Request};
+
 // Deliberately absent, each for its own reason:
 //
 // The `testing` module, which is feature-gated: a test names the broker it fakes explicitly, the

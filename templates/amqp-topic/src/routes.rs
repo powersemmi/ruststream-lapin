@@ -18,7 +18,7 @@ use crate::events;
 /// the reply publisher is what commits that registration; `on_shipment` has no reply, so `include`
 /// commits it on its own. The router is a consuming builder, so the calls chain.
 pub fn events() -> impl RouterDef<LapinBroker> {
-    let recorded = TypedPublisher::new(LapinPublish::default().exchange("events"));
+    let recorded = TypedPublisher::new(Publish::default().exchange("events"));
 
     Router::new()
         .include(events::record)
