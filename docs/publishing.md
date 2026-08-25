@@ -16,6 +16,39 @@ Well-known headers map onto native AMQP properties (`content-type`, `correlation
 `reply-to`, `message-id`); every other header travels in the AMQP header table as a byte string,
 so binary values round-trip.
 
+## Per-message AMQP properties
+
+Core 0.7 unified publishing behind one builder: `message(..)` for a value, `raw(..)` for bytes,
+then `to(..)`, `with_headers(..)`, and `publish()`. The builder is broker-agnostic, so the AMQP
+values that are neither payload nor header have no position in it. This crate adds them in front
+of it, as steps on the publisher itself:
+
+- `with_priority(n)` - the AMQP `priority` property. It orders deliveries on a queue declared
+  with `x-max-priority`; elsewhere the broker just carries it to the consumer.
+- `with_expiration(ttl)` - the per-message `expiration` (TTL). The broker drops the message once
+  the TTL passes without it being consumed, dead-lettering it when the queue says so.
+
+Both come from `LapinPublishExt`, both hand back a publisher the builder continues on, and they
+chain. A handler reaches them by bounding its slot with the trait, and takes the step on the
+publisher it is injected:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_priority.rs:steps"
+```
+
+Headers named `priority` or `expiration` do **not** do this. Every header that is not one of the
+four well-known names travels in the AMQP header table, and RabbitMQ reads neither of these two
+from there, so writing one is a request the broker silently ignores. That is what the steps are
+for.
+
+Two boundaries are worth knowing. A publish that took a step is visible in the broker's publish
+log but is not attributed to the slot under `TestApp` (the slot's capture sits on the core
+publish path), and the in-process test broker has no AMQP frame to carry a property at all - so
+assert on properties against a real broker. Inside a transaction the steps work on the borrowed
+form: `begin_transaction` / `commit` around a stepped publish keeps the properties through the
+buffer. An owned transaction takes the message as the core trait hands it over and has no
+property position, so no step goes in front of `transaction()`.
+
 ## Replying from a handler
 
 The framework's `publish(..)` form works unchanged: the handler returns the reply value and the

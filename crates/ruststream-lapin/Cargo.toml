@@ -58,6 +58,9 @@ name = "lapin_topology"
 name = "lapin_transactions"
 
 [[example]]
+name = "lapin_priority"
+
+[[example]]
 name = "lapin_rpc_server"
 
 [[example]]
