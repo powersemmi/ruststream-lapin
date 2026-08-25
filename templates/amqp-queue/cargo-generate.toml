@@ -4,5 +4,9 @@
 #   cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-queue --name my-service
 #
 # `{{project-name}}` (the --name value) is a cargo-generate built-in; no placeholders need declaring.
+#
+# The manifest is checked in as `Cargo.toml.liquid`, and cargo-generate drops the suffix once it has
+# rendered it: cargo parses every `Cargo.toml` in a repository when it walks a git source, `exclude`
+# and all, and the placeholder package name makes it reject this one.
 [template]
 description = "A RabbitMQ work-queue (default-exchange, competing-consumers) RustStream starter service"
