@@ -9,7 +9,7 @@ the handlers.
 
 ```toml
 [dev-dependencies]
-ruststream-lapin = { version = "0.6", features = ["testing"] }
+ruststream-lapin = { version = "0.7", features = ["testing"] }
 ```
 
 ```rust

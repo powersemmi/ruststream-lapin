@@ -7,8 +7,8 @@ requeues, and dead-lettering are protocol frames rather than client-side republi
 in-process test broker ships under the `testing` feature.
 
 ```toml
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-lapin = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-lapin = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
