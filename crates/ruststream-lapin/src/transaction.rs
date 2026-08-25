@@ -86,9 +86,7 @@ impl Transaction for ConfirmsTransaction {
     /// Infallible in practice: buffering is local to this value, and a closed connection or a
     /// rejected frame surfaces at the commit, which is the visibility point.
     async fn publish(&mut self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        // An owned transaction buffers the message as the core trait hands it over, so there is
-        // no per-message property position here; that is why the publish steps of
-        // [`LapinPublishExt`](crate::LapinPublishExt) sit in front of the borrowed form instead.
+        // The core trait hands over the message alone, so a publish step has no position here.
         self.buffered
             .push(Buffered::new(&msg, &MessageProperties::default()));
         Ok(())

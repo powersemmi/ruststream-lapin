@@ -4,8 +4,8 @@
 //! them where the protocol puts them; every other header lands in the `headers` field table as a
 //! `LongString` (an arbitrary byte string, so binary values survive the round trip).
 //!
-//! The properties that are not named by a header come from the publish step the call took (see
-//! [`crate::publish_step`]) and are written last, on top of whatever the headers resolved to.
+//! The properties a [publish step](crate::publish_step) carries are written last, over whatever
+//! the headers resolved to.
 
 use std::time::Duration;
 
@@ -35,8 +35,7 @@ pub(crate) fn short(value: &str, what: &str) -> Result<ShortString, AmqpError> {
 /// Renders `ttl` as the decimal milliseconds AMQP carries in the `expiration` property.
 pub(crate) fn expiration_millis(ttl: Duration) -> ShortString {
     let millis = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
-    // Rounding a sub-millisecond TTL down to zero would ask the broker to drop the message
-    // unless a consumer is already waiting, which is not what the caller asked for.
+    // Zero means "drop unless a consumer is already waiting", so a non-zero TTL never rounds to it.
     let millis = if millis == 0 && !ttl.is_zero() {
         1
     } else {

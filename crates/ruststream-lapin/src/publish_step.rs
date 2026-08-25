@@ -1,11 +1,8 @@
 //! Per-message AMQP properties, taken as steps on a live publisher.
 //!
-//! Core's publish builder is broker-agnostic: it resolves the destination, the codec and the
-//! headers, then hands the broker one [`OutgoingMessage`]. AMQP carries two per-message values
-//! that are neither payload nor header - the `priority` and the `expiration` (TTL) properties -
-//! and a header of that name does not reach either: it travels in the AMQP header table, which
-//! the broker reads for neither purpose. [`LapinPublishExt`] puts them where the protocol keeps
-//! them, as steps taken on the publisher before the builder starts:
+//! [`LapinPublishExt`] sets the `priority` and `expiration` (TTL) properties on the frame, before
+//! the publish builder starts. A header of either name does not reach them: it travels in the AMQP
+//! header table, which the broker reads for neither purpose.
 //!
 //! ```text
 //! publisher.with_priority(3).raw(b"{}").to("orders").publish().await?;
@@ -22,10 +19,10 @@ use crate::convert;
 pub(crate) use self::sealed::NativePublish;
 
 /// The per-message AMQP properties a step carries; an unset one leaves the property off the
-/// frame, exactly as a publish without any step does.
+/// frame.
 ///
-/// Public only because it rides in the signature of the sealed [`NativePublish`], which is
-/// itself unnameable outside this crate; nothing outside can construct or read one.
+/// Reachable only through the sealed [`NativePublish`], so nothing outside this crate can
+/// construct or read one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MessageProperties {
     pub(crate) priority: Option<u8>,
@@ -39,13 +36,10 @@ mod sealed {
 
     use super::MessageProperties;
 
-    /// Publishing an [`OutgoingMessage`] with per-message AMQP properties written onto the
-    /// frame, which is the whole of what a step needs from the publisher underneath it.
+    /// Publishing an [`OutgoingMessage`] with per-message AMQP properties written onto the frame.
     ///
-    /// Implemented for this crate's live publishers and for the `Out` slot wrapper around them,
-    /// and unnameable outside the crate, so it seals
-    /// [`LapinPublishExt`](super::LapinPublishExt): a step cannot be taken on a publisher whose
-    /// transport has no such properties to write.
+    /// Implemented for this crate's live publishers and the `Out` slot wrapper around them, and
+    /// unnameable outside the crate, so it seals [`LapinPublishExt`](super::LapinPublishExt).
     pub trait NativePublish: Publisher {
         /// Publishes `msg`, applying `properties` to the AMQP frame.
         fn publish_native(
@@ -59,9 +53,8 @@ mod sealed {
 /// A publisher with per-message AMQP properties attached, produced by the steps of
 /// [`LapinPublishExt`].
 ///
-/// It is a [`Publisher`] itself, so core's publish builder rides on it unchanged: the step is
-/// taken first, and `message(..)` / `raw(..)` follow as they would on the publisher itself. The
-/// steps chain, each one filling its own property.
+/// It is a [`Publisher`] itself: `message(..)` / `raw(..)` follow the step as they would on the
+/// publisher, and the steps chain, each filling its own property.
 ///
 /// # Examples
 ///
@@ -135,9 +128,8 @@ impl<'a, P: NativePublish + ?Sized> WithProperties<'a, P> {
     /// Sets the AMQP per-message `expiration` property: the broker drops the message once `ttl`
     /// has passed without it being consumed (dead-lettering it when the queue says so).
     ///
-    /// AMQP counts the TTL in whole milliseconds, so a shorter non-zero `ttl` becomes one
-    /// millisecond rather than the zero that would mean "drop unless a consumer is already
-    /// waiting".
+    /// AMQP counts the TTL in whole milliseconds; a shorter non-zero `ttl` becomes one
+    /// millisecond.
     ///
     /// # Examples
     ///
@@ -184,8 +176,8 @@ impl<P: NativePublish + ?Sized> Publisher for WithProperties<'_, P> {
     }
 }
 
-/// The borrowed transaction form composes with a step: begin and commit reach the publisher
-/// underneath, and every message buffered through the step keeps its properties.
+/// Begin and commit reach the publisher underneath, and every message buffered through the step
+/// keeps its properties.
 impl<P: NativePublish + TransactionalPublisher + ?Sized> TransactionalPublisher
     for WithProperties<'_, P>
 {
@@ -217,33 +209,26 @@ impl<P: NativePublish + TransactionalPublisher + ?Sized> TransactionalPublisher
     }
 }
 
-/// The publish steps of this broker: the per-message AMQP properties core's publish builder has
-/// no position for.
+/// The per-message AMQP properties, as steps on a live publisher.
 ///
-/// Both steps are taken on a live publisher and hand back a [`WithProperties`], on which the
-/// builder continues unchanged - so the whole publish reads as one chain:
+/// Each step hands back a [`WithProperties`] the builder continues on, so a publish reads as one
+/// chain:
 ///
 /// ```text
 /// publisher.with_priority(3).message(&command).publish().await?;
 /// ```
 ///
-/// A header named `priority` or `expiration` does *not* do this. Headers travel in the AMQP
-/// header table, and the broker reads neither of these from there, so writing one is a request
-/// the broker silently ignores. That is what these steps are for.
+/// A header named `priority` or `expiration` does not set these properties: headers travel in the
+/// AMQP header table, which the broker reads for neither purpose.
 ///
-/// Two boundaries are worth knowing:
+/// Where a step does not reach:
 ///
-/// * An owned transaction ([`OwnedTransactions`](ruststream::OwnedTransactions)) fills its
-///   buffer through [`Transaction::publish`](ruststream::Transaction::publish), which takes the
-///   message itself and has no property position, so a step does not reach into one - hence no
-///   step in front of `transaction()`. The borrowed form
-///   ([`TransactionalPublisher`]) does compose: publish through the step between `begin` and
-///   `commit` and the properties are kept.
-/// * A publish that takes a step inside a `TestApp`-driven handler lands on the broker's publish
-///   log, but is not attributed to the [`Out`](ruststream::runtime::Out) slot it went through:
-///   the slot's capture sits on the core publish path only. The in-process test broker has no
-///   AMQP frame at all, so a step there is carried nowhere; assert on properties against a real
-///   broker.
+/// * an owned transaction ([`OwnedTransactions`](ruststream::OwnedTransactions)) - take the step
+///   between `begin` and `commit` on the borrowed form ([`TransactionalPublisher`]) instead, which
+///   keeps the properties;
+/// * a publish inside a `TestApp`-driven handler, which the [`Out`](ruststream::runtime::Out)
+///   slot does not attribute to the slot, and which the in-process test broker carries nowhere -
+///   assert on properties against a real broker.
 ///
 /// # Examples
 ///
@@ -349,9 +334,7 @@ mod tests {
     };
     use crate::error::AmqpError;
 
-    /// A publisher that keeps what the step handed it, so the assertions are about the steps
-    /// alone; what the properties become on an AMQP frame is `convert`'s test, and that they
-    /// reach `RabbitMQ` is the broker-backed suite's.
+    /// A publisher that keeps what the step handed it.
     #[derive(Debug, Default)]
     struct Recorder(Mutex<Vec<MessageProperties>>);
 

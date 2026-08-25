@@ -111,10 +111,8 @@ impl Publisher for LapinTestPublisher {
     }
 }
 
-/// Keeps a handler that takes a publish step compiling and running under the harness. The
-/// in-process router carries a payload and headers between subscriptions and has no AMQP frame
-/// to write a property onto, so the step's properties go nowhere here: assert on them against a
-/// real broker.
+/// Accepts a publish step and drops its properties: the in-process router carries a payload and
+/// headers, and has no AMQP frame to write one onto.
 impl NativePublish for LapinTestPublisher {
     async fn publish_native(
         &self,

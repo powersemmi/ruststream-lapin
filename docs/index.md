@@ -16,8 +16,7 @@ serde = { version = "1", features = ["derive"] }
 same `#[ruststream::app]` macro as any other broker. The runtime connects the broker once at
 startup, before opening subscriptions; connecting consumes the broker and yields
 `ConnectedLapinBroker`, the only value carrying a subscribe or publish surface. A service file
-imports `ruststream_lapin::prelude::*`, which brings the framework's own prelude with it, so one
-glob covers both - and carries exactly the capabilities this broker implements.
+imports `ruststream_lapin::prelude::*`, which brings the framework's own prelude with it.
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_quickstart.rs:handler"

@@ -1,10 +1,6 @@
-//! Per-message AMQP properties from a handler: an expedited order leaves at a higher priority
-//! and with a TTL, through the publish steps this crate puts in front of the core publish
-//! builder.
-//!
-//! The handler names the capability it needs (`Out<impl LapinPublishExt>`) and the concrete
-//! publisher comes from the policy attached at the mount site, so a step is taken on a publisher
-//! that is already live.
+//! Per-message AMQP properties from a handler: an expedited order leaves at a higher priority and
+//! with a TTL. The handler bounds its slot with `LapinPublishExt`; the publisher comes from the
+//! policy attached at the mount site.
 //!
 //! The priority only orders deliveries on a queue declared with `x-max-priority`:
 //!
@@ -34,9 +30,8 @@ struct Shipment {
 }
 
 // --8<-- [start:steps]
-/// An expedited order jumps the queue: `with_priority` writes the AMQP `priority` property, which
-/// orders it ahead of the ordinary shipments, and `with_expiration` gives it an hour to be picked
-/// up before the broker drops it. Written as plain headers, neither value would reach RabbitMQ.
+/// An expedited order jumps the queue: `with_priority` writes the AMQP `priority` property, and
+/// `with_expiration` gives the message an hour before the broker drops it.
 #[subscriber("orders")]
 async fn ship(order: &Order, Out(shipments): Out<impl LapinPublishExt>) -> HandlerResult {
     let shipment = Shipment { order_id: order.id };

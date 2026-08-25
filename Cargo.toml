@@ -2,10 +2,9 @@
 resolver = "3"
 members = ["crates/ruststream-lapin"]
 # cargo-generate scaffolds: their sources carry `{{project-name}}` placeholders that are not valid
-# Rust/TOML until rendered, so they stay out of the workspace. `exclude` alone is not enough:
-# cargo's git-source package discovery ignores it and parses every `Cargo.toml` in the repository,
-# which is why the scaffold manifests are named `Cargo.toml.liquid` (cargo-generate drops the
-# suffix when it renders them).
+# Rust/TOML until rendered, so they stay out of the workspace. The scaffold manifests are named
+# `Cargo.toml.liquid` on top of that: git-source package discovery ignores `exclude` and parses
+# every `Cargo.toml` in the repository.
 exclude = ["templates"]
 
 [workspace.package]

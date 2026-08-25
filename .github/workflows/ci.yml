@@ -128,23 +128,18 @@ jobs:
       - name: Resolve minimal versions
         run: cargo +nightly update -Z minimal-versions
 
-      # Too-loose bounds in third-party manifests, all of them under the AMQP transport. Drop
-      # each one when the crate that declares it moves its own floor.
-      #
-      # der-parser declares `num-bigint = "0.4"`, but 0.4.0 calls `div_ceil` by reference, which
-      # stopped compiling when the inherent `u64::div_ceil` was stabilized.
-      # native-tls declares `openssl = "0.10.29"`, and neither 0.10.29 nor its openssl-sys
-      # predate OpenSSL 3, so the build script fails against the runner's libssl.
-      # async-rs declares `tokio-stream = "0.1"` but imports `tokio_stream::wrappers`, added in
-      # 0.1.2.
-      # tcp-stream declares `native-tls = "0.2"` but calls `Identity::from_pkcs8`, added in
-      # 0.2.9.
+      # Too-loose bounds in third-party manifests under the AMQP transport. Drop each pin when the
+      # crate that declares the bound moves its own floor.
       - name: Pin dependencies whose declared bounds are too loose
         run: |
+          # der-parser on num-bigint: 0.4.0 calls `div_ceil` by reference.
           cargo update -p num-bigint --precise 0.4.4
+          # native-tls on openssl: 0.10.29 and its openssl-sys predate OpenSSL 3.
           cargo update -p openssl-sys --precise 0.9.107
           cargo update -p openssl --precise 0.10.72
+          # async-rs imports `tokio_stream::wrappers`, added in 0.1.2.
           cargo update -p tokio-stream --precise 0.1.2
+          # tcp-stream calls `Identity::from_pkcs8`, added in 0.2.9.
           cargo update -p native-tls --precise 0.2.9
 
       # Minimum dependencies on the minimum compiler: the worst case a user can assemble.
@@ -248,9 +243,8 @@ jobs:
             mkdir -p "$dest"
             cargo generate --path "templates/$tpl" \
               --name smoke --destination "$dest" --vcs none
-            # The scaffold manifest is checked in as `Cargo.toml.liquid` so that cargo's git-source
-            # package discovery never parses its placeholder name. Assert that cargo-generate did
-            # drop the suffix, otherwise the append below would quietly write a manifest of its own.
+            # Assert cargo-generate dropped the `.liquid` suffix; without the manifest the append
+            # below would write one of its own.
             test -f "$dest/smoke/Cargo.toml"
             {
               echo ""
