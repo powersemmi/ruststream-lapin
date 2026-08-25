@@ -6,8 +6,7 @@
 //! routing key is the queue name and consumers on the same queue compete for deliveries. Each
 //! delivery is `basic.ack`ed when the handler returns `Ack`.
 
-use ruststream::runtime::HandlerResult;
-use ruststream::subscriber;
+use ruststream_lapin::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

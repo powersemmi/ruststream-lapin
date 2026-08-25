@@ -18,9 +18,7 @@
 
 use std::time::Duration;
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, Out, PublishExt, RustStream};
-use ruststream::{Outgoing, subscriber};
-use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishExt};
+use ruststream_lapin::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]

@@ -2,6 +2,9 @@
 //! [RustStream](https://github.com/powersemmi/ruststream) messaging framework, backed by
 //! [`lapin`].
 //!
+//! A service imports [`prelude`] and has both this crate's vocabulary and the framework's own
+//! prelude in scope from that one glob.
+//!
 //! # Transport model
 //!
 //! A subscription consumes one queue; [`RabbitQueue`] describes the queue and its bindings, and
@@ -54,6 +57,7 @@ mod topology;
 mod transaction;
 
 pub mod context;
+pub mod prelude;
 #[cfg(feature = "testing")]
 pub mod testing;
 

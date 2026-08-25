@@ -7,12 +7,10 @@
 //! cargo run --example lapin_consistent_hash --features plugin-consistent-hash -- run
 //! ```
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
 use serde::Deserialize;
 
 // --8<-- [start:shards]
-use ruststream_lapin::{LapinBroker, RabbitExchange, RabbitQueue};
+use ruststream_lapin::prelude::*;
 
 #[derive(Debug, Deserialize)]
 struct Order {

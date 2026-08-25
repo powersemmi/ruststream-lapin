@@ -14,9 +14,7 @@
 //!
 //! Then start the client service from another terminal (see `lapin_rpc_client`).
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, TypedPublisher};
-use ruststream::subscriber;
-use ruststream_lapin::{DirectReplyTo, LapinBroker, LapinPublish};
+use ruststream_lapin::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]

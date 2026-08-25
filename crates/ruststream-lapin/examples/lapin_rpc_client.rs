@@ -22,10 +22,9 @@
 
 use std::time::Duration;
 
+use ruststream::OutgoingMessage;
 use ruststream::codec::{Codec, JsonCodec};
-use ruststream::runtime::{App, AppInfo, HandlerResult, Out, RustStream};
-use ruststream::{IncomingMessage, OutgoingMessage, RequestReply, subscriber};
-use ruststream_lapin::{LapinBroker, LapinRequest};
+use ruststream_lapin::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]

@@ -22,9 +22,8 @@
 //! ```
 
 // --8<-- [start:handler]
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::{nonzero, subscriber};
-use ruststream_lapin::LapinBroker;
+use ruststream::nonzero;
+use ruststream_lapin::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

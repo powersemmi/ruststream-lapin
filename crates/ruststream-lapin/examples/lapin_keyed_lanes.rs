@@ -7,10 +7,7 @@
 //! cargo run --example lapin_keyed_lanes -- run
 //! ```
 
-use ruststream::runtime::{App, AppInfo, Ctx, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_lapin::context::keys::{Redelivered, RoutingKey};
-use ruststream_lapin::{LapinBroker, RabbitQueue};
+use ruststream_lapin::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

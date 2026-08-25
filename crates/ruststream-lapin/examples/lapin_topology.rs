@@ -11,12 +11,11 @@
 
 use std::time::Duration;
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::{nonzero, subscriber};
+use ruststream::nonzero;
 use serde::Deserialize;
 
 // --8<-- [start:descriptor]
-use ruststream_lapin::{AMQPValue, Delay, LapinBroker, QueueType, RabbitExchange, RabbitQueue};
+use ruststream_lapin::prelude::*;
 
 #[derive(Debug, Deserialize)]
 struct OrderPlaced {

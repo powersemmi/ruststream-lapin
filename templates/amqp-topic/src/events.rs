@@ -5,9 +5,7 @@
 //! `declare_topology(true)` the exchange, queue, and binding are declared when the subscription
 //! opens. Each delivery is `basic.ack`ed when the handler returns `Ack`.
 
-use ruststream::runtime::HandlerResult;
-use ruststream::subscriber;
-use ruststream_lapin::{RabbitExchange, RabbitQueue};
+use ruststream_lapin::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

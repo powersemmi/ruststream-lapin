@@ -8,10 +8,8 @@
 //! cargo run --example lapin_testing --features testing
 //! ```
 
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
 use ruststream::testing::TestApp;
-use ruststream_lapin::RabbitQueue;
+use ruststream_lapin::prelude::*;
 use ruststream_lapin::testing::LapinTestBroker;
 use serde::{Deserialize, Serialize};
 
