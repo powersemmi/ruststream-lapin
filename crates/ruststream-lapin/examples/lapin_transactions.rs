@@ -1,10 +1,10 @@
 //! Transactional publishing from a handler: an order fans out into per-item shipment commands,
-//! published all-or-nothing through a confirm-transactional publisher the runtime injects into
-//! the handler.
+//! published all-or-nothing through the transactional publisher the runtime injects into the
+//! handler.
 //!
-//! The publisher is declared as a policy at the mount site (`.publisher(..)`) and arrives in the
-//! handler as an `Out` parameter, already live: a handler never sees a publisher without a
-//! connection.
+//! The handler names the capability it needs (`Out<impl TransactionalPublisher>`); the concrete
+//! publisher comes from the policy declared at the mount site (`.publisher(..)`) and arrives
+//! already live, so a handler never sees a publisher without a connection.
 //!
 //! Two `TransactionalPublisher` implementations share the same
 //! `begin / publish / commit / abort` surface, picked on the policy:
@@ -21,8 +21,8 @@
 
 use ruststream::codec::{Codec, JsonCodec};
 use ruststream::runtime::{App, AppInfo, HandlerResult, Out, RustStream};
-use ruststream::{OutgoingMessage, Publisher, TransactionalPublisher, subscriber};
-use ruststream_lapin::{AmqpError, ConfirmsPublisher, LapinBroker, LapinPublish};
+use ruststream::{OutgoingMessage, TransactionalPublisher, subscriber};
+use ruststream_lapin::{LapinBroker, LapinPublish};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -40,7 +40,10 @@ struct ItemShipment {
 // --8<-- [start:dispatch]
 /// Publishes one shipment command per item, all-or-nothing: commit resolves only after the
 /// broker confirmed every message, and any failure aborts so shipments are never half-visible.
-async fn dispatch(publisher: &ConfirmsPublisher, order: &Order) -> Result<(), AmqpError> {
+async fn dispatch<P>(publisher: &P, order: &Order) -> Result<(), P::Error>
+where
+    P: TransactionalPublisher,
+{
     publisher.begin_transaction().await?;
     for item in &order.items {
         let command = ItemShipment {
@@ -60,7 +63,7 @@ async fn dispatch(publisher: &ConfirmsPublisher, order: &Order) -> Result<(), Am
 
 // --8<-- [start:handler]
 #[subscriber("orders")]
-async fn ship(order: &Order, Out(shipments): Out<ConfirmsPublisher>) -> HandlerResult {
+async fn ship(order: &Order, Out(shipments): Out<impl TransactionalPublisher>) -> HandlerResult {
     if dispatch(shipments, order).await.is_err() {
         // Nothing was committed; ask for redelivery and try the whole fan-out again.
         return HandlerResult::retry();
