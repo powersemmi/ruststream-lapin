@@ -3,6 +3,11 @@
 //! Well-known header names ride in the matching native AMQP property so external consumers see
 //! them where the protocol puts them; every other header lands in the `headers` field table as a
 //! `LongString` (an arbitrary byte string, so binary values survive the round trip).
+//!
+//! The properties that are not named by a header come from the publish step the call took (see
+//! [`crate::publish_step`]) and are written last, on top of whatever the headers resolved to.
+
+use std::time::Duration;
 
 use bytes::Bytes;
 use lapin::BasicProperties;
@@ -10,6 +15,7 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::Headers;
 
 use crate::error::AmqpError;
+use crate::publish_step::MessageProperties;
 
 /// Delivery mode 2 marks a message persistent; 1 is transient.
 const PERSISTENT: u8 = 2;
@@ -26,10 +32,25 @@ pub(crate) fn short(value: &str, what: &str) -> Result<ShortString, AmqpError> {
     })
 }
 
-/// Builds publish properties from `headers`, routing well-known names into native properties.
+/// Renders `ttl` as the decimal milliseconds AMQP carries in the `expiration` property.
+pub(crate) fn expiration_millis(ttl: Duration) -> ShortString {
+    let millis = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
+    // Rounding a sub-millisecond TTL down to zero would ask the broker to drop the message
+    // unless a consumer is already waiting, which is not what the caller asked for.
+    let millis = if millis == 0 && !ttl.is_zero() {
+        1
+    } else {
+        millis
+    };
+    ShortString::from(millis.to_string())
+}
+
+/// Builds publish properties from `headers`, routing well-known names into native properties,
+/// and applies the per-message properties the publish step carried.
 pub(crate) fn properties_for_publish(
     headers: &Headers,
     persistent: bool,
+    step: &MessageProperties,
 ) -> Result<BasicProperties, AmqpError> {
     let mut properties = BasicProperties::default().with_delivery_mode(if persistent {
         PERSISTENT
@@ -62,6 +83,13 @@ pub(crate) fn properties_for_publish(
     }
     if !table.inner().is_empty() {
         properties = properties.with_headers(table);
+    }
+
+    if let Some(priority) = step.priority {
+        properties = properties.with_priority(priority);
+    }
+    if let Some(expiration) = &step.expiration {
+        properties = properties.with_expiration(expiration.clone());
     }
 
     Ok(properties)
@@ -119,6 +147,11 @@ pub(crate) fn headers_from_properties(properties: &BasicProperties) -> Headers {
 mod tests {
     use super::*;
 
+    /// The publish of a call that took no step.
+    fn no_step() -> MessageProperties {
+        MessageProperties::default()
+    }
+
     #[test]
     fn round_trips_well_known_and_custom_headers() {
         let headers: Headers = [
@@ -131,7 +164,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let properties = properties_for_publish(&headers, true).expect("valid headers");
+        let properties = properties_for_publish(&headers, true, &no_step()).expect("valid headers");
         assert_eq!(
             properties.content_type().as_ref().map(ShortString::as_str),
             Some("application/json")
@@ -151,7 +184,8 @@ mod tests {
         let mut headers = Headers::new();
         headers.insert("x-blob", Bytes::from_static(&[0u8, 159, 146, 150]));
 
-        let properties = properties_for_publish(&headers, false).expect("valid headers");
+        let properties =
+            properties_for_publish(&headers, false, &no_step()).expect("valid headers");
         let back = headers_from_properties(&properties);
         assert_eq!(back.get("x-blob"), Some([0u8, 159, 146, 150].as_slice()));
         assert_eq!(properties.delivery_mode(), &Some(TRANSIENT));
@@ -162,7 +196,54 @@ mod tests {
         let mut headers = Headers::new();
         headers.insert("correlation-id", vec![b'x'; 300]);
 
-        let err = properties_for_publish(&headers, true).expect_err("over 255 bytes");
+        let err = properties_for_publish(&headers, true, &no_step()).expect_err("over 255 bytes");
         assert!(matches!(err, AmqpError::InvalidOptions(_)));
+    }
+
+    #[test]
+    fn step_properties_land_on_the_native_fields() {
+        let step = MessageProperties {
+            priority: Some(7),
+            expiration: Some(expiration_millis(Duration::from_secs(30))),
+        };
+
+        let properties =
+            properties_for_publish(&Headers::new(), true, &step).expect("valid properties");
+        assert_eq!(properties.priority(), &Some(7));
+        assert_eq!(
+            properties.expiration().as_ref().map(ShortString::as_str),
+            Some("30000")
+        );
+    }
+
+    #[test]
+    fn priority_and_expiration_headers_stay_in_the_table() {
+        // The quiet failure the publish steps exist for: written as headers, both names travel
+        // in the header table, where RabbitMQ reads neither of them.
+        let headers: Headers = [
+            ("priority", b"7".as_slice()),
+            ("expiration", b"30000".as_slice()),
+        ]
+        .into_iter()
+        .collect();
+
+        let properties = properties_for_publish(&headers, true, &no_step()).expect("valid headers");
+        assert_eq!(properties.priority(), &None);
+        assert_eq!(properties.expiration(), &None);
+        let table = properties.headers().as_ref().expect("header table");
+        assert!(table.inner().contains_key("priority"));
+        assert!(table.inner().contains_key("expiration"));
+    }
+
+    #[test]
+    fn expiration_renders_whole_milliseconds() {
+        assert_eq!(
+            expiration_millis(Duration::from_millis(1500)).as_str(),
+            "1500"
+        );
+        assert_eq!(expiration_millis(Duration::from_secs(2)).as_str(), "2000");
+        assert_eq!(expiration_millis(Duration::ZERO).as_str(), "0");
+        // A non-zero TTL never rounds down into "drop unless a consumer is already waiting".
+        assert_eq!(expiration_millis(Duration::from_micros(500)).as_str(), "1");
     }
 }

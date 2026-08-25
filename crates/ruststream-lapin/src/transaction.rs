@@ -6,11 +6,11 @@
 //! borrowed [`TransactionalPublisher`](ruststream::TransactionalPublisher) the publisher also
 //! implements.
 
-use bytes::Bytes;
 use ruststream::{OutgoingMessage, OwnedTransactions, Transaction};
 use tracing::warn;
 
 use crate::error::AmqpError;
+use crate::publish_step::MessageProperties;
 use crate::publisher::{Buffered, ConfirmsPublisher};
 
 /// An owned confirm-transaction, opened by
@@ -86,11 +86,11 @@ impl Transaction for ConfirmsTransaction {
     /// Infallible in practice: buffering is local to this value, and a closed connection or a
     /// rejected frame surfaces at the commit, which is the visibility point.
     async fn publish(&mut self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        self.buffered.push((
-            msg.name().to_owned(),
-            Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
-        ));
+        // An owned transaction buffers the message as the core trait hands it over, so there is
+        // no per-message property position here; that is why the publish steps of
+        // [`LapinPublishExt`](crate::LapinPublishExt) sit in front of the borrowed form instead.
+        self.buffered
+            .push(Buffered::new(&msg, &MessageProperties::default()));
         Ok(())
     }
 

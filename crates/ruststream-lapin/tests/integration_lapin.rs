@@ -21,15 +21,15 @@ use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use tokio::sync::Notify;
 
-use ruststream::runtime::{AppInfo, Ctx, HandlerResult, RustStream, State};
+use ruststream::runtime::{AppInfo, Ctx, HandlerResult, PublishExt, RustStream, State};
 use ruststream::{
     Broker, ConnectedBroker, FromRef, Headers, IncomingMessage, OutgoingMessage, Partitioned,
-    Publisher, Subscriber, nonzero, subscriber,
+    Publisher, Subscriber, TransactionalPublisher, nonzero, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
-    Delay, LapinBroker, LapinMessage, LapinPublish, PARTITION_KEY_HEADER, QueueType,
-    RabbitExchange, RabbitQueue,
+    Delay, LapinBroker, LapinMessage, LapinPublish, LapinPublishExt, PARTITION_KEY_HEADER,
+    QueueType, RabbitExchange, RabbitQueue,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -873,4 +873,154 @@ async fn ctx_extractors_inject_delivery_fields() {
             "delivery tags must be channel-local and increasing",
         );
     }
+}
+
+// The per-message AMQP properties the publish steps exist for. The assertion reads the delivery
+// off a raw lapin consumer rather than through the framework, so it sees the frame the broker
+// stored - which is the whole question - and the contrast case shows what the same names written
+// as plain headers do instead.
+
+/// Declares a durable probe queue on `channel`, removing any leftover from an aborted run.
+async fn declare_probe_queue(channel: &lapin::Channel, queue: &str, max_priority: Option<u8>) {
+    let _ = channel
+        .queue_delete(queue.into(), lapin::options::QueueDeleteOptions::default())
+        .await;
+    let mut arguments = lapin::types::FieldTable::default();
+    if let Some(max_priority) = max_priority {
+        arguments.insert(
+            "x-max-priority".into(),
+            lapin::types::AMQPValue::ShortInt(i16::from(max_priority)),
+        );
+    }
+    channel
+        .queue_declare(
+            queue.into(),
+            lapin::options::QueueDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
+            arguments,
+        )
+        .await
+        .expect("probe queue declare");
+}
+
+async fn next_delivery(consumer: &mut lapin::Consumer) -> lapin::message::Delivery {
+    tokio::time::timeout(WAIT, consumer.next())
+        .await
+        .expect("delivery within timeout")
+        .expect("consumer has next")
+        .expect("delivery ok")
+}
+
+async fn consume_probe_queue(channel: &lapin::Channel, queue: &str) -> lapin::Consumer {
+    channel
+        .basic_consume(
+            queue.into(),
+            lapin::types::ShortString::default(),
+            lapin::options::BasicConsumeOptions {
+                no_ack: true,
+                ..Default::default()
+            },
+            lapin::types::FieldTable::default(),
+        )
+        .await
+        .expect("probe consume")
+}
+
+fn expiration_of(delivery: &lapin::message::Delivery) -> Option<String> {
+    delivery
+        .properties
+        .expiration()
+        .as_ref()
+        .map(|value| value.as_str().to_owned())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_steps_reach_the_native_amqp_properties() {
+    let Some(url) = amqp_url() else { return };
+    let stepped_queue = unique("steps");
+    let headers_queue = unique("steps-headers");
+
+    let inspect = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+        .await
+        .expect("inspect connect");
+    let channel = inspect.create_channel().await.expect("inspect channel");
+    declare_probe_queue(&channel, &stepped_queue, Some(10)).await;
+    declare_probe_queue(&channel, &headers_queue, None).await;
+    let mut stepped = consume_probe_queue(&channel, &stepped_queue).await;
+    let mut headered = consume_probe_queue(&channel, &headers_queue).await;
+
+    let broker = LapinBroker::new(url).connect().await.expect("connect");
+    // Confirms, so every publish below has reached the broker once it resolves.
+    let publisher = broker.publisher(LapinPublish::default().confirms());
+
+    publisher
+        .with_priority(4)
+        .with_expiration(Duration::from_secs(60))
+        .raw(b"{\"id\":1}")
+        .to(&stepped_queue)
+        .publish()
+        .await
+        .expect("publish with steps");
+
+    let delivery = next_delivery(&mut stepped).await;
+    assert_eq!(delivery.data, b"{\"id\":1}");
+    assert_eq!(delivery.properties.priority(), &Some(4));
+    assert_eq!(expiration_of(&delivery).as_deref(), Some("60000"));
+
+    // The borrowed transaction form keeps the properties across the client-side buffer.
+    publisher.begin_transaction().await.expect("begin");
+    publisher
+        .with_priority(9)
+        .raw(b"{\"id\":2}")
+        .to(&stepped_queue)
+        .publish()
+        .await
+        .expect("publish into the transaction");
+    publisher.commit().await.expect("commit");
+
+    let delivery = next_delivery(&mut stepped).await;
+    assert_eq!(delivery.data, b"{\"id\":2}");
+    assert_eq!(delivery.properties.priority(), &Some(9));
+
+    // The same names as plain headers: they travel in the header table, and neither property is
+    // set - which is exactly what the steps exist to fix.
+    let mut headers = Headers::new();
+    headers.insert("priority", "4");
+    headers.insert("expiration", "60000");
+    publisher
+        .raw(b"{\"id\":3}")
+        .with_headers(headers)
+        .to(&headers_queue)
+        .publish()
+        .await
+        .expect("publish with headers");
+
+    let delivery = next_delivery(&mut headered).await;
+    assert_eq!(delivery.data, b"{\"id\":3}");
+    assert_eq!(delivery.properties.priority(), &None);
+    assert_eq!(expiration_of(&delivery), None);
+    let table = delivery
+        .properties
+        .headers()
+        .as_ref()
+        .expect("header table");
+    assert!(table.inner().contains_key("priority"));
+    assert!(table.inner().contains_key("expiration"));
+
+    broker.shutdown().await.expect("shutdown");
+    for queue in [&stepped_queue, &headers_queue] {
+        channel
+            .queue_delete(
+                queue.as_str().into(),
+                lapin::options::QueueDeleteOptions::default(),
+            )
+            .await
+            .expect("cleanup queue delete");
+    }
+    inspect
+        .close(200, "OK".into())
+        .await
+        .expect("inspect close");
 }

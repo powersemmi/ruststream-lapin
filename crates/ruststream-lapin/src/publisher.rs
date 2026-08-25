@@ -16,9 +16,28 @@ use crate::broker::{AmqpConnection, ConnectedLapinBroker};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::publish_policy::PublishOptions;
+use crate::publish_step::{MessageProperties, NativePublish};
 
-/// One buffered publish: routing key, payload, headers.
-pub(crate) type Buffered = (String, Bytes, Headers);
+/// One buffered publish: everything the flush needs to rebuild the frame the caller asked for,
+/// the publish step's per-message properties included.
+#[derive(Debug, Clone)]
+pub(crate) struct Buffered {
+    pub(crate) routing_key: String,
+    pub(crate) payload: Bytes,
+    pub(crate) headers: Headers,
+    pub(crate) properties: MessageProperties,
+}
+
+impl Buffered {
+    pub(crate) fn new(msg: &OutgoingMessage<'_>, properties: &MessageProperties) -> Self {
+        Self {
+            routing_key: msg.name().to_owned(),
+            payload: Bytes::copy_from_slice(msg.payload()),
+            headers: msg.headers().clone(),
+            properties: properties.clone(),
+        }
+    }
+}
 
 pub(crate) async fn do_publish(
     channel: &Channel,
@@ -74,8 +93,20 @@ impl Publisher for LapinPublisher {
     ///
     /// Not cancel safe: dropping the future may leave the message published or not.
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+        self.publish_native(msg, &MessageProperties::default())
+            .await
+    }
+}
+
+impl NativePublish for LapinPublisher {
+    async fn publish_native(
+        &self,
+        msg: OutgoingMessage<'_>,
+        step: &MessageProperties,
+    ) -> Result<(), Self::Error> {
         let channel = self.conn.live_publish_channel(msg.name())?;
-        let properties = convert::properties_for_publish(msg.headers(), self.options.persistent)?;
+        let properties =
+            convert::properties_for_publish(msg.headers(), self.options.persistent, step)?;
         // Without confirm_select on the channel the returned confirm resolves to NotRequested;
         // dropping it does not lose anything.
         let _confirm = do_publish(
@@ -159,24 +190,28 @@ impl ConfirmsPublisher {
     pub(crate) async fn flush_owned(&self, buffered: &[Buffered]) -> Result<(), AmqpError> {
         // The whole buffer rides one channel; the first routing key names the flush in any
         // connection-level diagnostic.
-        let Some((first_key, _, _)) = buffered.first() else {
+        let Some(first) = buffered.first() else {
             return Ok(());
         };
-        self.conn.ensure_live(first_key)?;
-        let channel = self.channel(first_key).await?;
+        self.conn.ensure_live(&first.routing_key)?;
+        let channel = self.channel(&first.routing_key).await?;
 
         let mut confirms = Vec::with_capacity(buffered.len());
-        for (routing_key, payload, headers) in buffered {
-            let properties = convert::properties_for_publish(headers, self.options.persistent)?;
+        for entry in buffered {
+            let properties = convert::properties_for_publish(
+                &entry.headers,
+                self.options.persistent,
+                &entry.properties,
+            )?;
             let confirm = do_publish(
                 channel,
                 &self.options.exchange,
-                routing_key,
-                payload,
+                &entry.routing_key,
+                &entry.payload,
                 properties,
             )
             .await?;
-            confirms.push((routing_key, confirm));
+            confirms.push((&entry.routing_key, confirm));
         }
         for (routing_key, confirm) in confirms {
             let confirmation = confirm.await.map_err(AmqpError::publish)?;
@@ -190,10 +225,11 @@ impl ConfirmsPublisher {
         routing_key: &str,
         payload: &[u8],
         headers: &Headers,
+        step: &MessageProperties,
     ) -> Result<(), AmqpError> {
         self.conn.ensure_live(routing_key)?;
         let channel = self.channel(routing_key).await?;
-        let properties = convert::properties_for_publish(headers, self.options.persistent)?;
+        let properties = convert::properties_for_publish(headers, self.options.persistent, step)?;
         let confirm = do_publish(
             channel,
             &self.options.exchange,
@@ -233,18 +269,25 @@ impl Publisher for ConfirmsPublisher {
     /// published but unconfirmed. Inside a transaction buffering is synchronous and dropping the
     /// future is harmless.
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+        self.publish_native(msg, &MessageProperties::default())
+            .await
+    }
+}
+
+impl NativePublish for ConfirmsPublisher {
+    async fn publish_native(
+        &self,
+        msg: OutgoingMessage<'_>,
+        step: &MessageProperties,
+    ) -> Result<(), Self::Error> {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push((
-                    msg.name().to_owned(),
-                    Bytes::copy_from_slice(msg.payload()),
-                    msg.headers().clone(),
-                ));
+                buffer.push(Buffered::new(&msg, step));
                 return Ok(());
             }
         }
-        self.publish_confirmed(msg.name(), msg.payload(), msg.headers())
+        self.publish_confirmed(msg.name(), msg.payload(), msg.headers(), step)
             .await
     }
 }
@@ -298,21 +341,25 @@ impl TransactionalPublisher for ConfirmsPublisher {
             return Ok(());
         }
 
-        let target = buffered[0].0.as_str();
+        let target = buffered[0].routing_key.as_str();
         self.conn.ensure_live(target)?;
         let channel = self.channel(target).await?;
         let mut confirms = Vec::with_capacity(buffered.len());
-        for (routing_key, payload, headers) in &buffered {
-            let properties = convert::properties_for_publish(headers, self.options.persistent)?;
+        for entry in &buffered {
+            let properties = convert::properties_for_publish(
+                &entry.headers,
+                self.options.persistent,
+                &entry.properties,
+            )?;
             let confirm = do_publish(
                 channel,
                 &self.options.exchange,
-                routing_key,
-                payload,
+                &entry.routing_key,
+                &entry.payload,
                 properties,
             )
             .await?;
-            confirms.push((routing_key, confirm));
+            confirms.push((&entry.routing_key, confirm));
         }
         for (routing_key, confirm) in confirms {
             let confirmation = confirm.await.map_err(AmqpError::publish)?;
@@ -419,7 +466,19 @@ impl Publisher for ServerTxPublisher {
     /// Not cancel safe: dropping the future may leave the message queued in the transaction or
     /// not.
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        let properties = convert::properties_for_publish(msg.headers(), self.options.persistent)?;
+        self.publish_native(msg, &MessageProperties::default())
+            .await
+    }
+}
+
+impl NativePublish for ServerTxPublisher {
+    async fn publish_native(
+        &self,
+        msg: OutgoingMessage<'_>,
+        step: &MessageProperties,
+    ) -> Result<(), Self::Error> {
+        let properties =
+            convert::properties_for_publish(msg.headers(), self.options.persistent, step)?;
         let channel = if self.is_open() {
             self.conn.ensure_live(msg.name())?;
             self.tx_channel(msg.name()).await?

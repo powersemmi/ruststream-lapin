@@ -12,6 +12,7 @@ use tracing::warn;
 
 use super::broker::{ConnectedLapinTestBroker, TestBrokerState};
 use crate::error::AmqpError;
+use crate::publish_step::{MessageProperties, NativePublish};
 
 type Buffered = (String, Bytes, Headers);
 
@@ -107,6 +108,20 @@ impl Publisher for LapinTestPublisher {
             msg.headers(),
         );
         Ok(())
+    }
+}
+
+/// Keeps a handler that takes a publish step compiling and running under the harness. The
+/// in-process router carries a payload and headers between subscriptions and has no AMQP frame
+/// to write a property onto, so the step's properties go nowhere here: assert on them against a
+/// real broker.
+impl NativePublish for LapinTestPublisher {
+    async fn publish_native(
+        &self,
+        msg: OutgoingMessage<'_>,
+        _step: &MessageProperties,
+    ) -> Result<(), Self::Error> {
+        self.publish(msg).await
     }
 }
 
