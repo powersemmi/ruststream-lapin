@@ -1,6 +1,7 @@
 //! The in-process publish pair: the [`LapinTestPublish`] policy and its live
 //! [`LapinTestPublisher`].
 
+use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -47,8 +48,11 @@ impl LapinTestPublish {
 impl PublishPolicy<ConnectedLapinTestBroker> for LapinTestPublish {
     type Live = LapinTestPublisher;
 
-    async fn pair(self, connected: &ConnectedLapinTestBroker) -> Result<Self::Live, PairError> {
-        Ok(self.bind(connected))
+    fn pair(
+        self,
+        connected: &ConnectedLapinTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(self.bind(connected)))
     }
 }
 
@@ -82,14 +86,16 @@ impl Publisher for LapinTestPublisher {
     ///
     /// Returns [`AmqpError::InvalidOptions`] when the routing key is empty and
     /// [`AmqpError::Closed`] once the transport has shut down.
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
         if msg.name().is_empty() {
-            return Err(AmqpError::InvalidOptions(
+            return ready(Err(AmqpError::InvalidOptions(
                 "routing key must not be empty; on the default exchange it names the target queue"
                     .to_owned(),
-            ));
+            )));
         }
-        self.state.ensure_live(msg.name())?;
+        if let Err(err) = self.state.ensure_live(msg.name()) {
+            return ready(Err(err));
+        }
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
@@ -98,7 +104,7 @@ impl Publisher for LapinTestPublisher {
                     Bytes::copy_from_slice(msg.payload()),
                     msg.headers().clone(),
                 ));
-                return Ok(());
+                return ready(Ok(()));
             }
         }
         self.route(
@@ -106,7 +112,7 @@ impl Publisher for LapinTestPublisher {
             &Bytes::copy_from_slice(msg.payload()),
             msg.headers(),
         );
-        Ok(())
+        ready(Ok(()))
     }
 }
 
@@ -117,7 +123,7 @@ impl TransactionalPublisher for LapinTestPublisher {
     ///
     /// Returns [`AmqpError::Transaction`] when a transaction is already open; the open
     /// transaction is left untouched.
-    async fn begin_transaction(&self) -> Result<(), Self::Error> {
+    fn begin_transaction(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let already_open = {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             let open = txn.is_some();
@@ -127,13 +133,13 @@ impl TransactionalPublisher for LapinTestPublisher {
             open
         };
         if already_open {
-            return Err(AmqpError::Transaction(
+            return ready(Err(AmqpError::Transaction(
                 "a transaction is already open on this test publisher; commit or abort it before \
                  beginning another"
                     .to_owned(),
-            ));
+            )));
         }
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Replays the buffered publishes in order.
@@ -142,21 +148,23 @@ impl TransactionalPublisher for LapinTestPublisher {
     ///
     /// Returns [`AmqpError::Transaction`] when no transaction is open and [`AmqpError::Closed`]
     /// once the transport has shut down.
-    async fn commit(&self) -> Result<(), Self::Error> {
+    fn commit(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let buffered = {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             txn.take()
         };
         let Some(buffered) = buffered else {
-            return Err(AmqpError::Transaction(
+            return ready(Err(AmqpError::Transaction(
                 "commit with no open transaction on this test publisher".to_owned(),
-            ));
+            )));
         };
         for (queue, payload, headers) in buffered {
-            self.state.ensure_live(&queue)?;
+            if let Err(err) = self.state.ensure_live(&queue) {
+                return ready(Err(err));
+            }
             self.route(&queue, &payload, &headers);
         }
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Discards the buffered publishes.
@@ -164,18 +172,18 @@ impl TransactionalPublisher for LapinTestPublisher {
     /// # Errors
     ///
     /// Returns [`AmqpError::Transaction`] when no transaction is open.
-    async fn abort(&self) -> Result<(), Self::Error> {
+    fn abort(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let discarded = self
             .txn
             .lock()
             .expect("transaction buffer mutex poisoned")
             .take();
         if discarded.is_none() {
-            return Err(AmqpError::Transaction(
+            return ready(Err(AmqpError::Transaction(
                 "abort with no open transaction on this test publisher".to_owned(),
-            ));
+            )));
         }
-        Ok(())
+        ready(Ok(()))
     }
 }
 
@@ -190,12 +198,12 @@ impl OwnedTransactions for LapinTestPublisher {
     /// # Errors
     ///
     /// Never fails: opening allocates a buffer and never touches the router.
-    async fn transaction(&self) -> Result<Self::Transaction, Self::Error> {
-        Ok(LapinTestTransaction {
+    fn transaction(&self) -> impl Future<Output = Result<Self::Transaction, Self::Error>> {
+        ready(Ok(LapinTestTransaction {
             publisher: self.clone(),
             buffered: Vec::new(),
             settled: false,
-        })
+        }))
     }
 }
 
@@ -260,19 +268,22 @@ impl Transaction for LapinTestTransaction {
     ///
     /// Returns [`AmqpError::InvalidOptions`] when the routing key is empty, the one check the
     /// live publisher also makes before the broker would.
-    async fn publish(&mut self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    fn publish(
+        &mut self,
+        msg: OutgoingMessage<'_>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
         if msg.name().is_empty() {
-            return Err(AmqpError::InvalidOptions(
+            return ready(Err(AmqpError::InvalidOptions(
                 "routing key must not be empty; on the default exchange it names the target queue"
                     .to_owned(),
-            ));
+            )));
         }
         self.buffered.push((
             msg.name().to_owned(),
             Bytes::copy_from_slice(msg.payload()),
             msg.headers().clone(),
         ));
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Routes the buffered messages in order.
@@ -281,15 +292,17 @@ impl Transaction for LapinTestTransaction {
     ///
     /// Returns [`AmqpError::Closed`] once the transport has shut down; the transaction is
     /// consumed either way.
-    async fn commit(mut self) -> Result<(), Self::Error> {
+    fn commit(mut self) -> impl Future<Output = Result<(), Self::Error>> {
         // Settled before the flush, like the live transaction: a failed commit has still
         // consumed the value.
         self.settled = true;
         for (queue, payload, headers) in &self.buffered {
-            self.publisher.state.ensure_live(queue)?;
+            if let Err(err) = self.publisher.state.ensure_live(queue) {
+                return ready(Err(err));
+            }
             self.publisher.route(queue, payload, headers);
         }
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Discards the buffered messages.
@@ -297,8 +310,8 @@ impl Transaction for LapinTestTransaction {
     /// # Errors
     ///
     /// Never fails.
-    async fn abort(mut self) -> Result<(), Self::Error> {
+    fn abort(mut self) -> impl Future<Output = Result<(), Self::Error>> {
         self.settled = true;
-        Ok(())
+        ready(Ok(()))
     }
 }

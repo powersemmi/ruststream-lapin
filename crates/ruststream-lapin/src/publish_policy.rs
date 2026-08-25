@@ -7,6 +7,8 @@
 //! [`LapinPublish::confirms`] and [`LapinPublish::server_tx`] move to the transactional policies,
 //! keeping the options.
 
+use std::future::{Future, ready};
+
 use ruststream::{PairError, PublishPolicy};
 
 use crate::broker::ConnectedLapinBroker;
@@ -113,8 +115,11 @@ impl LapinPublish {
 impl PublishPolicy<ConnectedLapinBroker> for LapinPublish {
     type Live = LapinPublisher;
 
-    async fn pair(self, connected: &ConnectedLapinBroker) -> Result<Self::Live, PairError> {
-        Ok(self.bind(connected))
+    fn pair(
+        self,
+        connected: &ConnectedLapinBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(self.bind(connected)))
     }
 }
 
@@ -158,8 +163,11 @@ impl ConfirmsPublish {
 impl PublishPolicy<ConnectedLapinBroker> for ConfirmsPublish {
     type Live = ConfirmsPublisher;
 
-    async fn pair(self, connected: &ConnectedLapinBroker) -> Result<Self::Live, PairError> {
-        Ok(self.bind(connected))
+    fn pair(
+        self,
+        connected: &ConnectedLapinBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(self.bind(connected)))
     }
 }
 
@@ -203,8 +211,11 @@ impl ServerTxPublish {
 impl PublishPolicy<ConnectedLapinBroker> for ServerTxPublish {
     type Live = ServerTxPublisher;
 
-    async fn pair(self, connected: &ConnectedLapinBroker) -> Result<Self::Live, PairError> {
-        Ok(self.bind(connected))
+    fn pair(
+        self,
+        connected: &ConnectedLapinBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(self.bind(connected)))
     }
 }
 

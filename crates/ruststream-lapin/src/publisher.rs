@@ -3,6 +3,7 @@
 //! Each of them exists only from a [`ConnectedLapinBroker`], so it always has a connection; the
 //! declaration half (what to publish and how) lives in [`crate::publish_policy`].
 
+use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -256,7 +257,7 @@ impl TransactionalPublisher for ConfirmsPublisher {
     ///
     /// Returns [`AmqpError::Transaction`] when a transaction is already open on this handle;
     /// the open transaction is left untouched.
-    async fn begin_transaction(&self) -> Result<(), Self::Error> {
+    fn begin_transaction(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let already_open = {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             let open = txn.is_some();
@@ -266,13 +267,13 @@ impl TransactionalPublisher for ConfirmsPublisher {
             open
         };
         if already_open {
-            return Err(AmqpError::Transaction(
+            return ready(Err(AmqpError::Transaction(
                 "a transaction is already open on this confirms publisher; commit or abort it \
                  before beginning another"
                     .to_owned(),
-            ));
+            )));
         }
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Publishes the buffered messages in order and awaits every confirm.
@@ -326,18 +327,18 @@ impl TransactionalPublisher for ConfirmsPublisher {
     /// # Errors
     ///
     /// Returns [`AmqpError::Transaction`] when no transaction is open.
-    async fn abort(&self) -> Result<(), Self::Error> {
+    fn abort(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let discarded = self
             .txn
             .lock()
             .expect("transaction buffer mutex poisoned")
             .take();
         if discarded.is_none() {
-            return Err(AmqpError::Transaction(
+            return ready(Err(AmqpError::Transaction(
                 "abort with no open transaction on this confirms publisher".to_owned(),
-            ));
+            )));
         }
-        Ok(())
+        ready(Ok(()))
     }
 }
 
