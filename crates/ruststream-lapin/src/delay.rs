@@ -19,7 +19,7 @@ use std::time::Duration;
 use lapin::Channel;
 use lapin::options::BasicPublishOptions;
 use lapin::types::ShortString;
-use ruststream::Headers;
+use ruststream::HeaderMap;
 
 use crate::convert;
 use crate::error::AmqpError;
@@ -163,7 +163,7 @@ impl DelayContext {
     pub(crate) async fn republish(
         &self,
         payload: &[u8],
-        headers: &Headers,
+        headers: &HeaderMap,
         delay: Duration,
     ) -> Result<(), AmqpError> {
         match &self.target {

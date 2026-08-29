@@ -17,7 +17,7 @@ use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    Broker, ConnectedBroker, DescribeServer, Headers, IncomingMessage, OutgoingMessage,
+    Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage, OutgoingMessage,
     Partitioned, Publisher, Subscriber, TransactionalPublisher, testing::expect_published,
 };
 use ruststream_lapin::testing::{
@@ -136,7 +136,7 @@ async fn headers_are_propagated_to_subscribers() {
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
     let publisher = broker.publisher(LapinTestPublish);
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("correlation-id", "abc-1");
     let outgoing = OutgoingMessage::new("orders", b"{}").with_headers(headers);
@@ -201,7 +201,7 @@ async fn partition_key_header_is_surfaced() {
     let broker = connected().await;
     let mut sub = broker.subscribe("keyed").await.expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
         .publisher(LapinTestPublish)
@@ -498,7 +498,7 @@ async fn direct_reply_transform_redirects_and_echoes() {
     // publish API does not accept.
     let tb = TestApp::start(app).await.expect("start");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("reply-to", "rpc.replies");
     headers.insert("correlation-id", "c-9");
     probe.inject(OutgoingMessage::new("rpc.in", br#"{"id":9}"#).with_headers(headers));

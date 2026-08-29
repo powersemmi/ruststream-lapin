@@ -9,7 +9,7 @@ use bytes::Bytes;
 use lapin::options::{BasicPublishOptions, ConfirmSelectOptions};
 use lapin::{BasicProperties, Channel};
 use lapin::{Confirmation, PublisherConfirm};
-use ruststream::{Headers, OutgoingMessage, Publisher, TransactionalPublisher};
+use ruststream::{HeaderMap, OutgoingMessage, Publisher, TransactionalPublisher};
 use tokio::sync::OnceCell;
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
@@ -24,7 +24,7 @@ use crate::publish_step::{MessageProperties, NativePublish};
 pub(crate) struct Buffered {
     pub(crate) routing_key: String,
     pub(crate) payload: Bytes,
-    pub(crate) headers: Headers,
+    pub(crate) headers: HeaderMap,
     pub(crate) properties: MessageProperties,
 }
 
@@ -224,7 +224,7 @@ impl ConfirmsPublisher {
         &self,
         routing_key: &str,
         payload: &[u8],
-        headers: &Headers,
+        headers: &HeaderMap,
         step: &MessageProperties,
     ) -> Result<(), AmqpError> {
         self.conn.ensure_live(routing_key)?;

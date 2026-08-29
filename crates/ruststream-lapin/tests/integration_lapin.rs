@@ -23,7 +23,7 @@ use tokio::sync::Notify;
 
 use ruststream::runtime::{AppInfo, Ctx, HandlerResult, PublishExt, RustStream, State};
 use ruststream::{
-    Broker, ConnectedBroker, FromRef, Headers, IncomingMessage, OutgoingMessage, Partitioned,
+    Broker, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned,
     Publisher, Subscriber, TransactionalPublisher, nonzero, subscriber,
 };
 use ruststream_lapin::context::keys;
@@ -86,7 +86,7 @@ async fn round_trip_on_default_exchange() {
         .await
         .expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     broker
         .publisher(LapinPublish::default())
@@ -288,7 +288,7 @@ async fn binary_header_values_round_trip() {
         .await
         .expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("x-blob", vec![0u8, 159, 146, 150]);
     headers.insert("x-tenant", "acme");
     broker
@@ -396,7 +396,7 @@ async fn partition_key_round_trips_through_the_header() {
         .await
         .expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
         .publisher(LapinPublish::default())
@@ -616,7 +616,7 @@ async fn prequeue_keyed_deliveries(url: &str) {
         for tenant in 0..KEYED_TENANTS {
             let id = (round * KEYED_TENANTS + tenant) as u64;
             let tenant = format!("t{tenant}");
-            let mut headers = Headers::new();
+            let mut headers = HeaderMap::new();
             headers.insert(PARTITION_KEY_HEADER, tenant.clone());
             let body = format!("{{\"id\":{id},\"tenant\":\"{tenant}\"}}");
             publisher
@@ -986,7 +986,7 @@ async fn publish_steps_reach_the_native_amqp_properties() {
 
     // The same names as plain headers: they travel in the header table, and neither property is
     // set - which is exactly what the steps exist to fix.
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("priority", "4");
     headers.insert("expiration", "60000");
     publisher

@@ -6,14 +6,14 @@ use bytes::Bytes;
 use lapin::Acker;
 use lapin::message::Delivery;
 use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
-use ruststream::{AckError, Headers, IncomingMessage, Partitioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
 
 use crate::convert;
 use crate::delay::DelayContext;
 
 /// Header carrying a message's partition key, read by [`Partitioned`] for keyed worker lanes.
 ///
-/// Set it on an outgoing message's [`Headers`] to route deliveries that share a key to the same
+/// Set it on an outgoing message's [`HeaderMap`] to route deliveries that share a key to the same
 /// worker lane under [`workers(n, by_key)`](https://docs.rs/ruststream). It rides in the AMQP
 /// header table like any other header; nothing else in the broker interprets it.
 pub const PARTITION_KEY_HEADER: &str = "amqp-partition-key";
@@ -36,7 +36,7 @@ pub const PARTITION_KEY_HEADER: &str = "amqp-partition-key";
 #[derive(Debug)]
 pub struct LapinMessage {
     payload: Bytes,
-    headers: Headers,
+    headers: HeaderMap,
     exchange: String,
     routing_key: String,
     redelivered: bool,
@@ -117,7 +117,7 @@ impl IncomingMessage for LapinMessage {
         &self.payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self.headers
     }
 

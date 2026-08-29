@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::Stream;
 use ruststream::testing::Coordinator;
-use ruststream::{AckError, Headers, IncomingMessage, Partitioned, Subscriber};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Subscriber};
 
 use super::broker::TestBrokerState;
 use super::router::{DeliveryReceiver, DeliverySender, SubscriptionId, TestDelivery};
@@ -133,7 +133,7 @@ impl IncomingMessage for LapinTestMessage {
             .payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self
             .delivery
             .as_ref()

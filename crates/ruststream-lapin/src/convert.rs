@@ -1,4 +1,4 @@
-//! Mapping between core [`Headers`] and AMQP properties plus the header table.
+//! Mapping between core [`HeaderMap`] and AMQP properties plus the header table.
 //!
 //! Well-known header names ride in the matching native AMQP property so external consumers see
 //! them where the protocol puts them; every other header lands in the `headers` field table as a
@@ -12,7 +12,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use lapin::BasicProperties;
 use lapin::types::{AMQPValue, FieldTable, ShortString};
-use ruststream::Headers;
+use ruststream::HeaderMap;
 
 use crate::error::AmqpError;
 use crate::publish_step::MessageProperties;
@@ -47,7 +47,7 @@ pub(crate) fn expiration_millis(ttl: Duration) -> ShortString {
 /// Builds publish properties from `headers`, routing well-known names into native properties,
 /// and applies the per-message properties the publish step carried.
 pub(crate) fn properties_for_publish(
-    headers: &Headers,
+    headers: &HeaderMap,
     persistent: bool,
     step: &MessageProperties,
 ) -> Result<BasicProperties, AmqpError> {
@@ -94,13 +94,13 @@ pub(crate) fn properties_for_publish(
     Ok(properties)
 }
 
-/// Rebuilds core [`Headers`] from delivery properties.
+/// Rebuilds core [`HeaderMap`] from delivery properties.
 ///
 /// Native properties come back under their well-known header names. Table values of a
 /// non-byte-string type (numbers, nested tables such as `x-death`) are skipped: core headers are
 /// byte-valued, and inventing a canonical encoding here would be lossy in a quieter way.
-pub(crate) fn headers_from_properties(properties: &BasicProperties) -> Headers {
-    let mut headers = Headers::new();
+pub(crate) fn headers_from_properties(properties: &BasicProperties) -> HeaderMap {
+    let mut headers = HeaderMap::new();
 
     if let Some(value) = properties.content_type() {
         headers.insert(
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn round_trips_well_known_and_custom_headers() {
-        let headers: Headers = [
+        let headers: HeaderMap = [
             ("Content-Type", b"application/json".as_slice()),
             ("correlation-id", b"c-1"),
             ("reply-to", b"replies"),
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn binary_header_values_survive() {
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert("x-blob", Bytes::from_static(&[0u8, 159, 146, 150]));
 
         let properties =
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn oversized_property_value_is_an_error_not_a_panic() {
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert("correlation-id", vec![b'x'; 300]);
 
         let err = properties_for_publish(&headers, true, &no_step()).expect_err("over 255 bytes");
@@ -207,7 +207,7 @@ mod tests {
         };
 
         let properties =
-            properties_for_publish(&Headers::new(), true, &step).expect("valid properties");
+            properties_for_publish(&HeaderMap::new(), true, &step).expect("valid properties");
         assert_eq!(properties.priority(), &Some(7));
         assert_eq!(
             properties.expiration().as_ref().map(ShortString::as_str),
@@ -219,7 +219,7 @@ mod tests {
     fn priority_and_expiration_headers_stay_in_the_table() {
         // The quiet failure the publish steps exist for: written as headers, both names travel
         // in the header table, where RabbitMQ reads neither of them.
-        let headers: Headers = [
+        let headers: HeaderMap = [
             ("priority", b"7".as_slice()),
             ("expiration", b"30000".as_slice()),
         ]

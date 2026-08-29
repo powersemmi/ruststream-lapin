@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use ruststream::{
-    Headers, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher, Transaction,
-    TransactionalPublisher,
+    HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher,
+    Transaction, TransactionalPublisher,
 };
 use tracing::warn;
 
@@ -14,7 +14,7 @@ use super::broker::{ConnectedLapinTestBroker, TestBrokerState};
 use crate::error::AmqpError;
 use crate::publish_step::{MessageProperties, NativePublish};
 
-type Buffered = (String, Bytes, Headers);
+type Buffered = (String, Bytes, HeaderMap);
 
 /// The in-process publish policy, mirroring [`LapinPublish`](crate::LapinPublish) on the real
 /// broker.
@@ -67,7 +67,7 @@ pub struct LapinTestPublisher {
 }
 
 impl LapinTestPublisher {
-    fn route(&self, queue: &str, payload: &Bytes, headers: &Headers) {
+    fn route(&self, queue: &str, payload: &Bytes, headers: &HeaderMap) {
         self.state
             .router
             .publish(queue, payload, headers, self.state.coordinator().as_ref());
