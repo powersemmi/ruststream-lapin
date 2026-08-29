@@ -1,5 +1,6 @@
 //! The in-process ladder: [`LapinTestBroker`] -> [`ConnectedLapinTestBroker`].
 
+use std::future::{Future, ready};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -105,8 +106,8 @@ impl Broker for LapinTestBroker {
     type Error = AmqpError;
     type Connected = ConnectedLapinTestBroker;
 
-    async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        Ok(ConnectedLapinTestBroker { state: self.state })
+    fn connect(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
+        ready(Ok(ConnectedLapinTestBroker { state: self.state }))
     }
 }
 
@@ -139,22 +140,23 @@ impl ConnectedLapinTestBroker {
     ///
     /// Returns [`AmqpError::InvalidOptions`] when `queue` is empty and [`AmqpError::Closed`]
     /// once the transport has shut down.
-    // Async without an await on purpose: call-site parity with the real broker, so application
-    // code and tests compile unchanged against either.
-    #[allow(clippy::unused_async)]
-    pub async fn subscribe(
+    // Awaitable although nothing here awaits: call-site parity with the real broker, so
+    // application code and tests compile unchanged against either.
+    pub fn subscribe(
         &self,
         queue: impl Into<String>,
-    ) -> Result<LapinTestSubscriber, AmqpError> {
+    ) -> impl Future<Output = Result<LapinTestSubscriber, AmqpError>> {
         let queue = queue.into();
         if queue.is_empty() {
-            return Err(AmqpError::InvalidOptions(
+            return ready(Err(AmqpError::InvalidOptions(
                 "queue name must not be empty; subscribe with the queue the handler consumes"
                     .to_owned(),
-            ));
+            )));
         }
-        self.state.ensure_live(&queue)?;
-        Ok(LapinTestSubscriber::open(&self.state, queue))
+        if let Err(err) = self.state.ensure_live(&queue) {
+            return ready(Err(err));
+        }
+        ready(Ok(LapinTestSubscriber::open(&self.state, queue)))
     }
 
     /// A live publisher into this broker's router, mirroring
@@ -170,10 +172,10 @@ impl ConnectedBroker for ConnectedLapinTestBroker {
     type Error = AmqpError;
     type Closed = ();
 
-    async fn shutdown(self) -> Result<Self::Closed, Self::Error> {
+    fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> {
         self.state.closed.store(true, Ordering::Release);
         self.state.router.clear();
-        Ok(())
+        ready(Ok(()))
     }
 }
 

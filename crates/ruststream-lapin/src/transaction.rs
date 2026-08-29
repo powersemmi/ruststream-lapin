@@ -6,6 +6,8 @@
 //! borrowed [`TransactionalPublisher`](ruststream::TransactionalPublisher) the publisher also
 //! implements.
 
+use std::future::{Future, ready};
+
 use ruststream::{OutgoingMessage, OwnedTransactions, Transaction};
 use tracing::warn;
 
@@ -85,11 +87,14 @@ impl Transaction for ConfirmsTransaction {
     ///
     /// Infallible in practice: buffering is local to this value, and a closed connection or a
     /// rejected frame surfaces at the commit, which is the visibility point.
-    async fn publish(&mut self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    fn publish(
+        &mut self,
+        msg: OutgoingMessage<'_>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
         // The core trait hands over the message alone, so a publish step has no position here.
         self.buffered
             .push(Buffered::new(&msg, &MessageProperties::default()));
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Publishes the buffered messages in order and awaits every confirm.
@@ -119,9 +124,9 @@ impl Transaction for ConfirmsTransaction {
     /// # Errors
     ///
     /// Never fails: nothing was staged on the broker.
-    async fn abort(mut self) -> Result<(), Self::Error> {
+    fn abort(mut self) -> impl Future<Output = Result<(), Self::Error>> {
         self.settled = true;
-        Ok(())
+        ready(Ok(()))
     }
 }
 
@@ -137,11 +142,11 @@ impl OwnedTransactions for ConfirmsPublisher {
     ///
     /// Infallible in practice: opening allocates a buffer and never touches the broker, exactly
     /// like the borrowed `begin_transaction`.
-    async fn transaction(&self) -> Result<Self::Transaction, Self::Error> {
-        Ok(ConfirmsTransaction {
+    fn transaction(&self) -> impl Future<Output = Result<Self::Transaction, Self::Error>> {
+        ready(Ok(ConfirmsTransaction {
             publisher: self.clone(),
             buffered: Vec::new(),
             settled: false,
-        })
+        }))
     }
 }
