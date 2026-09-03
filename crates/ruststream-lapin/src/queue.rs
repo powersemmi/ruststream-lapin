@@ -4,6 +4,7 @@ use std::num::NonZeroU16;
 
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::SubscriptionSource;
+use ruststream::runtime::IntoSource;
 
 use crate::broker::ConnectedLapinBroker;
 use crate::delay::Delay;
@@ -230,6 +231,16 @@ impl RabbitQueue {
 
     pub(crate) fn delay_config(&self) -> Option<&Delay> {
         self.delay.as_ref()
+    }
+}
+
+/// The descriptor is its own source, so the manual path's `subscriber(source, body)` takes a
+/// `RabbitQueue` where the attribute path writes it in the decorator.
+impl IntoSource for RabbitQueue {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
     }
 }
 
