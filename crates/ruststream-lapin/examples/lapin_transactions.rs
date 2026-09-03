@@ -76,10 +76,10 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // --8<-- [start:confirms]
-        // The transactional flavour is a policy transition; swap `.confirms()` for
-        // `.server_tx()` to trade throughput for AMQP server-side atomicity.
-        b.include(ship)
-            .publisher(LapinPublish::default().confirms());
+        // `TransactionalPublish` is the confirms policy, the uniform mount-site name every
+        // broker in the family answers to. For AMQP server-side atomicity instead, name the
+        // other transition: `LapinPublish::default().server_tx()`.
+        b.include(ship).publisher(TransactionalPublish::default());
         // --8<-- [end:confirms]
     })
 }

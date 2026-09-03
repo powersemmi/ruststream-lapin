@@ -18,7 +18,7 @@ use crate::orders;
 /// on its own. The router is a consuming builder, so the calls chain; the registration list is
 /// opaque, hence `impl RouterDef`.
 pub fn orders() -> impl RouterDef<LapinBroker> {
-    let confirmations = TypedPublisher::new(LapinPublish::default());
+    let confirmations = TypedPublisher::new(Publish::default());
 
     Router::new()
         .include(orders::confirm)

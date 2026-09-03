@@ -66,6 +66,11 @@ guarantee changes the type:
   `tx.rollback`): messages become visible atomically at commit. Slower (a synchronous round trip
   per commit), but the only option when partial flushes are unacceptable.
 
+A routes file writes the two it reaches for under the family's uniform mount-site names, which
+the [prelude](index.md) aliases: `Publish` is `LapinPublish` and `TransactionalPublish` is
+`ConfirmsPublish`, so a router reads the same whichever broker it is written against. Server
+transactions keep their own name, being a different guarantee rather than a second spelling.
+
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:confirms"
 ```

@@ -105,7 +105,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // The requester is a policy here: the runtime pairs it with the connection at startup
         // and hands the handler the live client.
-        b.include(place_order).publisher(LapinRequest::default());
+        b.include(place_order).publisher(Request::default());
     })
 }
 // --8<-- [end:app]

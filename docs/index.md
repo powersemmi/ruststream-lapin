@@ -18,6 +18,14 @@ startup, before opening subscriptions; connecting consumes the broker and yields
 `ConnectedLapinBroker`, the only value carrying a subscribe or publish surface. A service file
 imports `ruststream_lapin::prelude::*`, which brings the framework's own prelude with it.
 
+A handler body and a routes file name different things, so they import different things. A
+handler names capabilities - `Out<impl Publisher>`, `Out<impl TransactionalPublisher>`,
+`Out<impl RequestReply>` - and needs the framework's prelude alone, which is what keeps the same
+handler mountable on a real broker and on its in-process transport. A routes file names values,
+imports this crate's prelude, and writes the family's uniform mount-site policy names: `Publish`,
+`TransactionalPublish`, `Request`, aliased here to `LapinPublish`, `ConfirmsPublish` and
+`LapinRequest`.
+
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_quickstart.rs:handler"
 ```
