@@ -7,13 +7,16 @@
 //!
 //! let broker = LapinBroker::new("amqp://localhost:5672");
 //! let orders = RabbitQueue::new("orders").durable(true);
-//! let shipments = Publish::default().exchange("shipments").confirms();
+//! let shipments = LapinPublish::default().exchange("shipments").confirms();
 //! # let _ = (broker, orders, shipments);
 //! ```
 //!
-//! The framework's own prelude comes with it, so one import serves the file. A service that
-//! speaks to more than one broker globs each broker's prelude and names the prefixed originals
-//! ([`LapinPublish`], [`LapinRequest`]) where two of them meet.
+//! The framework's own prelude comes with it, so one import serves the file. Every name this
+//! crate adds keeps its `Lapin` / `Rabbit` prefix, so a service that speaks to more than one
+//! broker globs each broker's prelude and nothing collides. The prefix is also what keeps the
+//! framework's own vocabulary reachable: the bare `Publish` is its slot capability trait (what a
+//! hand-written handler bounds an injected publisher with), and an unprefixed re-export here
+//! would shadow it silently for every file globbing this module.
 
 pub use ruststream::prelude::*;
 
@@ -28,12 +31,6 @@ pub use crate::{
     AMQPValue, ConfirmsPublish, Delay, DirectReplyTo, FieldTable, LapinBroker, LapinPublish,
     LapinPublishExt, LapinRequest, QueueType, RabbitExchange, RabbitQueue, ServerTxPublish,
 };
-
-/// The policy names an include site writes: `Publish` is [`LapinPublish`], `Request` is
-/// [`LapinRequest`].
-///
-/// `Publish` is the publish policy, not the framework's `runtime::Publish` builder.
-pub use crate::{LapinPublish as Publish, LapinRequest as Request};
 
 // `Partitioned` stays out although the delivery implements it: `IncomingMessage::partition_key`
 // is a defaulted method the framework's prelude already carries, and re-exporting the trait makes

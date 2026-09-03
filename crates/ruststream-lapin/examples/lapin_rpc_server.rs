@@ -52,7 +52,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
         // The reply publisher is a policy: it holds no connection, so it is declared here and
         // paired with the broker by the runtime at startup.
-        let replies = TypedPublisher::new(Publish::default()).transform(DirectReplyTo);
+        let replies = TypedPublisher::new(LapinPublish::default()).transform(DirectReplyTo);
         b.include(check).publisher(replies);
     })
     // --8<-- [end:mount]
