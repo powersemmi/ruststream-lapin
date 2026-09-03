@@ -20,6 +20,12 @@ ruststream-lapin = { version = "0.7", features = ["testing"] }
 --8<-- "crates/ruststream-lapin/examples/lapin_testing.rs:testapp"
 ```
 
+Delivery metadata comes along: a handler reading AMQP fields through
+[`AmqpContext`](queues.md#delivery-metadata) - as `Ctx<RoutingKey>` extractors or a
+`ctx: &mut Context<'_, AmqpContext>` parameter - mounts on the test broker unchanged. The
+transport reports those fields against its own model: the default exchange, the queue name as the
+routing key, a delivery tag numbered per subscription, and `redelivered` set on a requeue.
+
 ## What the test broker does not simulate
 
 Exchange types, bindings, dead-lettering, prefetch, and request/reply are transport behavior;

@@ -22,6 +22,9 @@ pub struct LapinTestSubscriber {
     sender: DeliverySender,
     receiver: DeliveryReceiver,
     coordinator: Option<Coordinator>,
+    /// The next channel-local delivery tag. AMQP numbers deliveries per channel from 1, and a
+    /// requeued message is handed out under a new tag.
+    next_tag: u64,
 }
 
 impl LapinTestSubscriber {
@@ -35,6 +38,7 @@ impl LapinTestSubscriber {
             sender,
             receiver,
             coordinator,
+            next_tag: 1,
         }
     }
 
@@ -74,13 +78,20 @@ impl Subscriber for LapinTestSubscriber {
             receiver,
             sender,
             coordinator,
+            queue,
+            next_tag,
             ..
         } = self;
         futures::stream::poll_fn(move |cx| {
             receiver.poll_recv(cx).map(|delivery| {
                 delivery.map(|delivery| {
+                    let delivery_tag = *next_tag;
+                    *next_tag += 1;
                     Ok(LapinTestMessage {
+                        redelivered: delivery.redelivered,
                         delivery: Some(delivery),
+                        queue: queue.clone(),
+                        delivery_tag,
                         sender: sender.clone(),
                         coordinator: coordinator.clone(),
                     })
@@ -91,8 +102,16 @@ impl Subscriber for LapinTestSubscriber {
 }
 
 /// One in-process delivery.
+///
+/// It reports the same delivery metadata as [`LapinMessage`](crate::LapinMessage), read against
+/// the transport's own model - exact queue-name routing off the default exchange - so a handler
+/// binding AMQP fields ([`AmqpContext`](crate::context::AmqpContext) and its `Ctx` keys) mounts
+/// in process exactly as it does on a real server.
 pub struct LapinTestMessage {
     delivery: Option<TestDelivery>,
+    queue: String,
+    delivery_tag: u64,
+    redelivered: bool,
     sender: DeliverySender,
     coordinator: Option<Coordinator>,
 }
@@ -104,6 +123,33 @@ impl LapinTestMessage {
         self.delivery
             .take()
             .expect("LapinTestMessage settled twice")
+    }
+
+    /// The exchange this message was published to: always the default exchange, since the
+    /// transport routes by exact queue name and models nothing else.
+    #[must_use]
+    pub const fn exchange(&self) -> &'static str {
+        ""
+    }
+
+    /// The routing key the message was published with, which on the default exchange is the name
+    /// of the queue it landed on.
+    #[must_use]
+    pub fn routing_key(&self) -> &str {
+        &self.queue
+    }
+
+    /// Whether this delivery is a `nack(requeue = true)` coming back.
+    #[must_use]
+    pub const fn redelivered(&self) -> bool {
+        self.redelivered
+    }
+
+    /// The channel-local delivery tag: subscriptions number their deliveries from 1, and a
+    /// requeued message is handed out again under a new tag.
+    #[must_use]
+    pub const fn delivery_tag(&self) -> u64 {
+        self.delivery_tag
     }
 }
 
@@ -164,7 +210,9 @@ impl IncomingMessage for LapinTestMessage {
     ///
     /// Never fails; the in-process transport has no channel to lose.
     fn nack(mut self, requeue: bool) -> impl Future<Output = Result<(), AckError>> {
-        let delivery = self.take();
+        let mut delivery = self.take();
+        // The copy that goes back carries the redelivered flag, as a broker would set it.
+        delivery.redelivered = requeue;
         if requeue && self.sender.send(delivery).is_ok() {
             // This bypasses the router fanout, so account for the new in-flight delivery here.
             if let Some(coordinator) = &self.coordinator {

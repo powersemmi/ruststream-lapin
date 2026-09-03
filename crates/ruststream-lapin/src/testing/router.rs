@@ -17,6 +17,9 @@ pub(crate) struct SubscriptionId(u64);
 pub(crate) struct TestDelivery {
     pub(crate) payload: Bytes,
     pub(crate) headers: HeaderMap,
+    /// Set on the copy a `nack(requeue = true)` puts back, mirroring the flag the broker sets on
+    /// a redelivered AMQP delivery.
+    pub(crate) redelivered: bool,
 }
 
 pub(crate) type DeliverySender = mpsc::UnboundedSender<TestDelivery>;
@@ -96,6 +99,7 @@ impl KeyRouter {
             let delivery = TestDelivery {
                 payload: payload.clone(),
                 headers: headers.clone(),
+                redelivered: false,
             };
             if sender.send(delivery).is_ok()
                 && let Some(coordinator) = coordinator

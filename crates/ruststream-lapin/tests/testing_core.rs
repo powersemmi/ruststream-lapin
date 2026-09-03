@@ -8,18 +8,19 @@
 
 #![cfg(feature = "testing")]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::runtime::{AppInfo, HandlerOutcome, RustStream};
+use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, RustStream, State};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    Broker, ConnectedBroker, DescribeServer, HeaderMap, IncomingMessage, OutgoingMessage,
+    Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap, IncomingMessage, OutgoingMessage,
     Partitioned, Publisher, Subscriber, TransactionalPublisher, testing::expect_published,
 };
+use ruststream_lapin::context::keys;
 use ruststream_lapin::testing::{
     ConnectedLapinTestBroker, LapinTestBroker, LapinTestMessage, LapinTestPublish,
 };
@@ -443,6 +444,82 @@ async fn test_app_drives_lapin_test_broker_to_quiescence() {
         .assert_called_once()
         .with(&Order { id: 2 })
         .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+/// One delivery as the `Ctx` handler below saw it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SeenDelivery {
+    exchange: String,
+    routing_key: String,
+    redelivered: bool,
+    delivery_tag: u64,
+}
+
+/// What that handler saw, one entry per delivery.
+#[derive(Clone, Default)]
+struct Seen(Arc<Mutex<Vec<SeenDelivery>>>);
+
+#[derive(Clone, FromRef)]
+struct MetadataState {
+    seen: Seen,
+}
+
+#[subscriber(RabbitQueue::new("metadata"))]
+async fn record_metadata(
+    order: &Order,
+    Ctx(exchange): Ctx<keys::Exchange>,
+    Ctx(routing_key): Ctx<keys::RoutingKey>,
+    Ctx(redelivered): Ctx<keys::Redelivered>,
+    Ctx(delivery_tag): Ctx<keys::DeliveryTag>,
+    State(seen): State<Seen>,
+) -> HandlerOutcome {
+    let _ = order;
+    seen.0
+        .lock()
+        .expect("seen mutex poisoned")
+        .push(SeenDelivery {
+            exchange,
+            routing_key,
+            redelivered,
+            delivery_tag,
+        });
+    HandlerOutcome::ack()
+}
+
+// A handler that binds AMQP delivery fields must mount on the in-process broker too: the
+// transport reports them against its own model (default exchange, queue name as the routing key,
+// per-subscription delivery tags), so the same handler is unit-testable without a server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctx_keys_resolve_against_the_in_process_transport() {
+    let seen = Seen::default();
+    let probe = seen.clone();
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .on_startup(
+            move |()| async move { Ok::<_, std::convert::Infallible>(MetadataState { seen }) },
+        )
+        .with_broker(LapinTestBroker::new(), |b| {
+            b.include(record_metadata);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<LapinTestBroker>()
+        .publish("metadata", &Order { id: 3 })
+        .await
+        .expect("publish must drive the reaction to quiescence");
+
+    let seen = probe.0.lock().expect("seen mutex poisoned").clone();
+    assert_eq!(
+        seen,
+        vec![SeenDelivery {
+            exchange: String::new(),
+            routing_key: "metadata".to_owned(),
+            redelivered: false,
+            delivery_tag: 1,
+        }],
+        "the default exchange, the queue name as the routing key, a first delivery, tag 1"
+    );
 
     tb.shutdown().await.expect("shutdown");
 }

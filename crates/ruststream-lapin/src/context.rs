@@ -54,6 +54,21 @@ impl BuildContext<LapinMessage> for AmqpContext {
     }
 }
 
+/// The in-process transport reports the same fields against its own model (exact queue-name
+/// routing off the default exchange), so a handler binding AMQP delivery fields mounts on
+/// [`LapinTestBroker`](crate::testing::LapinTestBroker) exactly as it does on a real server.
+#[cfg(feature = "testing")]
+impl BuildContext<crate::testing::LapinTestMessage> for AmqpContext {
+    fn build(msg: &crate::testing::LapinTestMessage) -> Self {
+        Self {
+            exchange: msg.exchange().to_owned(),
+            routing_key: msg.routing_key().to_owned(),
+            redelivered: msg.redelivered(),
+            delivery_tag: msg.delivery_tag(),
+        }
+    }
+}
+
 /// Zero-sized [`Field`] keys reading one [`AmqpContext`] field each.
 pub mod keys {
     use ruststream::ContextField;
