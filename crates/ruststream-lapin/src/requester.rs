@@ -18,7 +18,6 @@ use crate::convert;
 use crate::error::AmqpError;
 use crate::message::LapinMessage;
 use crate::publish_policy::{LapinPublishPolicy, PublishOptions};
-use crate::publish_step::MessageProperties;
 
 /// The pseudo-queue `RabbitMQ` rewrites per-request for direct reply-to.
 const REPLY_TO: &str = "amq.rabbitmq.reply-to";
@@ -212,11 +211,7 @@ impl Publisher for LapinRequester {
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
         self.conn.ensure_live(msg.name())?;
         let state = self.state(msg.name()).await?;
-        let properties = convert::properties_for_publish(
-            msg.headers(),
-            self.options.persistent,
-            &MessageProperties::default(),
-        )?;
+        let properties = convert::properties_for_publish(msg.headers(), self.options.persistent)?;
         let _confirm = state
             .channel
             .basic_publish(
@@ -273,19 +268,16 @@ impl RequestReply for LapinRequester {
             pending.remove(&correlation_id);
         };
 
-        let properties = match convert::properties_for_publish(
-            msg.headers(),
-            self.options.persistent,
-            &MessageProperties::default(),
-        ) {
-            Ok(properties) => properties
-                .with_reply_to(ShortString::from(REPLY_TO))
-                .with_correlation_id(ShortString::from(correlation_id.clone())),
-            Err(err) => {
-                cleanup();
-                return Err(err);
-            }
-        };
+        let properties =
+            match convert::properties_for_publish(msg.headers(), self.options.persistent) {
+                Ok(properties) => properties
+                    .with_reply_to(ShortString::from(REPLY_TO))
+                    .with_correlation_id(ShortString::from(correlation_id.clone())),
+                Err(err) => {
+                    cleanup();
+                    return Err(err);
+                }
+            };
         let exchange = match convert::short(&self.options.exchange, "exchange name") {
             Ok(exchange) => exchange,
             Err(err) => {

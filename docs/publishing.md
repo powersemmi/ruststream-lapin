@@ -13,8 +13,9 @@ Messages are published persistent (delivery mode 2) by default; `.persistent(fal
 for fire-and-forget traffic where losing messages on a broker restart is acceptable.
 
 Well-known headers map onto native AMQP properties (`content-type`, `correlation-id`,
-`reply-to`, `message-id`); every other header travels in the AMQP header table as a byte string,
-so binary values round-trip.
+`reply-to`, `message-id`, plus the two per-message properties below); every other header travels
+in the AMQP header table as a byte string, so binary values round-trip. The mapping runs both
+ways, so a delivery reports its properties back under the same header names.
 
 ## Per-message AMQP properties
 
@@ -32,13 +33,16 @@ handler bounds its slot with the trait and takes the step on the publisher it is
 --8<-- "crates/ruststream-lapin/examples/lapin_priority.rs:steps"
 ```
 
-Headers named `priority` or `expiration` do **not** set these properties: they travel in the AMQP
-header table, which RabbitMQ reads for neither purpose.
+A step carries its property as a header - `amqp-priority` and `amqp-expiration`
+(`PRIORITY_HEADER` / `EXPIRATION_HEADER`) - which the publishers write onto the frame instead of
+into the header table. That is the same base-header mechanism any publish argument uses, so the
+property survives everywhere a header does: through both transaction kinds, through the `Out`
+slot with the publish still attributed to it under `TestApp`, and onto a message assembled by
+hand. A header named at the call site wins over the step, as it does over any other base.
 
-Inside a transaction the steps work on the borrowed form - `begin_transaction` / `commit` around a
-stepped publish keeps the properties. An owned transaction has no property position, so no step
-goes in front of `transaction()`. Under `TestApp` a stepped publish is not attributed to the slot,
-and the in-process test broker carries no properties at all: assert on them against a real broker.
+The protocol's own field names (`priority`, `expiration`) are **not** those headers: written
+under them, both values travel in the AMQP header table, which RabbitMQ reads for neither
+purpose. That quiet failure is what the steps exist to prevent.
 
 ## Replying from a handler
 

@@ -23,7 +23,6 @@ use ruststream::HeaderMap;
 
 use crate::convert;
 use crate::error::AmqpError;
-use crate::publish_step::MessageProperties;
 
 /// How a subscription handles `retry_after` / `nack_after` delays.
 ///
@@ -168,9 +167,10 @@ impl DelayContext {
     ) -> Result<(), AmqpError> {
         match &self.target {
             DelayTarget::WaitingQueue { waiting_queue } => {
-                let properties =
-                    convert::properties_for_publish(headers, true, &MessageProperties::default())?
-                        .with_expiration(convert::expiration_millis(delay));
+                // The waiting queue's own TTL replaces whatever expiration the delivery carried:
+                // the delay is what the copy waits for there.
+                let properties = convert::properties_for_publish(headers, true)?
+                    .with_expiration(convert::expiration_millis(delay));
                 self.channel
                     .basic_publish(
                         ShortString::default(),
@@ -189,8 +189,7 @@ impl DelayContext {
             } => {
                 use lapin::types::{AMQPValue, FieldTable};
 
-                let mut properties =
-                    convert::properties_for_publish(headers, true, &MessageProperties::default())?;
+                let mut properties = convert::properties_for_publish(headers, true)?;
                 let mut table = properties
                     .headers()
                     .clone()

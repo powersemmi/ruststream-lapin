@@ -12,7 +12,6 @@ use ruststream::{OutgoingMessage, OwnedTransactions, Transaction};
 use tracing::warn;
 
 use crate::error::AmqpError;
-use crate::publish_step::MessageProperties;
 use crate::publisher::{Buffered, ConfirmsPublisher};
 
 /// An owned confirm-transaction, opened by
@@ -91,9 +90,7 @@ impl Transaction for ConfirmsTransaction {
         &mut self,
         msg: OutgoingMessage<'_>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        // The core trait hands over the message alone, so a publish step has no position here.
-        self.buffered
-            .push(Buffered::new(&msg, &MessageProperties::default()));
+        self.buffered.push(Buffered::new(&msg));
         ready(Ok(()))
     }
 

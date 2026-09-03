@@ -1,60 +1,51 @@
 //! Per-message AMQP properties, taken as steps on a live publisher.
 //!
-//! [`LapinPublishExt`] sets the `priority` and `expiration` (TTL) properties on the frame, before
-//! the publish builder starts. A header of either name does not reach them: it travels in the AMQP
-//! header table, which the broker reads for neither purpose.
+//! [`LapinPublishExt`] sets the `priority` and `expiration` (TTL) properties of what is published
+//! through it. A step hands back a publisher the builder continues on, so a publish reads as one
+//! chain:
 //!
 //! ```text
 //! publisher.with_priority(3).message(&order).publish().await?;
 //! ```
+//!
+//! The step carries each property as a [base header](ruststream::Publisher::base_headers) -
+//! [`PRIORITY_HEADER`] and [`EXPIRATION_HEADER`] - which this crate's publishers write onto the
+//! AMQP frame instead of into the header table. Riding the ordinary publish path is what keeps a
+//! stepped publish attributed to its [`Out`](ruststream::runtime::Out) slot under the test
+//! harness, and what lets a message assembled by hand carry the same properties.
+//!
+//! The protocol's own field names (`priority`, `expiration`) are NOT these headers: written
+//! under those names both values travel in the AMQP header table, which the broker reads for
+//! neither purpose. That quiet failure is what the steps exist to prevent.
 
 use std::time::Duration;
 
-use lapin::types::ShortString;
-use ruststream::runtime::{OutSlot, SlotPublisher};
-use ruststream::{OutgoingMessage, Publisher, TransactionalPublisher};
+use ruststream::runtime::{OutSlot, Slot};
+use ruststream::{HeaderMap, OutgoingMessage, Publisher, TransactionalPublisher};
 
 use crate::convert;
 
-pub(crate) use self::sealed::NativePublish;
-
-/// The per-message AMQP properties a step carries; an unset one leaves the property off the
-/// frame.
+/// Header carrying the AMQP `priority` property: whole decimal digits.
 ///
-/// Reachable only through the sealed [`NativePublish`], so nothing outside this crate can
-/// construct or read one.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MessageProperties {
-    pub(crate) priority: Option<u8>,
-    pub(crate) expiration: Option<ShortString>,
-}
+/// The property only orders deliveries on a queue declared with `x-max-priority`; elsewhere the
+/// broker carries it to the consumer and nothing more. A delivery reports it back under the same
+/// name.
+pub const PRIORITY_HEADER: &str = "amqp-priority";
 
-mod sealed {
-    use std::future::Future;
-
-    use ruststream::{OutgoingMessage, Publisher};
-
-    use super::MessageProperties;
-
-    /// Publishing an [`OutgoingMessage`] with per-message AMQP properties written onto the frame.
-    ///
-    /// Implemented for this crate's live publishers and the `Out` slot wrapper around them, and
-    /// unnameable outside the crate, so it seals [`LapinPublishExt`](super::LapinPublishExt).
-    pub trait NativePublish: Publisher {
-        /// Publishes `msg`, applying `properties` to the AMQP frame.
-        fn publish_native(
-            &self,
-            msg: OutgoingMessage<'_>,
-            properties: &MessageProperties,
-        ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    }
-}
+/// Header carrying the AMQP per-message `expiration` property: whole milliseconds, as decimal
+/// digits, which is how AMQP spells a TTL.
+///
+/// The broker drops the message once the TTL has passed without it being consumed, dead-lettering
+/// it when the queue says so. A delivery reports it back under the same name.
+pub const EXPIRATION_HEADER: &str = "amqp-expiration";
 
 /// A publisher with per-message AMQP properties attached, produced by the steps of
 /// [`LapinPublishExt`].
 ///
 /// It is a [`Publisher`] itself: `message(..)` follows the step as it would on the publisher,
-/// and the steps chain, each filling its own property.
+/// and the steps chain, each filling its own property. The properties travel as the step's base
+/// headers, so a header named at the call site wins over the step, exactly as the framework
+/// merges any other base.
 ///
 /// # Examples
 ///
@@ -89,14 +80,16 @@ mod sealed {
 #[must_use = "a step carries its properties into a publish; nothing is sent until one runs"]
 pub struct WithProperties<'a, P: ?Sized> {
     inner: &'a P,
-    properties: MessageProperties,
+    base: HeaderMap,
 }
 
-impl<'a, P: NativePublish + ?Sized> WithProperties<'a, P> {
+impl<'a, P: Publisher + ?Sized> WithProperties<'a, P> {
     fn new(inner: &'a P) -> Self {
         Self {
+            // Seeded from the wrapped handle, so whatever it contributes to every message
+            // survives the step.
+            base: inner.base_headers().cloned().unwrap_or_default(),
             inner,
-            properties: MessageProperties::default(),
         }
     }
 
@@ -135,7 +128,7 @@ impl<'a, P: NativePublish + ?Sized> WithProperties<'a, P> {
     /// # }
     /// ```
     pub fn with_priority(mut self, priority: u8) -> Self {
-        self.properties.priority = Some(priority);
+        self.base.insert(PRIORITY_HEADER, priority.to_string());
         self
     }
 
@@ -174,15 +167,22 @@ impl<'a, P: NativePublish + ?Sized> WithProperties<'a, P> {
     /// # }
     /// ```
     pub fn with_expiration(mut self, ttl: Duration) -> Self {
-        self.properties.expiration = Some(convert::expiration_millis(ttl));
+        self.base.insert(
+            EXPIRATION_HEADER,
+            convert::expiration_millis(ttl).as_str().to_owned(),
+        );
         self
     }
 }
 
-impl<P: NativePublish + ?Sized> Publisher for WithProperties<'_, P> {
+impl<P: Publisher + ?Sized> Publisher for WithProperties<'_, P> {
     type Error = P::Error;
 
-    /// Publishes `msg` with this step's properties written onto the AMQP frame.
+    /// Publishes `msg` through the publisher underneath.
+    ///
+    /// The properties reach the frame through [`base_headers`](Publisher::base_headers), which
+    /// the publish builder merges under the call site's own headers. A message handed to this
+    /// method directly is sent as it was built.
     ///
     /// # Errors
     ///
@@ -192,15 +192,17 @@ impl<P: NativePublish + ?Sized> Publisher for WithProperties<'_, P> {
     ///
     /// As cancel safe as the publisher underneath.
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        self.inner.publish_native(msg, &self.properties).await
+        self.inner.publish(msg).await
+    }
+
+    fn base_headers(&self) -> Option<&HeaderMap> {
+        Some(&self.base)
     }
 }
 
 /// Begin and commit reach the publisher underneath, and every message buffered through the step
 /// keeps its properties.
-impl<P: NativePublish + TransactionalPublisher + ?Sized> TransactionalPublisher
-    for WithProperties<'_, P>
-{
+impl<P: TransactionalPublisher + ?Sized> TransactionalPublisher for WithProperties<'_, P> {
     /// Opens the transaction on the publisher underneath.
     ///
     /// # Errors
@@ -238,17 +240,9 @@ impl<P: NativePublish + TransactionalPublisher + ?Sized> TransactionalPublisher
 /// publisher.with_priority(3).message(&command).publish().await?;
 /// ```
 ///
-/// A header named `priority` or `expiration` does not set these properties: headers travel in the
-/// AMQP header table, which the broker reads for neither purpose.
-///
-/// Where a step does not reach:
-///
-/// * an owned transaction ([`OwnedTransactions`](ruststream::OwnedTransactions)) - take the step
-///   between `begin` and `commit` on the borrowed form ([`TransactionalPublisher`]) instead, which
-///   keeps the properties;
-/// * a publish inside a `TestApp`-driven handler, which the [`Out`](ruststream::runtime::Out)
-///   slot does not attribute to the slot, and which the in-process test broker carries nowhere -
-///   assert on properties against a real broker.
+/// Implemented for this crate's live publishers, the in-process test publisher and the
+/// [`Out`](ruststream::runtime::Out) slot entry, so the same call works in a handler, in a
+/// startup hook and under the test harness.
 ///
 /// # Examples
 ///
@@ -282,7 +276,7 @@ impl<P: NativePublish + TransactionalPublisher + ?Sized> TransactionalPublisher
             policy (or one of its transitions) at the include site, and bound an `Out` slot \
             with `LapinPublishExt` to take a step inside a handler"
 )]
-pub trait LapinPublishExt: NativePublish {
+pub trait LapinPublishExt: Publisher {
     /// Publishes through this publisher with the AMQP `priority` property set.
     ///
     /// # Examples
@@ -346,19 +340,18 @@ pub trait LapinPublishExt: NativePublish {
     }
 }
 
-impl<P: NativePublish + ?Sized> LapinPublishExt for P {}
+impl LapinPublishExt for crate::publisher::LapinPublisher {}
+impl LapinPublishExt for crate::publisher::ConfirmsPublisher {}
+impl LapinPublishExt for crate::publisher::ServerTxPublisher {}
+#[cfg(feature = "testing")]
+impl LapinPublishExt for crate::testing::LapinTestPublisher {}
 
-/// Carries the steps onto an [`Out`](ruststream::runtime::Out) slot, so a handler bounding its
-/// slot with [`LapinPublishExt`] takes them on the injected publisher.
-impl<P: NativePublish, M: OutSlot> NativePublish for SlotPublisher<P, M> {
-    async fn publish_native(
-        &self,
-        msg: OutgoingMessage<'_>,
-        properties: &MessageProperties,
-    ) -> Result<(), Self::Error> {
-        self.inner().publish_native(msg, properties).await
-    }
-}
+// Grafted onto the slot entry a handler body actually holds, next to the framework's own
+// capability delegations on it. Resolving the step there keeps the publish attributed to its
+// slot; an impl one layer down would be reached by autoderef past the entry instead, and the
+// publish would leave through the unwrapped publisher, where the harness's per-slot capture
+// never sees it.
+impl<M: OutSlot, W: LapinPublishExt, E: Send + Sync, Body> LapinPublishExt for Slot<M, W, E, Body> {}
 
 #[cfg(test)]
 mod tests {
@@ -366,11 +359,10 @@ mod tests {
     use std::sync::Mutex;
 
     use ruststream::runtime::PublishExt;
-    use ruststream::{Outgoing, Serialized};
+    use ruststream::{HeaderMap, Outgoing, Serialized};
 
     use super::{
-        Duration, LapinPublishExt, MessageProperties, NativePublish, OutgoingMessage, Publisher,
-        ShortString,
+        Duration, EXPIRATION_HEADER, LapinPublishExt, OutgoingMessage, PRIORITY_HEADER, Publisher,
     };
     use crate::error::AmqpError;
 
@@ -385,12 +377,12 @@ mod tests {
         }
     }
 
-    /// A publisher that keeps what the step handed it.
+    /// A publisher that keeps the headers each publish arrived with.
     #[derive(Debug, Default)]
-    struct Recorder(Mutex<Vec<MessageProperties>>);
+    struct Recorder(Mutex<Vec<HeaderMap>>);
 
     impl Recorder {
-        fn seen(&self) -> Vec<MessageProperties> {
+        fn seen(&self) -> Vec<HeaderMap> {
             self.0.lock().expect("recorder mutex poisoned").clone()
         }
     }
@@ -398,28 +390,24 @@ mod tests {
     impl Publisher for Recorder {
         type Error = AmqpError;
 
-        async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-            self.publish_native(msg, &MessageProperties::default())
-                .await
-        }
-    }
-
-    impl NativePublish for Recorder {
-        fn publish_native(
+        fn publish(
             &self,
-            _msg: OutgoingMessage<'_>,
-            properties: &MessageProperties,
+            msg: OutgoingMessage<'_>,
         ) -> impl Future<Output = Result<(), Self::Error>> + Send {
             self.0
                 .lock()
                 .expect("recorder mutex poisoned")
-                .push(properties.clone());
+                .push(msg.headers().clone());
             ready(Ok(()))
         }
     }
 
-    fn expiration_of(properties: &MessageProperties) -> Option<&str> {
-        properties.expiration.as_ref().map(ShortString::as_str)
+    impl LapinPublishExt for Recorder {}
+
+    fn property(headers: &HeaderMap, name: &str) -> Option<String> {
+        headers
+            .get(name)
+            .map(|value| String::from_utf8_lossy(value).into_owned())
     }
 
     #[tokio::test]
@@ -450,13 +438,18 @@ mod tests {
             .expect("publish");
 
         let seen = recorder.seen();
-        assert_eq!(seen[0].priority, Some(3));
-        assert_eq!(expiration_of(&seen[0]), Some("30000"));
-        assert_eq!(seen[1].priority, Some(9));
-        assert_eq!(expiration_of(&seen[1]), Some("1500"));
+        assert_eq!(property(&seen[0], PRIORITY_HEADER).as_deref(), Some("3"));
         assert_eq!(
-            seen[2],
-            MessageProperties::default(),
+            property(&seen[0], EXPIRATION_HEADER).as_deref(),
+            Some("30000")
+        );
+        assert_eq!(property(&seen[1], PRIORITY_HEADER).as_deref(), Some("9"));
+        assert_eq!(
+            property(&seen[1], EXPIRATION_HEADER).as_deref(),
+            Some("1500")
+        );
+        assert!(
+            seen[2].is_empty(),
             "a publish without a step must leave both properties off the frame"
         );
     }
@@ -476,7 +469,31 @@ mod tests {
             .expect("publish");
 
         let seen = recorder.seen();
-        assert_eq!(seen[0].priority, Some(5));
-        assert_eq!(expiration_of(&seen[0]), Some("1000"));
+        assert_eq!(property(&seen[0], PRIORITY_HEADER).as_deref(), Some("5"));
+        assert_eq!(
+            property(&seen[0], EXPIRATION_HEADER).as_deref(),
+            Some("1000")
+        );
+    }
+
+    // The step is a base, so it loses to the call site on the key it names - the merge rule the
+    // framework applies to every publisher's base headers.
+    #[tokio::test]
+    async fn the_call_site_wins_over_the_step() {
+        let recorder = Recorder::default();
+        let mut headers = HeaderMap::new();
+        headers.insert(PRIORITY_HEADER, "1");
+
+        recorder
+            .with_priority(9)
+            .message(&Wire::empty_object())
+            .with_headers(headers)
+            .to("orders")
+            .publish()
+            .await
+            .expect("publish");
+
+        let seen = recorder.seen();
+        assert_eq!(property(&seen[0], PRIORITY_HEADER).as_deref(), Some("1"));
     }
 }

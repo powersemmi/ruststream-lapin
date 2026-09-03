@@ -13,7 +13,6 @@ use tracing::warn;
 
 use super::broker::{ConnectedLapinTestBroker, TestBrokerState};
 use crate::error::AmqpError;
-use crate::publish_step::{MessageProperties, NativePublish};
 
 type Buffered = (String, Bytes, HeaderMap);
 
@@ -114,18 +113,6 @@ impl Publisher for LapinTestPublisher {
             msg.headers(),
         );
         ready(Ok(()))
-    }
-}
-
-/// Accepts a publish step and drops its properties: the in-process router carries a payload and
-/// headers, and has no AMQP frame to write one onto.
-impl NativePublish for LapinTestPublisher {
-    async fn publish_native(
-        &self,
-        msg: OutgoingMessage<'_>,
-        _step: &MessageProperties,
-    ) -> Result<(), Self::Error> {
-        self.publish(msg).await
     }
 }
 

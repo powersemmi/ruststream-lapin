@@ -4,8 +4,8 @@
 //! them where the protocol puts them; every other header lands in the `headers` field table as a
 //! `LongString` (an arbitrary byte string, so binary values survive the round trip).
 //!
-//! The properties a [publish step](crate::publish_step) carries are written last, over whatever
-//! the headers resolved to.
+//! The mapping runs both ways, so a delivery reports its native properties back under the same
+//! header names it would have been published with.
 
 use std::time::Duration;
 
@@ -15,14 +15,37 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::HeaderMap;
 
 use crate::error::AmqpError;
-use crate::publish_step::MessageProperties;
+use crate::publish_step::{EXPIRATION_HEADER, PRIORITY_HEADER};
 
 /// Delivery mode 2 marks a message persistent; 1 is transient.
 const PERSISTENT: u8 = 2;
 const TRANSIENT: u8 = 1;
 
 /// Header names that map onto native AMQP properties instead of the header table.
-const PROPERTY_HEADERS: [&str; 4] = ["content-type", "correlation-id", "reply-to", "message-id"];
+const PROPERTY_HEADERS: [&str; 6] = [
+    "content-type",
+    "correlation-id",
+    "reply-to",
+    "message-id",
+    PRIORITY_HEADER,
+    EXPIRATION_HEADER,
+];
+
+/// Reads a header whose value is decimal ASCII, the wire form both per-message properties use.
+fn digits<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, AmqpError> {
+    let Some(value) = headers.get(name) else {
+        return Ok(None);
+    };
+    let text = std::str::from_utf8(value)
+        .ok()
+        .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()));
+    text.map(Some).ok_or_else(|| {
+        AmqpError::InvalidOptions(format!(
+            "the {name} header carries whole decimal digits; got {:?}",
+            String::from_utf8_lossy(value)
+        ))
+    })
+}
 
 pub(crate) fn short(value: &str, what: &str) -> Result<ShortString, AmqpError> {
     ShortString::try_new(value).map_err(|err| {
@@ -44,12 +67,10 @@ pub(crate) fn expiration_millis(ttl: Duration) -> ShortString {
     ShortString::from(millis.to_string())
 }
 
-/// Builds publish properties from `headers`, routing well-known names into native properties,
-/// and applies the per-message properties the publish step carried.
+/// Builds publish properties from `headers`, routing well-known names into native properties.
 pub(crate) fn properties_for_publish(
     headers: &HeaderMap,
     persistent: bool,
-    step: &MessageProperties,
 ) -> Result<BasicProperties, AmqpError> {
     let mut properties = BasicProperties::default().with_delivery_mode(if persistent {
         PERSISTENT
@@ -69,6 +90,17 @@ pub(crate) fn properties_for_publish(
     if let Some(value) = headers.message_id() {
         properties = properties.with_message_id(short(value, "message-id header")?);
     }
+    if let Some(value) = digits(headers, PRIORITY_HEADER)? {
+        let priority = value.parse::<u8>().map_err(|_| {
+            AmqpError::InvalidOptions(format!(
+                "the {PRIORITY_HEADER} header carries an AMQP priority (0..=255); got {value:?}"
+            ))
+        })?;
+        properties = properties.with_priority(priority);
+    }
+    if let Some(value) = digits(headers, EXPIRATION_HEADER)? {
+        properties = properties.with_expiration(short(value, "expiration header")?);
+    }
 
     let mut table = FieldTable::default();
     for (name, value) in headers.iter() {
@@ -82,13 +114,6 @@ pub(crate) fn properties_for_publish(
     }
     if !table.inner().is_empty() {
         properties = properties.with_headers(table);
-    }
-
-    if let Some(priority) = step.priority {
-        properties = properties.with_priority(priority);
-    }
-    if let Some(expiration) = &step.expiration {
-        properties = properties.with_expiration(expiration.clone());
     }
 
     Ok(properties)
@@ -126,6 +151,15 @@ pub(crate) fn headers_from_properties(properties: &BasicProperties) -> HeaderMap
             Bytes::copy_from_slice(value.as_str().as_bytes()),
         );
     }
+    if let Some(value) = properties.priority() {
+        headers.insert(PRIORITY_HEADER, Bytes::from(value.to_string()));
+    }
+    if let Some(value) = properties.expiration() {
+        headers.insert(
+            EXPIRATION_HEADER,
+            Bytes::copy_from_slice(value.as_str().as_bytes()),
+        );
+    }
 
     if let Some(table) = properties.headers() {
         for (name, value) in table.inner() {
@@ -146,11 +180,6 @@ pub(crate) fn headers_from_properties(properties: &BasicProperties) -> HeaderMap
 mod tests {
     use super::*;
 
-    /// The publish of a call that took no step.
-    fn no_step() -> MessageProperties {
-        MessageProperties::default()
-    }
-
     #[test]
     fn round_trips_well_known_and_custom_headers() {
         let headers: HeaderMap = [
@@ -163,7 +192,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let properties = properties_for_publish(&headers, true, &no_step()).expect("valid headers");
+        let properties = properties_for_publish(&headers, true).expect("valid headers");
         assert_eq!(
             properties.content_type().as_ref().map(ShortString::as_str),
             Some("application/json")
@@ -183,8 +212,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-blob", Bytes::from_static(&[0u8, 159, 146, 150]));
 
-        let properties =
-            properties_for_publish(&headers, false, &no_step()).expect("valid headers");
+        let properties = properties_for_publish(&headers, false).expect("valid headers");
         let back = headers_from_properties(&properties);
         assert_eq!(back.get("x-blob"), Some([0u8, 159, 146, 150].as_slice()));
         assert_eq!(properties.delivery_mode(), &Some(TRANSIENT));
@@ -195,30 +223,48 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("correlation-id", vec![b'x'; 300]);
 
-        let err = properties_for_publish(&headers, true, &no_step()).expect_err("over 255 bytes");
+        let err = properties_for_publish(&headers, true).expect_err("over 255 bytes");
         assert!(matches!(err, AmqpError::InvalidOptions(_)));
     }
 
     #[test]
-    fn step_properties_land_on_the_native_fields() {
-        let step = MessageProperties {
-            priority: Some(7),
-            expiration: Some(expiration_millis(Duration::from_secs(30))),
-        };
+    fn the_property_headers_land_on_the_native_fields_and_round_trip() {
+        let mut headers = HeaderMap::new();
+        headers.insert(PRIORITY_HEADER, "7");
+        headers.insert(
+            EXPIRATION_HEADER,
+            expiration_millis(Duration::from_secs(30))
+                .as_str()
+                .to_owned(),
+        );
 
-        let properties =
-            properties_for_publish(&HeaderMap::new(), true, &step).expect("valid properties");
+        let properties = properties_for_publish(&headers, true).expect("valid properties");
         assert_eq!(properties.priority(), &Some(7));
         assert_eq!(
             properties.expiration().as_ref().map(ShortString::as_str),
             Some("30000")
         );
+        // Consumed into the frame, so they do not also travel in the header table.
+        assert!(properties.headers().is_none());
+
+        let back = headers_from_properties(&properties);
+        assert_eq!(back.get(PRIORITY_HEADER), Some(b"7".as_slice()));
+        assert_eq!(back.get(EXPIRATION_HEADER), Some(b"30000".as_slice()));
     }
 
     #[test]
-    fn priority_and_expiration_headers_stay_in_the_table() {
-        // The quiet failure the publish steps exist for: written as headers, both names travel
-        // in the header table, where RabbitMQ reads neither of them.
+    fn a_property_header_that_is_not_decimal_is_an_error_not_a_silent_drop() {
+        let mut headers = HeaderMap::new();
+        headers.insert(PRIORITY_HEADER, "high");
+
+        let err = properties_for_publish(&headers, true).expect_err("not decimal");
+        assert!(matches!(err, AmqpError::InvalidOptions(_)), "got {err}");
+    }
+
+    #[test]
+    fn the_unprefixed_names_stay_in_the_table() {
+        // The quiet failure the publish steps exist for: written under the protocol's own field
+        // names, both travel in the header table, where RabbitMQ reads neither of them.
         let headers: HeaderMap = [
             ("priority", b"7".as_slice()),
             ("expiration", b"30000".as_slice()),
@@ -226,7 +272,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let properties = properties_for_publish(&headers, true, &no_step()).expect("valid headers");
+        let properties = properties_for_publish(&headers, true).expect("valid headers");
         assert_eq!(properties.priority(), &None);
         assert_eq!(properties.expiration(), &None);
         let table = properties.headers().as_ref().expect("header table");
