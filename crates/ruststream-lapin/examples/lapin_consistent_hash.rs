@@ -21,16 +21,16 @@ struct Order {
 // (the binding key), so orders spread evenly and each key always lands on the same shard.
 #[subscriber(RabbitQueue::new("orders-shard-a")
     .bind(RabbitExchange::consistent_hash("orders-by-key"), "1"))]
-async fn shard_a(order: &Order) -> HandlerResult {
+async fn shard_a(order: &Order) -> HandlerOutcome {
     println!("shard a: order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 #[subscriber(RabbitQueue::new("orders-shard-b")
     .bind(RabbitExchange::consistent_hash("orders-by-key"), "1"))]
-async fn shard_b(order: &Order) -> HandlerResult {
+async fn shard_b(order: &Order) -> HandlerOutcome {
     println!("shard b: order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:shards]
 

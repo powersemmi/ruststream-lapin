@@ -21,10 +21,10 @@ use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use tokio::sync::Notify;
 
-use ruststream::runtime::{AppInfo, Ctx, HandlerResult, PublishExt, RustStream, State};
+use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, PublishExt, RustStream, State};
 use ruststream::{
-    Broker, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned,
-    Publisher, Subscriber, TransactionalPublisher, nonzero, subscriber,
+    Broker, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
+    Partitioned, Publisher, Serialized, Subscriber, TransactionalPublisher, nonzero, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
@@ -568,12 +568,12 @@ struct KeyedState {
 }
 
 #[subscriber(RabbitQueue::new(KEYED_LANES_QUEUE), workers(4, by_key))]
-async fn keyed_handler(order: &KeyedOrder, State(lanes): State<Lanes>) -> HandlerResult {
+async fn keyed_handler(order: &KeyedOrder, State(lanes): State<Lanes>) -> HandlerOutcome {
     lanes.enter(&order.tenant, order.id);
     // Widen the window so an erroneous same-key overlap would actually collide in `active`.
     tokio::time::sleep(Duration::from_millis(25)).await;
     lanes.leave(&order.tenant);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 /// Declares the keyed-lanes queue durable and empty, deleting any leftover from an aborted run so
@@ -774,17 +774,17 @@ async fn ctx_di(
     Ctx(redelivered): Ctx<keys::Redelivered>,
     Ctx(tag): Ctx<keys::DeliveryTag>,
     State(probe): State<CtxDiProbe>,
-) -> HandlerResult {
+) -> HandlerOutcome {
     {
         let mut seen = probe.seen.lock().expect("seen mutex poisoned");
         assert_eq!(order.seq, seen.len() as u64, "prequeued order preserved");
         seen.push((routing_key, redelivered, tag));
         if seen.len() < probe.expected {
-            return HandlerResult::Ack;
+            return HandlerOutcome::ack();
         }
     }
     probe.done.notify_waiters();
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -936,6 +936,17 @@ fn expiration_of(delivery: &lapin::message::Delivery) -> Option<String> {
         .map(|value| value.as_str().to_owned())
 }
 
+/// Payload bytes under a name of their own: the property tests assert on the frame, so the body
+/// must reach the broker exactly as written, with no codec on the way.
+#[derive(Outgoing, Serialized)]
+struct Wire(Vec<u8>);
+
+impl Wire {
+    fn of(bytes: &[u8]) -> Self {
+        Self(bytes.to_vec())
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publish_steps_reach_the_native_amqp_properties() {
     let Some(url) = amqp_url() else { return };
@@ -958,7 +969,7 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     publisher
         .with_priority(4)
         .with_expiration(Duration::from_secs(60))
-        .raw(b"{\"id\":1}")
+        .message(&Wire::of(b"{\"id\":1}"))
         .to(&stepped_queue)
         .publish()
         .await
@@ -973,7 +984,7 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     publisher.begin_transaction().await.expect("begin");
     publisher
         .with_priority(9)
-        .raw(b"{\"id\":2}")
+        .message(&Wire::of(b"{\"id\":2}"))
         .to(&stepped_queue)
         .publish()
         .await
@@ -990,7 +1001,7 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     headers.insert("priority", "4");
     headers.insert("expiration", "60000");
     publisher
-        .raw(b"{\"id\":3}")
+        .message(&Wire::of(b"{\"id\":3}"))
         .with_headers(headers)
         .to(&headers_queue)
         .publish()

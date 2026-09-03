@@ -29,9 +29,9 @@ struct OrderPlaced {
     .bind(RabbitExchange::topic("events"), "order.*")
     .dead_letter_exchange("dead-letters")
     .prefetch(nonzero!(16)))]
-async fn on_order(event: &OrderPlaced) -> HandlerResult {
+async fn on_order(event: &OrderPlaced) -> HandlerOutcome {
     println!("order event {}", event.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:descriptor]
 
@@ -40,9 +40,9 @@ async fn on_order(event: &OrderPlaced) -> HandlerResult {
 #[subscriber(RabbitQueue::new("bounded")
     .argument("x-message-ttl", AMQPValue::LongLongInt(60_000))
     .argument("x-max-length", AMQPValue::LongLongInt(100_000)))]
-async fn on_bounded(event: &OrderPlaced) -> HandlerResult {
+async fn on_bounded(event: &OrderPlaced) -> HandlerOutcome {
     println!("bounded order {}", event.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:arguments]
 
@@ -51,12 +51,12 @@ async fn on_bounded(event: &OrderPlaced) -> HandlerResult {
 // the delay, then dead-letters back here - durable, off the service process. The waiting queue
 // (`charges.retry` by default) is declared under `declare_topology`.
 #[subscriber(RabbitQueue::new("charges").delay(Delay::dlx_ttl()))]
-async fn on_charge(event: &OrderPlaced) -> HandlerResult {
+async fn on_charge(event: &OrderPlaced) -> HandlerOutcome {
     if event.id == 0 {
         // Not ready yet: come back in 30s instead of spinning on an immediate requeue.
-        return HandlerResult::retry_after(Duration::from_secs(30));
+        return HandlerOutcome::retry_after(Duration::from_secs(30));
     }
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:delay]
 

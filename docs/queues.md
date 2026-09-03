@@ -88,7 +88,7 @@ native dead-letter target. A handler that drops a message settles with
 
 ## Delayed retry
 
-A handler that returns `HandlerResult::retry_after(delay)` asks for redelivery no sooner than
+A handler that returns `HandlerOutcome::retry_after(delay)` asks for redelivery no sooner than
 `delay` - the not-ready-yet case, where an immediate requeue would spin. By default the
 runtime handles this with its broker-agnostic fallback (the delayed copy waits in the service
 process, at-most-once over the window). `.delay(..)` makes it native instead: the message parks

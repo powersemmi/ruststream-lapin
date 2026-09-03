@@ -33,9 +33,9 @@ struct Stock {
 // A plain publishing handler: decode the request, return the reply. `Err` settles without
 // replying, and the requester's timeout is the recovery mechanism.
 #[subscriber("inventory.check", publish("inventory.check.unrouted"))]
-async fn check(req: &CheckStock) -> Result<Stock, HandlerResult> {
+async fn check(req: &CheckStock) -> Result<Stock, HandlerOutcome> {
     if req.sku.is_empty() {
-        return Err(HandlerResult::drop());
+        return Err(HandlerOutcome::drop());
     }
     // Stand-in for a warehouse lookup.
     Ok(Stock {

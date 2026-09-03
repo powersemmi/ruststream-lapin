@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
+use ruststream::runtime::{AppInfo, HandlerOutcome, RustStream};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
@@ -383,17 +383,17 @@ struct Order {
 }
 
 #[subscriber("orders")]
-async fn ack_order(order: &Order) -> HandlerResult {
+async fn ack_order(order: &Order) -> HandlerOutcome {
     let _ = order;
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 // The descriptor form must mount against the test broker through the testing-gated
 // `SubscriptionSource<LapinTestBroker>` impl on `RabbitQueue`.
 #[subscriber(RabbitQueue::new("payments"))]
-async fn ack_payment(order: &Order) -> HandlerResult {
+async fn ack_payment(order: &Order) -> HandlerOutcome {
     let _ = order;
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 /// Counts how many times the retry handler ran, so the test can wire it as typed app state.
@@ -401,14 +401,14 @@ async fn ack_payment(order: &Order) -> HandlerResult {
 struct Attempts(Arc<AtomicUsize>);
 
 #[subscriber(RabbitQueue::new("retry"))]
-async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerResult {
+async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerOutcome {
     let _ = order;
     // Requeue once, then acknowledge: exercises the `nack(requeue = true)` -> `enqueued`
     // re-count balanced against the delivery's `Drop` -> `consumed` decrement.
     if ctx.state().0.fetch_add(1, Ordering::SeqCst) == 0 {
-        HandlerResult::retry()
+        HandlerOutcome::retry()
     } else {
-        HandlerResult::Ack
+        HandlerOutcome::ack()
     }
 }
 
@@ -437,12 +437,12 @@ async fn test_app_drives_lapin_test_broker_to_quiescence() {
         .subscriber("orders")
         .assert_called_once()
         .with(&Order { id: 1 })
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
     tb.broker::<LapinTestBroker>()
         .subscriber("payments")
         .assert_called_once()
         .with(&Order { id: 2 })
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }
@@ -466,13 +466,13 @@ async fn test_app_requeue_stays_balanced() {
     tb.broker::<LapinTestBroker>()
         .subscriber("retry")
         .assert_called(2)
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }
 
 #[subscriber(RabbitQueue::new("rpc.in"), publish("rpc.fallback"))]
-async fn echo_id(order: &Order) -> Result<Order, HandlerResult> {
+async fn echo_id(order: &Order) -> Result<Order, HandlerOutcome> {
     Ok(Order { id: order.id })
 }
 

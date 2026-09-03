@@ -77,22 +77,22 @@ where
 // order either way; only an unreachable inventory service (the RPC timed out or failed) asks
 // the broker to redeliver and try again later.
 #[subscriber("orders")]
-async fn place_order(order: &Order, Out(inventory): Out<impl RequestReply>) -> HandlerResult {
+async fn place_order(order: &Order, Out(inventory): Out<impl RequestReply>) -> HandlerOutcome {
     match check_stock(inventory, &order.sku, order.quantity).await {
         Ok(stock) if stock.available => {
             println!("order accepted: {} x{}", order.sku, order.quantity);
-            HandlerResult::Ack
+            HandlerOutcome::ack()
         }
         Ok(_) => {
             println!(
                 "order rejected, out of stock: {} x{}",
                 order.sku, order.quantity
             );
-            HandlerResult::Ack
+            HandlerOutcome::ack()
         }
         Err(err) => {
             eprintln!("inventory unavailable, retrying later: {err}");
-            HandlerResult::retry()
+            HandlerOutcome::retry()
         }
     }
 }

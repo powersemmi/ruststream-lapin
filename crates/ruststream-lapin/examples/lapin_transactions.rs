@@ -62,12 +62,12 @@ where
 
 // --8<-- [start:handler]
 #[subscriber("orders")]
-async fn ship(order: &Order, Out(shipments): Out<impl TransactionalPublisher>) -> HandlerResult {
+async fn ship(order: &Order, Out(shipments): Out<impl TransactionalPublisher>) -> HandlerOutcome {
     if dispatch(shipments, order).await.is_err() {
         // Nothing was committed; ask for redelivery and try the whole fan-out again.
-        return HandlerResult::retry();
+        return HandlerOutcome::retry();
     }
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 

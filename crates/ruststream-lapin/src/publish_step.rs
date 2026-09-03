@@ -5,7 +5,7 @@
 //! header table, which the broker reads for neither purpose.
 //!
 //! ```text
-//! publisher.with_priority(3).raw(b"{}").to("orders").publish().await?;
+//! publisher.with_priority(3).message(&order).publish().await?;
 //! ```
 
 use std::time::Duration;
@@ -53,8 +53,8 @@ mod sealed {
 /// A publisher with per-message AMQP properties attached, produced by the steps of
 /// [`LapinPublishExt`].
 ///
-/// It is a [`Publisher`] itself: `message(..)` / `raw(..)` follow the step as they would on the
-/// publisher, and the steps chain, each filling its own property.
+/// It is a [`Publisher`] itself: `message(..)` follows the step as it would on the publisher,
+/// and the steps chain, each filling its own property.
 ///
 /// # Examples
 ///
@@ -62,8 +62,15 @@ mod sealed {
 /// use std::time::Duration;
 ///
 /// use ruststream::runtime::PublishExt;
-/// use ruststream::{Broker, ConnectedBroker};
+/// use ruststream::{Broker, Outgoing};
 /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishExt};
+/// use serde::Serialize;
+///
+/// #[derive(Outgoing, Serialize)]
+/// #[outgoing(name = "orders")]
+/// struct Order {
+///     id: u64,
+/// }
 ///
 /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
@@ -72,8 +79,7 @@ mod sealed {
 /// publisher
 ///     .with_priority(3)
 ///     .with_expiration(Duration::from_secs(30))
-///     .raw(b"{}")
-///     .to("orders")
+///     .message(&Order { id: 1 })
 ///     .publish()
 ///     .await?;
 /// # Ok(())
@@ -102,19 +108,27 @@ impl<'a, P: NativePublish + ?Sized> WithProperties<'a, P> {
     /// # Examples
     ///
     /// ```no_run
+    /// use std::time::Duration;
+    ///
     /// use ruststream::runtime::PublishExt;
-    /// use ruststream::{Broker, ConnectedBroker};
+    /// use ruststream::{Broker, Outgoing};
     /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishExt};
+    /// use serde::Serialize;
+    ///
+    /// #[derive(Outgoing, Serialize)]
+    /// #[outgoing(name = "orders")]
+    /// struct Order {
+    ///     id: u64,
+    /// }
     ///
     /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
     /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
     /// let publisher = connected.publisher(LapinPublish::default());
     ///
     /// publisher
-    ///     .with_expiration(std::time::Duration::from_secs(30))
+    ///     .with_expiration(Duration::from_secs(30))
     ///     .with_priority(9)
-    ///     .raw(b"{}")
-    ///     .to("orders")
+    ///     .message(&Order { id: 1 })
     ///     .publish()
     ///     .await?;
     /// # Ok(())
@@ -137,8 +151,15 @@ impl<'a, P: NativePublish + ?Sized> WithProperties<'a, P> {
     /// use std::time::Duration;
     ///
     /// use ruststream::runtime::PublishExt;
-    /// use ruststream::{Broker, ConnectedBroker};
+    /// use ruststream::{Broker, Outgoing};
     /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishExt};
+    /// use serde::Serialize;
+    ///
+    /// #[derive(Outgoing, Serialize)]
+    /// #[outgoing(name = "orders")]
+    /// struct Order {
+    ///     id: u64,
+    /// }
     ///
     /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
     /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
@@ -146,8 +167,7 @@ impl<'a, P: NativePublish + ?Sized> WithProperties<'a, P> {
     ///
     /// publisher
     ///     .with_expiration(Duration::from_secs(30))
-    ///     .raw(b"{}")
-    ///     .to("orders")
+    ///     .message(&Order { id: 1 })
     ///     .publish()
     ///     .await?;
     /// # Ok(())
@@ -234,8 +254,15 @@ impl<P: NativePublish + TransactionalPublisher + ?Sized> TransactionalPublisher
 ///
 /// ```no_run
 /// use ruststream::runtime::PublishExt;
-/// use ruststream::{Broker, ConnectedBroker};
+/// use ruststream::{Broker, Outgoing};
 /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishExt};
+/// use serde::Serialize;
+///
+/// #[derive(Outgoing, Serialize)]
+/// #[outgoing(name = "orders.expedited")]
+/// struct Expedited {
+///     id: u64,
+/// }
 ///
 /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
@@ -243,8 +270,7 @@ impl<P: NativePublish + TransactionalPublisher + ?Sized> TransactionalPublisher
 ///
 /// publisher
 ///     .with_priority(9)
-///     .raw(b"{}")
-///     .to("orders.expedited")
+///     .message(&Expedited { id: 1 })
 ///     .publish()
 ///     .await?;
 /// # Ok(())
@@ -263,14 +289,21 @@ pub trait LapinPublishExt: NativePublish {
     ///
     /// ```no_run
     /// use ruststream::runtime::PublishExt;
-    /// use ruststream::{Broker, ConnectedBroker};
+    /// use ruststream::{Broker, Outgoing};
     /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishExt};
+    /// use serde::Serialize;
+    ///
+    /// #[derive(Outgoing, Serialize)]
+    /// #[outgoing(name = "orders")]
+    /// struct Order {
+    ///     id: u64,
+    /// }
     ///
     /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
     /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
     /// let publisher = connected.publisher(LapinPublish::default());
     ///
-    /// publisher.with_priority(9).raw(b"{}").to("orders").publish().await?;
+    /// publisher.with_priority(9).message(&Order { id: 1 }).publish().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -286,8 +319,15 @@ pub trait LapinPublishExt: NativePublish {
     /// use std::time::Duration;
     ///
     /// use ruststream::runtime::PublishExt;
-    /// use ruststream::{Broker, ConnectedBroker};
+    /// use ruststream::{Broker, Outgoing};
     /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishExt};
+    /// use serde::Serialize;
+    ///
+    /// #[derive(Outgoing, Serialize)]
+    /// #[outgoing(name = "orders")]
+    /// struct Order {
+    ///     id: u64,
+    /// }
     ///
     /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
     /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
@@ -295,8 +335,7 @@ pub trait LapinPublishExt: NativePublish {
     ///
     /// publisher
     ///     .with_expiration(Duration::from_secs(30))
-    ///     .raw(b"{}")
-    ///     .to("orders")
+    ///     .message(&Order { id: 1 })
     ///     .publish()
     ///     .await?;
     /// # Ok(())
@@ -327,12 +366,24 @@ mod tests {
     use std::sync::Mutex;
 
     use ruststream::runtime::PublishExt;
+    use ruststream::{Outgoing, Serialized};
 
     use super::{
         Duration, LapinPublishExt, MessageProperties, NativePublish, OutgoingMessage, Publisher,
         ShortString,
     };
     use crate::error::AmqpError;
+
+    /// The payload the steps travel with: bytes under a name of their own, so the publish stays
+    /// on the builder without dragging a codec into a test about AMQP properties.
+    #[derive(Outgoing, Serialized)]
+    struct Wire(Vec<u8>);
+
+    impl Wire {
+        fn empty_object() -> Self {
+            Self(b"{}".to_vec())
+        }
+    }
 
     /// A publisher that keeps what the step handed it.
     #[derive(Debug, Default)]
@@ -378,7 +429,7 @@ mod tests {
         recorder
             .with_priority(3)
             .with_expiration(Duration::from_secs(30))
-            .raw(b"{}")
+            .message(&Wire::empty_object())
             .to("orders")
             .publish()
             .await
@@ -386,13 +437,13 @@ mod tests {
         recorder
             .with_expiration(Duration::from_millis(1500))
             .with_priority(9)
-            .raw(b"{}")
+            .message(&Wire::empty_object())
             .to("orders")
             .publish()
             .await
             .expect("publish");
         recorder
-            .raw(b"{}")
+            .message(&Wire::empty_object())
             .to("orders")
             .publish()
             .await
@@ -418,7 +469,7 @@ mod tests {
             .with_priority(1)
             .with_expiration(Duration::from_secs(1))
             .with_priority(5)
-            .raw(b"{}")
+            .message(&Wire::empty_object())
             .to("orders")
             .publish()
             .await

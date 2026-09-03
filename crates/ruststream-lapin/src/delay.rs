@@ -2,7 +2,7 @@
 //! the delayed-message-exchange plugin.
 //!
 //! `retry_after(delay)` (a handler returning
-//! [`HandlerResult::retry_after`](ruststream::runtime::HandlerResult::retry_after), or a message
+//! [`HandlerOutcome::retry_after`](ruststream::runtime::HandlerOutcome::retry_after), or a message
 //! `nack_after`-ed) asks the broker to redeliver a message no sooner than `delay`. AMQP has no
 //! native per-message delay, so without a delay queue the runtime falls back to core's
 //! broker-agnostic deferred re-publish, which is at-most-once over the delay window and keeps the

@@ -20,11 +20,11 @@ struct Payment {
 
 // --8<-- [start:handler]
 #[subscriber(RabbitQueue::new("payments"))]
-async fn accept(payment: &Payment) -> HandlerResult {
+async fn accept(payment: &Payment) -> HandlerOutcome {
     if payment.amount == 0 {
-        return HandlerResult::drop();
+        return HandlerOutcome::drop();
     }
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 
@@ -48,7 +48,7 @@ async fn main() {
         .subscriber("payments")
         .assert_called_once()
         .with(&Payment { amount: 100 })
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
     // --8<-- [end:testapp]

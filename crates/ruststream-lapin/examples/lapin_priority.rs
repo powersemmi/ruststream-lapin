@@ -33,7 +33,7 @@ struct Shipment {
 /// An expedited order jumps the queue: `with_priority` writes the AMQP `priority` property, and
 /// `with_expiration` gives the message an hour before the broker drops it.
 #[subscriber("orders")]
-async fn ship(order: &Order, Out(shipments): Out<impl LapinPublishExt>) -> HandlerResult {
+async fn ship(order: &Order, Out(shipments): Out<impl LapinPublishExt>) -> HandlerOutcome {
     let shipment = Shipment { order_id: order.id };
     let sent = if order.expedited {
         shipments
@@ -48,9 +48,9 @@ async fn ship(order: &Order, Out(shipments): Out<impl LapinPublishExt>) -> Handl
 
     if sent.is_err() {
         // Nothing was handed to the broker; ask for redelivery and ship it again.
-        return HandlerResult::retry();
+        return HandlerOutcome::retry();
     }
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:steps]
 

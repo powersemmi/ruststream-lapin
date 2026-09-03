@@ -4,7 +4,7 @@
 //! definition (a value named after the function) that `routes` collects into a `Router`. The
 //! bare-string subscriber form consumes the queue with that name off the default exchange, so the
 //! routing key is the queue name and consumers on the same queue compete for deliveries. Each
-//! delivery is `basic.ack`ed when the handler returns `Ack`.
+//! delivery is `basic.ack`ed when the handler returns an acking outcome.
 
 use ruststream_lapin::prelude::*;
 use schemars::JsonSchema;
@@ -41,9 +41,9 @@ pub async fn confirm(order: &Order) -> Confirmation {
 }
 
 /// Logs cancellations from the `cancellations` queue. No reply, so it returns a plain
-/// `HandlerResult`; `Ack` triggers the `basic.ack`.
+/// `HandlerOutcome`; `ack()` triggers the `basic.ack`.
 #[subscriber("cancellations")]
-pub async fn on_cancel(order: &Order) -> HandlerResult {
+pub async fn on_cancel(order: &Order) -> HandlerOutcome {
     println!("order {} ({}) cancelled", order.id, order.item);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
