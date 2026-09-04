@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use ruststream::codec::Codec;
 use ruststream::prelude::*;
 use ruststream::testing::{TestApp, expect_published};
 use ruststream::{Broker, ConnectedBroker, Outgoing};
@@ -37,7 +38,8 @@ struct Audit;
 
 impl<Egress, Enc> Handle<Order, (), Outs<(Slot<DefaultSlot, Egress, Enc>,)>, AmqpContext> for Audit
 where
-    Slot<DefaultSlot, Egress, Enc>: Publish,
+    Egress: Publisher,
+    Enc: Codec + Send + Sync,
 {
     async fn handle(
         &self,

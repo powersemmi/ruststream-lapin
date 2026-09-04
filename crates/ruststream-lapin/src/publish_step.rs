@@ -20,7 +20,7 @@
 
 use std::time::Duration;
 
-use ruststream::runtime::{OutSlot, Slot};
+use ruststream::runtime::{OutPipeline, OutSlot, Slot};
 use ruststream::{HeaderMap, OutgoingMessage, Publisher, TransactionalPublisher};
 
 use crate::convert;
@@ -351,7 +351,10 @@ impl LapinPublishExt for crate::testing::LapinTestPublisher {}
 // slot; an impl one layer down would be reached by autoderef past the entry instead, and the
 // publish would leave through the unwrapped publisher, where the harness's per-slot capture
 // never sees it.
-impl<M: OutSlot, W: LapinPublishExt, E: Send + Sync, Body> LapinPublishExt for Slot<M, W, E, Body> {}
+impl<M: OutSlot, W: LapinPublishExt, E: Send + Sync, Pipe: OutPipeline, Body> LapinPublishExt
+    for Slot<M, W, E, Pipe, Body>
+{
+}
 
 #[cfg(test)]
 mod tests {
