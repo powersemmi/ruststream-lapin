@@ -51,9 +51,9 @@ fn app() -> impl App {
     // --8<-- [start:mount]
     RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
         // The reply wiring is a declaration: the policy holds no connection, and the runtime
-        // pairs it with the broker at startup. `transform` rides the publisher named before it.
+        // pairs it with the broker at startup. `transform` rides the position named before it.
         b.include(check)
-            .publisher(Publish::default())
+            .out(Reply, Publish::default())
             .transform(DirectReplyTo);
     })
     // --8<-- [end:mount]

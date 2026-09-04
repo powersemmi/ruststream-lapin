@@ -58,6 +58,6 @@ async fn ship(order: &Order, Out(shipments): Out<impl LapinPublishExt>) -> Handl
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(ship).publisher(Publish::default());
+        b.include(ship).out(DefaultSlot, Publish::default()).build();
     })
 }

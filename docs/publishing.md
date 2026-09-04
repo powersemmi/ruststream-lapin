@@ -48,7 +48,7 @@ purpose. That quiet failure is what the steps exist to prevent.
 
 The framework's `publish(..)` form works unchanged: the handler returns the reply value and the
 runtime encodes and publishes it through the reply wiring the mount site chained -
-`.publisher(Publish::default())`, then `.codec(..)` or `.transform(..)` where the reply needs
+`.out(Reply, Publish::default())`, then `.codec(..)` or `.transform(..)` where the reply needs
 them (see the
 [core publishing guide](https://powersemmi.github.io/ruststream/) for the whole surface,
 including per-publisher transforms and app-wide publish layers). The
@@ -82,8 +82,9 @@ published), server transactions give all-or-nothing visibility.
 
 ## Transactional fan-out from a handler
 
-Attach the policy at the mount site and the handler receives the live publisher as an `Out`
-parameter. Here an order fans out into per-item shipment commands, published all-or-nothing:
+Bind the policy to the handler's slot at the mount site (`.out(marker, policy)`, sealed with
+`.build()`) and the handler receives the live publisher as an `Out` parameter. Here an order fans
+out into per-item shipment commands, published all-or-nothing:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:dispatch"

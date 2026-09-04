@@ -272,9 +272,10 @@ impl<P: TransactionalPublisher + ?Sized> TransactionalPublisher for WithProperti
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a RabbitMQ publisher, so it has no per-message AMQP properties",
-    note = "the publish steps live on this crate's live publishers: attach a `LapinPublish` \
-            policy (or one of its transitions) at the include site, and bound an `Out` slot \
-            with `LapinPublishExt` to take a step inside a handler"
+    note = "the publish steps live on this crate's live publishers: bind a `LapinPublish` \
+            policy (or one of its transitions) to the slot at the include site with \
+            `.out(marker, policy)`, and bound the `Out` parameter with `LapinPublishExt` to \
+            take a step inside a handler"
 )]
 pub trait LapinPublishExt: Publisher {
     /// Publishes through this publisher with the AMQP `priority` property set.

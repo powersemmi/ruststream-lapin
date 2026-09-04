@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, RustStream, State, SubscriberSettings};
+use ruststream::runtime::{
+    AppInfo, Ctx, HandlerOutcome, Reply, RustStream, State, SubscriberSettings,
+};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
@@ -567,7 +569,7 @@ async fn direct_reply_transform_redirects_and_echoes() {
     let probe = broker.clone().connect().await.expect("connect");
     let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(broker, |b| {
         b.include(echo_id)
-            .publisher(LapinTestPublish)
+            .out(Reply, LapinTestPublish)
             .transform(DirectReplyTo);
     });
 

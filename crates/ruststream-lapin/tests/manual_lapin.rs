@@ -10,7 +10,6 @@
 
 use std::time::Duration;
 
-use ruststream::codec::Codec;
 use ruststream::prelude::*;
 use ruststream::testing::{TestApp, expect_published};
 use ruststream::{Broker, ConnectedBroker, Outgoing};
@@ -32,19 +31,19 @@ struct Audited {
     via: String,
 }
 
-/// A body over its injected publisher and this crate's per-delivery context: both axes stay
-/// generic in the impl, so the definition is a zero-sized value the mount site builds for free.
+/// A body over its injected publisher and this crate's per-delivery context: the arena is
+/// described by its entry rather than by the mount's wiring, so the definition is a zero-sized
+/// value the mount site builds for free and the signature survives a mount that adds a step.
 struct Audit;
 
-impl<Egress, Enc> Handle<Order, (), Outs<(Slot<DefaultSlot, Egress, Enc>,)>, AmqpContext> for Audit
+impl<Egress> Handle<Order, (), Outs<(Egress,)>, AmqpContext> for Audit
 where
-    Egress: Publisher,
-    Enc: Codec + Send + Sync,
+    Egress: OutEntry<DefaultSlot, Wire: Publisher>,
 {
     async fn handle(
         &self,
         order: &Order,
-        outs: &Outs<(Slot<DefaultSlot, Egress, Enc>,)>,
+        outs: &Outs<(Egress,)>,
         ctx: &mut Context<'_, AmqpContext>,
     ) -> Result<(), HandlerOutcome> {
         let audited = Audited {
@@ -73,7 +72,8 @@ async fn a_handle_body_mounts_on_the_queue_descriptor() {
 
     let app = RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(broker, |b| {
         b.include(subscriber(RabbitQueue::new("orders"), Audit).build())
-            .publisher(LapinTestPublish);
+            .out(DefaultSlot, LapinTestPublish)
+            .build();
     });
     let tb = TestApp::start(app).await.expect("start");
 

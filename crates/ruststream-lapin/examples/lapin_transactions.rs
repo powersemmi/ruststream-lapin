@@ -3,8 +3,8 @@
 //! handler.
 //!
 //! The handler names the capability it needs (`Out<impl TransactionalPublisher>`); the concrete
-//! publisher comes from the policy declared at the mount site (`.publisher(..)`) and arrives
-//! already live, so a handler never sees a publisher without a connection.
+//! publisher comes from the policy the mount site binds to the slot (`.out(marker, policy)`) and
+//! arrives already live, so a handler never sees a publisher without a connection.
 //!
 //! Two `TransactionalPublisher` implementations share the same
 //! `begin / publish / commit / abort` surface, picked on the policy:
@@ -79,7 +79,9 @@ fn app() -> impl App {
         // `TransactionalPublish` is the confirms policy, the uniform mount-site name every
         // broker in the family answers to. For AMQP server-side atomicity instead, name the
         // other transition: `LapinPublish::default().server_tx()`.
-        b.include(ship).publisher(TransactionalPublish::default());
+        b.include(ship)
+            .out(DefaultSlot, TransactionalPublish::default())
+            .build();
         // --8<-- [end:confirms]
     })
 }

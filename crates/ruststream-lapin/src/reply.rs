@@ -36,7 +36,7 @@ use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
 /// let broker = LapinBroker::new("amqp://localhost:5672");
 /// let app = RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
 ///     b.include(check)
-///         .publisher(Publish::default())
+///         .out(Reply, Publish::default())
 ///         .transform(DirectReplyTo);
 /// });
 /// # let _ = app;
