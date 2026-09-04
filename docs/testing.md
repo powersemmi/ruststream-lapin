@@ -20,7 +20,11 @@ ruststream-lapin = { version = "0.7", features = ["testing"] }
 --8<-- "crates/ruststream-lapin/examples/lapin_testing.rs:testapp"
 ```
 
-Delivery metadata comes along: a handler reading AMQP fields through
+[Pages](queues.md#pages) come along: the transport assembles them on the client exactly as the
+real subscriber does, so a `&[T]` handler mounts on the test broker unchanged and
+`assert_page_sizes(..)` reports the pages the body was handed.
+
+Delivery metadata comes along too: a handler reading AMQP fields through
 [`AmqpContext`](queues.md#delivery-metadata) - as `Ctx<RoutingKey>` extractors or a
 `ctx: &mut Context<'_, AmqpContext>` parameter - mounts on the test broker unchanged. The
 transport reports those fields against its own model: the default exchange, the queue name as the

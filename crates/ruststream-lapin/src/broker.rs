@@ -273,7 +273,13 @@ impl ConnectedLapinBroker {
             .await
             .map_err(AmqpError::subscribe)?;
 
-        Ok(LapinSubscriber::new(channel, consumer, queue, delay))
+        Ok(LapinSubscriber::new(
+            channel,
+            consumer,
+            queue,
+            def.page_wait_of(),
+            delay,
+        ))
     }
 
     /// A live publisher for `policy`.

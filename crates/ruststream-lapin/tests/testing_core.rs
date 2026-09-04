@@ -13,12 +13,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, RustStream, State};
+use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, RustStream, State, SubscriberSettings};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap, IncomingMessage, OutgoingMessage,
-    Partitioned, Publisher, Subscriber, TransactionalPublisher, testing::expect_published,
+    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap, IncomingMessage,
+    OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
+    testing::expect_published,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::testing::{
@@ -595,6 +596,89 @@ async fn direct_reply_transform_redirects_and_echoes() {
         1,
         "a request without reply-to falls through to the mount name"
     );
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// AMQP has no wire batch, so the in-process transport pages the way the real subscriber does -
+// on the client, capped by the size the stream was opened with. Everything is already queued
+// when the stream is first polled, so the pages close on the size rather than on a deadline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pages_are_capped_by_the_size_the_stream_is_opened_with() {
+    let broker = connected().await;
+    let mut subscriber = broker.subscribe("pages").await.expect("subscribe");
+    let publisher = broker.publisher(LapinTestPublish);
+    for payload in [b"p1".as_slice(), b"p2", b"p3", b"p4", b"p5"] {
+        publisher
+            .publish(OutgoingMessage::new("pages", payload))
+            .await
+            .expect("publish");
+    }
+
+    let mut sizes = Vec::new();
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    let mut stream = Box::pin(subscriber.batches(nonzero!(2)));
+    while payloads.len() < 5 {
+        let page = tokio::time::timeout(WAIT, stream.next())
+            .await
+            .expect("page within timeout")
+            .expect("stream has next")
+            .expect("page ok");
+        sizes.push(page.len());
+        for msg in page {
+            payloads.push(msg.payload().to_vec());
+            msg.ack().await.expect("ack");
+        }
+    }
+
+    assert_eq!(
+        sizes,
+        vec![2, 2, 1],
+        "a page never carries more than its size"
+    );
+    assert_eq!(
+        payloads,
+        vec![
+            b"p1".to_vec(),
+            b"p2".to_vec(),
+            b"p3".to_vec(),
+            b"p4".to_vec(),
+            b"p5".to_vec()
+        ],
+        "paging preserves the publish order across pages"
+    );
+}
+
+#[subscriber(RabbitQueue::new("pages.settled"))]
+async fn settle_page(orders: &[Order]) -> HandlerOutcome {
+    let _ = orders.len();
+    HandlerOutcome::ack()
+}
+
+// A page handler mounts on the in-process transport exactly as it does on a server: the
+// capability is there either way, and the harness reports the pages the body was handed. Each
+// publish returns at quiescence, so each delivery arrives as a page of its own; that the size
+// caps a fuller page is proven against the transport above and against a server by the
+// conformance batch suite.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn page_handlers_mount_on_the_in_process_transport() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(settle_page.batch(nonzero!(4)));
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    for id in 1..=2 {
+        tb.broker::<LapinTestBroker>()
+            .publish("pages.settled", &Order { id })
+            .await
+            .expect("publish must drive the page to quiescence");
+    }
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("pages.settled")
+        .assert_page_sizes(&[1, 1])
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }

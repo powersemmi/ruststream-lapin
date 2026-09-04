@@ -1,11 +1,15 @@
 //! The in-process subscriber and its delivery type.
 
 use std::future::{Future, ready};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use futures::Stream;
 use ruststream::testing::Coordinator;
-use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Subscriber};
+use ruststream::{
+    AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, Partitioned,
+    Subscriber,
+};
 
 use super::broker::TestBrokerState;
 use super::router::{DeliveryReceiver, DeliverySender, SubscriptionId, TestDelivery};
@@ -14,31 +18,32 @@ use crate::error::AmqpError;
 /// In-process subscriber on one queue name.
 ///
 /// Yielded messages settle like the real transport: ack finalizes, `nack(true)` re-enqueues to
-/// this same subscription, `nack(false)` drops.
+/// this same subscription, `nack(false)` drops. Pages are assembled on the client, exactly as the
+/// real subscriber assembles them, so a page handler mounts in process unchanged.
 pub struct LapinTestSubscriber {
-    state: Arc<TestBrokerState>,
-    id: SubscriptionId,
+    deliveries: BufferedSubscriber<TestDeliveries>,
     queue: String,
-    sender: DeliverySender,
-    receiver: DeliveryReceiver,
-    coordinator: Option<Coordinator>,
-    /// The next channel-local delivery tag. AMQP numbers deliveries per channel from 1, and a
-    /// requeued message is handed out under a new tag.
-    next_tag: u64,
 }
 
 impl LapinTestSubscriber {
     pub(crate) fn open(state: &Arc<TestBrokerState>, queue: String) -> Self {
         let (id, sender, receiver) = state.router.subscribe(queue.clone());
         let coordinator = state.coordinator();
-        Self {
+        let deliveries = TestDeliveries {
             state: Arc::clone(state),
             id,
-            queue,
+            queue: queue.clone(),
             sender,
             receiver,
             coordinator,
             next_tag: 1,
+        };
+        Self {
+            // The framework's own short deadline, not the descriptor's `page_wait`: that one is
+            // tuned against a network the in-process transport does not have, and a test should
+            // not pay it per partial page.
+            deliveries: BufferedSubscriber::new(deliveries),
+            queue,
         }
     }
 
@@ -46,12 +51,6 @@ impl LapinTestSubscriber {
     #[must_use]
     pub fn queue(&self) -> &str {
         &self.queue
-    }
-}
-
-impl Drop for LapinTestSubscriber {
-    fn drop(&mut self) {
-        self.state.router.unsubscribe(self.id);
     }
 }
 
@@ -73,6 +72,49 @@ impl Subscriber for LapinTestSubscriber {
     ///
     /// Cancel safe and re-enterable: the receiver is polled in place, so dropping the returned
     /// stream loses nothing and `stream` can be called again.
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+        self.deliveries.stream()
+    }
+}
+
+impl BatchSubscriber for LapinTestSubscriber {
+    type Batch = Vec<LapinTestMessage>;
+
+    /// # Cancel safety
+    ///
+    /// As cancel safe as [`stream`](Subscriber::stream) between polls; dropping the returned
+    /// stream abandons the page being assembled.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, <Self as Subscriber>::Error>> + Send + '_ {
+        self.deliveries.batches(size)
+    }
+}
+
+/// The transport-side half: one injected delivery at a time, which is what the client pages over.
+struct TestDeliveries {
+    state: Arc<TestBrokerState>,
+    id: SubscriptionId,
+    queue: String,
+    sender: DeliverySender,
+    receiver: DeliveryReceiver,
+    coordinator: Option<Coordinator>,
+    /// The next channel-local delivery tag. AMQP numbers deliveries per channel from 1, and a
+    /// requeued message is handed out under a new tag.
+    next_tag: u64,
+}
+
+impl Drop for TestDeliveries {
+    fn drop(&mut self) {
+        self.state.router.unsubscribe(self.id);
+    }
+}
+
+impl Subscriber for TestDeliveries {
+    type Message = LapinTestMessage;
+    type Error = AmqpError;
+
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let Self {
             receiver,

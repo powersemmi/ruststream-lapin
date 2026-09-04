@@ -1,6 +1,7 @@
 //! The queue descriptor: what a subscription binds to and, optionally, expects to exist.
 
 use std::num::NonZeroU16;
+use std::time::Duration;
 
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::SubscriptionSource;
@@ -11,6 +12,14 @@ use crate::delay::Delay;
 use crate::error::AmqpError;
 use crate::exchange::RabbitExchange;
 use crate::subscriber::LapinSubscriber;
+
+/// How long a partial page waits for more deliveries before it goes to the handler, unless
+/// [`RabbitQueue::page_wait`] says otherwise.
+///
+/// Fifty milliseconds is a compromise for a network transport: long enough for the broker to
+/// push the rest of a prefetch window across the connection (many round trips on any healthy
+/// link), short enough to bound how long the tail of a backlog sits unhandled.
+const DEFAULT_PAGE_WAIT: Duration = Duration::from_millis(50);
 
 /// The queue implementation selected at declaration time.
 ///
@@ -61,6 +70,7 @@ pub struct RabbitQueue {
     bindings: Vec<(RabbitExchange, String)>,
     arguments: FieldTable,
     prefetch: Option<NonZeroU16>,
+    page_wait: Duration,
     delay: Option<Delay>,
 }
 
@@ -77,6 +87,7 @@ impl RabbitQueue {
             bindings: Vec::new(),
             arguments: FieldTable::default(),
             prefetch: None,
+            page_wait: DEFAULT_PAGE_WAIT,
             delay: None,
         }
     }
@@ -179,6 +190,32 @@ impl RabbitQueue {
         self
     }
 
+    /// Caps how long a partial page waits for more deliveries before it goes to the handler.
+    /// Defaults to 50 ms.
+    ///
+    /// AMQP delivers one message at a time, so a page handler's `batch(n)` is honoured by
+    /// collecting deliveries on the client; how big a page may be is the registration's word, and
+    /// this is the other half of the trade-off - the ceiling on how long a page that never fills
+    /// keeps its deliveries. Raise it on a slow link or a sparse queue where fuller pages are
+    /// worth the wait; lower it where a page arriving late costs more than a page arriving short.
+    /// It has no effect on a subscription without a page handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_lapin::RabbitQueue;
+    ///
+    /// let orders = RabbitQueue::new("orders").page_wait(Duration::from_millis(200));
+    /// # let _ = orders;
+    /// ```
+    #[must_use]
+    pub fn page_wait(mut self, page_wait: Duration) -> Self {
+        self.page_wait = page_wait;
+        self
+    }
+
     /// Makes `retry_after` / `nack_after` native, routing delayed redeliveries through a broker
     /// waiting queue instead of the core in-process fallback.
     ///
@@ -227,6 +264,10 @@ impl RabbitQueue {
 
     pub(crate) fn prefetch_or(&self, broker_default: Option<NonZeroU16>) -> Option<NonZeroU16> {
         self.prefetch.or(broker_default)
+    }
+
+    pub(crate) const fn page_wait_of(&self) -> Duration {
+        self.page_wait
     }
 
     pub(crate) fn delay_config(&self) -> Option<&Delay> {

@@ -23,8 +23,9 @@ use tokio::sync::Notify;
 
 use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, PublishExt, RustStream, State};
 use ruststream::{
-    Broker, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
-    Partitioned, Publisher, Serialized, Subscriber, TransactionalPublisher, nonzero, subscriber,
+    BatchSubscriber, Broker, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, Outgoing,
+    OutgoingMessage, Partitioned, Publisher, Serialized, Subscriber, TransactionalPublisher,
+    nonzero, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
@@ -305,6 +306,64 @@ async fn binary_header_values_round_trip() {
     );
     assert_eq!(msg.headers().get_str("x-tenant"), Some("acme"));
     msg.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// Pages are assembled on the client, so a page can only hold what the broker has already pushed:
+// a prefetch window narrower than the page size caps the page below it. The generous `page_wait`
+// is what makes that the only explanation - with time to spare, an uncapped page would fill.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prefetch_caps_a_page_below_its_size() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let queue = unique("paged-prefetch");
+    let mut subscriber = broker
+        .subscribe(
+            transient_queue(&queue)
+                .prefetch(nonzero!(1))
+                .page_wait(Duration::from_millis(200)),
+        )
+        .await
+        .expect("subscribe");
+
+    let publisher = broker.publisher(LapinPublish::default());
+    for payload in [b"m1".as_slice(), b"m2", b"m3"] {
+        publisher
+            .publish(OutgoingMessage::new(&queue, payload))
+            .await
+            .expect("publish");
+    }
+
+    let mut received: Vec<Vec<u8>> = Vec::new();
+    let mut stream = Box::pin(subscriber.batches(nonzero!(3)));
+    while received.len() < 3 {
+        let page = tokio::time::timeout(WAIT, stream.next())
+            .await
+            .expect("page within timeout")
+            .expect("stream has next")
+            .expect("page ok");
+        assert_eq!(
+            page.len(),
+            1,
+            "a one-delivery prefetch window cannot fill a page of three"
+        );
+        for msg in page {
+            received.push(msg.payload().to_vec());
+            msg.ack().await.expect("ack");
+        }
+    }
+    assert_eq!(
+        received,
+        vec![b"m1".to_vec(), b"m2".to_vec(), b"m3".to_vec()],
+        "paging preserves the delivery order"
+    );
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");

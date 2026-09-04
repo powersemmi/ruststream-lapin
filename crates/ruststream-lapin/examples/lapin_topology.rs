@@ -46,6 +46,20 @@ async fn on_bounded(event: &OrderPlaced) -> HandlerOutcome {
 }
 // --8<-- [end:arguments]
 
+// --8<-- [start:pages]
+// A page handler: the slice parameter is what asks for one. AMQP pushes one delivery at a time,
+// so the crate assembles the page on the client - hence the two descriptor options: the prefetch
+// window has to be at least as wide as the page size or the broker never has enough in flight to
+// fill one, and `page_wait` caps how long a page that never fills keeps its deliveries.
+#[subscriber(RabbitQueue::new("settlements")
+    .prefetch(nonzero!(64))
+    .page_wait(Duration::from_millis(200)))]
+async fn on_settlement(events: &[OrderPlaced]) -> HandlerOutcome {
+    println!("settling {} orders", events.len());
+    HandlerOutcome::ack()
+}
+// --8<-- [end:pages]
+
 // --8<-- [start:delay]
 // `.delay(..)` makes `retry_after` native: a delayed message parks in a broker waiting queue for
 // the delay, then dead-letters back here - durable, off the service process. The waiting queue
@@ -73,6 +87,10 @@ fn app() -> impl App {
         b.include(on_order);
         b.include(on_bounded);
         b.include(on_charge);
+        // --8<-- [start:pages_mount]
+        // The page size is the mount site's word, and a page handler does not mount without it.
+        b.include(on_settlement.batch(nonzero!(32)));
+        // --8<-- [end:pages_mount]
     })
 }
 // --8<-- [end:app]

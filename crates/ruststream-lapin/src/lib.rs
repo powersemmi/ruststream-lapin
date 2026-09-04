@@ -13,6 +13,13 @@
 //! to the publisher's exchange (the default exchange unless configured, where the routing key
 //! addresses the queue with that name).
 //!
+//! AMQP pushes one `basic.deliver` at a time, so a page handler's size is honoured by assembling
+//! the page on the client: [`LapinSubscriber`] offers `BatchSubscriber` through the framework's
+//! own buffer. How the page forms is the descriptor's:
+//! [`prefetch`](RabbitQueue::prefetch) has to be at least as wide as the page, and
+//! [`page_wait`](RabbitQueue::page_wait) caps how long a page that never fills keeps its
+//! deliveries.
+//!
 //! Settlement uses the protocol natively, without client-side republishing:
 //!
 //! - ack sends `basic.ack`
