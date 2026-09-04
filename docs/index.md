@@ -38,8 +38,8 @@ imports this crate's prelude, and writes the family's uniform mount-site policy 
 
 - A subscription consumes one queue; the bare-string form `#[subscriber("orders")]` consumes the
   queue named `orders`, and the [`RabbitQueue`](queues.md) descriptor adds bindings, queue types,
-  and prefetch. A page handler names its size at the mount site and the crate assembles the page
-  on the client, since AMQP has no wire batch; see [Pages](queues.md#pages).
+  and prefetch. A batch handler names its size at the mount site and the crate assembles the batch
+  on the client, since AMQP has no wire batch; see [Batches](queues.md#batches).
 - On the publish side the message name is the routing key; the exchange is a property of the
   publish policy (the default exchange unless configured). See [Publishing](publishing.md).
 - Settlement is native: `ack` sends `basic.ack`, retry sends `basic.nack(requeue = true)`, drop
@@ -55,7 +55,7 @@ Which of the framework's optional capability traits this broker implements nativ
 | Capability | Native | Notes |
 | --- | --- | --- |
 | `Subscribe` | yes | Consumes the queue the subscription names; [`RabbitQueue`](queues.md) adds bindings, queue type, and prefetch. |
-| `BatchSubscriber` | yes, client-side | AMQP pushes one `basic.deliver` at a time, so there is no wire-level batch: the page is assembled on the client, to the size the mount site names, under the descriptor's prefetch window and `page_wait`. See [Pages](queues.md#pages). |
+| `BatchSubscriber` | yes, client-side | AMQP pushes one `basic.deliver` at a time, so there is no wire-level batch: the batch is assembled on the client, to the size the mount site names, under the descriptor's prefetch window and `batch_wait`. See [Batches](queues.md#batches). |
 | `TransactionalPublisher` | yes | Both transactional publishers: `.confirms()` buffers client-side and awaits every confirm on commit, `.server_tx()` uses AMQP channel transactions. See [Three publishers](publishing.md#three-publishers). |
 | `OwnedTransactions` | yes (confirms only) | A confirms transaction is a client-side buffer, so any number can be open on one handle. `server_tx` puts the channel itself into transactional mode, which is channel state with exactly one instance. |
 | `RequestReply` | yes | `LapinRequest` pairs into a requester over direct reply-to with correlation-id multiplexing. See [Request/reply](request-reply.md). |

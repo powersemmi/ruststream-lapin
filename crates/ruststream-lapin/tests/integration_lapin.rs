@@ -311,11 +311,12 @@ async fn binary_header_values_round_trip() {
     broker.shutdown().await.expect("shutdown");
 }
 
-// Pages are assembled on the client, so a page can only hold what the broker has already pushed:
-// a prefetch window narrower than the page size caps the page below it. The generous `page_wait`
-// is what makes that the only explanation - with time to spare, an uncapped page would fill.
+// Batches are assembled on the client, so a batch can only hold what the broker has already
+// pushed: a prefetch window narrower than the batch size caps the batch below it. The generous
+// `batch_wait` is what makes that the only explanation - with time to spare, an uncapped batch
+// would fill.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn prefetch_caps_a_page_below_its_size() {
+async fn prefetch_caps_a_batch_below_its_size() {
     let Some(url) = amqp_url() else { return };
     let broker = LapinBroker::new(url)
         .declare_topology(true)
@@ -323,12 +324,12 @@ async fn prefetch_caps_a_page_below_its_size() {
         .await
         .expect("connect");
 
-    let queue = unique("paged-prefetch");
+    let queue = unique("batched-prefetch");
     let mut subscriber = broker
         .subscribe(
             transient_queue(&queue)
                 .prefetch(nonzero!(1))
-                .page_wait(Duration::from_millis(200)),
+                .batch_wait(Duration::from_millis(200)),
         )
         .await
         .expect("subscribe");
@@ -344,17 +345,17 @@ async fn prefetch_caps_a_page_below_its_size() {
     let mut received: Vec<Vec<u8>> = Vec::new();
     let mut stream = Box::pin(subscriber.batches(nonzero!(3)));
     while received.len() < 3 {
-        let page = tokio::time::timeout(WAIT, stream.next())
+        let batch = tokio::time::timeout(WAIT, stream.next())
             .await
-            .expect("page within timeout")
+            .expect("batch within timeout")
             .expect("stream has next")
-            .expect("page ok");
+            .expect("batch ok");
         assert_eq!(
-            page.len(),
+            batch.len(),
             1,
-            "a one-delivery prefetch window cannot fill a page of three"
+            "a one-delivery prefetch window cannot fill a batch of three"
         );
-        for msg in page {
+        for msg in batch {
             received.push(msg.payload().to_vec());
             msg.ack().await.expect("ack");
         }
@@ -362,7 +363,7 @@ async fn prefetch_caps_a_page_below_its_size() {
     assert_eq!(
         received,
         vec![b"m1".to_vec(), b"m2".to_vec(), b"m3".to_vec()],
-        "paging preserves the delivery order"
+        "batching preserves the delivery order"
     );
 
     drop(stream);

@@ -18,8 +18,8 @@ use crate::error::AmqpError;
 /// In-process subscriber on one queue name.
 ///
 /// Yielded messages settle like the real transport: ack finalizes, `nack(true)` re-enqueues to
-/// this same subscription, `nack(false)` drops. Pages are assembled on the client, exactly as the
-/// real subscriber assembles them, so a page handler mounts in process unchanged.
+/// this same subscription, `nack(false)` drops. Batches are assembled on the client, exactly as
+/// the real subscriber assembles them, so a batch handler mounts in process unchanged.
 pub struct LapinTestSubscriber {
     deliveries: BufferedSubscriber<TestDeliveries>,
     queue: String,
@@ -39,9 +39,9 @@ impl LapinTestSubscriber {
             next_tag: 1,
         };
         Self {
-            // The framework's own short deadline, not the descriptor's `page_wait`: that one is
+            // The framework's own short deadline, not the descriptor's `batch_wait`: that one is
             // tuned against a network the in-process transport does not have, and a test should
-            // not pay it per partial page.
+            // not pay it per partial batch.
             deliveries: BufferedSubscriber::new(deliveries),
             queue,
         }
@@ -83,7 +83,7 @@ impl BatchSubscriber for LapinTestSubscriber {
     /// # Cancel safety
     ///
     /// As cancel safe as [`stream`](Subscriber::stream) between polls; dropping the returned
-    /// stream abandons the page being assembled.
+    /// stream abandons the batch being assembled.
     fn batches(
         &mut self,
         size: NonZeroUsize,
@@ -92,7 +92,8 @@ impl BatchSubscriber for LapinTestSubscriber {
     }
 }
 
-/// The transport-side half: one injected delivery at a time, which is what the client pages over.
+/// The transport-side half: one injected delivery at a time, which is what the client batches
+/// over.
 struct TestDeliveries {
     state: Arc<TestBrokerState>,
     id: SubscriptionId,

@@ -53,33 +53,33 @@ zero, so the zero sentinel cannot be written at all - leaving the prefetch unset
 "unlimited" is expressed. Write the literal with the framework's `nonzero!` macro, which rejects
 zero at compile time, as the descriptor above does.
 
-## Pages
+## Batches
 
-A handler taking a slice consumes a whole page, and the mount site names how big a page may be:
+A handler taking a slice consumes a whole batch, and the mount site names how big a batch may be:
 
 ```rust
---8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:pages"
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:batches"
 ```
 
 ```rust
---8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:pages_mount"
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:batches_mount"
 ```
 
-AMQP has no wire-level batch - the broker pushes one `basic.deliver` at a time - so the page is
-assembled here, on the client: deliveries collect until the page holds the size the mount asked
-for or `.page_wait(..)` elapses since the first of them, whichever comes first. Nothing at the
-mount site says so, which is the point; the size is the one word a page registration owes the
-broker, whichever broker it is, and everything about how the page forms is the descriptor's.
+AMQP has no wire-level batch - the broker pushes one `basic.deliver` at a time - so the batch is
+assembled here, on the client: deliveries collect until the batch holds the size the mount asked
+for or `.batch_wait(..)` elapses since the first of them, whichever comes first. Nothing at the
+mount site says so, which is the point; the size is the one word a batch registration owes the
+broker, whichever broker it is, and everything about how the batch forms is the descriptor's.
 
-`.page_wait(..)` defaults to 50 ms: long enough for the broker to push the rest of a prefetch
+`.batch_wait(..)` defaults to 50 ms: long enough for the broker to push the rest of a prefetch
 window across the connection, short enough to bound how long the tail of a backlog sits
-unhandled. Raise it on a slow link or a sparse queue where fuller pages are worth the wait; lower
-it where a page arriving late costs more than a page arriving short.
+unhandled. Raise it on a slow link or a sparse queue where fuller batches are worth the wait;
+lower it where a batch arriving late costs more than a batch arriving short.
 
-Two consequences are worth knowing. A page may be shorter than the size, because a partial page
-goes to the handler rather than waiting for traffic that may never come. And a page can only hold
-what the broker has already pushed, so a [prefetch](#prefetch) window narrower than the page size
-caps every page at the window: pair `.batch(n)` with a prefetch of at least `n`.
+Two consequences are worth knowing. A batch may be shorter than the size, because a partial batch
+goes to the handler rather than waiting for traffic that may never come. And a batch can only hold
+what the broker has already pushed, so a [prefetch](#prefetch) window narrower than the batch size
+caps every batch at the window: pair `.batch(n)` with a prefetch of at least `n`.
 
 ## Delivery metadata
 

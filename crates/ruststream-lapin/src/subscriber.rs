@@ -1,5 +1,5 @@
-//! The subscriber: a stream of AMQP deliveries from one queue consumer, paged on the client for
-//! the handlers that take a page.
+//! The subscriber: a stream of AMQP deliveries from one queue consumer, batched on the client for
+//! the handlers that take a batch.
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -22,7 +22,7 @@ use crate::message::LapinMessage;
 /// [`prefetch`](crate::LapinBroker::prefetch) unacknowledged deliveries are in flight, so
 /// consuming slower slows the producer side down instead of buffering without bound.
 ///
-/// It is a [`BatchSubscriber`] as well as a [`Subscriber`]: AMQP has no wire batch, so a page
+/// It is a [`BatchSubscriber`] as well as a [`Subscriber`]: AMQP has no wire batch, so a batch
 /// handler's size is honoured by collecting the deliveries here (see the
 /// [impl](#impl-BatchSubscriber-for-LapinSubscriber)).
 pub struct LapinSubscriber {
@@ -35,7 +35,7 @@ impl LapinSubscriber {
         channel: Channel,
         consumer: Consumer,
         queue: String,
-        page_wait: Duration,
+        batch_wait: Duration,
         delay: Option<DelayContext>,
     ) -> Self {
         let deliveries = Deliveries {
@@ -44,7 +44,7 @@ impl LapinSubscriber {
             delay,
         };
         Self {
-            deliveries: BufferedSubscriber::new(deliveries).max_wait(page_wait),
+            deliveries: BufferedSubscriber::new(deliveries).max_wait(batch_wait),
             queue,
         }
     }
@@ -81,20 +81,20 @@ impl Subscriber for LapinSubscriber {
     }
 }
 
-/// Pages are assembled on the client: AMQP delivers one `basic.deliver` at a time, so there is no
-/// wire batch to ask the broker for, and a page closes on the registration's size or on the
-/// descriptor's [`page_wait`](crate::RabbitQueue::page_wait), whichever comes first.
+/// Batches are assembled on the client: AMQP delivers one `basic.deliver` at a time, so there is
+/// no wire batch to ask the broker for, and a batch closes on the registration's size or on the
+/// descriptor's [`batch_wait`](crate::RabbitQueue::batch_wait), whichever comes first.
 ///
-/// A page can only hold what the broker has already pushed, so a subscription whose
-/// [`prefetch`](crate::RabbitQueue::prefetch) window is narrower than the registration's page size
-/// yields pages capped by the window rather than by the size.
+/// A batch can only hold what the broker has already pushed, so a subscription whose
+/// [`prefetch`](crate::RabbitQueue::prefetch) window is narrower than the registration's batch size
+/// yields batches capped by the window rather than by the size.
 impl BatchSubscriber for LapinSubscriber {
     type Batch = Vec<LapinMessage>;
 
     /// # Cancel safety
     ///
     /// As cancel safe as [`stream`](Subscriber::stream) between polls; dropping the returned
-    /// stream abandons the page being assembled, and the broker redelivers those deliveries when
+    /// stream abandons the batch being assembled, and the broker redelivers those deliveries when
     /// the channel closes.
     fn batches(
         &mut self,
@@ -104,7 +104,7 @@ impl BatchSubscriber for LapinSubscriber {
     }
 }
 
-/// The wire consumer, one `basic.deliver` at a time: everything above it pages on the client.
+/// The wire consumer, one `basic.deliver` at a time: everything above it batches on the client.
 struct Deliveries {
     // Kept alive for the lifetime of the subscription: dropping the channel cancels the
     // consumer server-side.

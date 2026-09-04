@@ -20,9 +20,9 @@ ruststream-lapin = { version = "0.7", features = ["testing"] }
 --8<-- "crates/ruststream-lapin/examples/lapin_testing.rs:testapp"
 ```
 
-[Pages](queues.md#pages) come along: the transport assembles them on the client exactly as the
+[Batches](queues.md#batches) come along: the transport assembles them on the client exactly as the
 real subscriber does, so a `&[T]` handler mounts on the test broker unchanged and
-`assert_page_sizes(..)` reports the pages the body was handed.
+`assert_batch_sizes(..)` reports the batches the body was handed.
 
 Delivery metadata comes along too: a handler reading AMQP fields through
 [`AmqpContext`](queues.md#delivery-metadata) - as `Ctx<RoutingKey>` extractors or a

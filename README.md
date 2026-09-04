@@ -32,10 +32,11 @@
   bare-string `#[subscriber("orders")]` form consumes the queue with that name.
 - **Infrastructure stays yours.** Descriptors describe the EXPECTED topology; nothing is created
   on the broker unless the service opts in with `.declare_topology(true)`.
-- **Pages without a wire batch.** AMQP pushes one `basic.deliver` at a time, so a page handler's
-  `.batch(n)` is honoured by assembling the page on the client - the mount site reads the same as
-  on a broker that pages natively. How the page forms stays the descriptor's: a prefetch window at
-  least as wide as the page, and `.page_wait(..)` capping how long a page that never fills waits.
+- **Batches without a wire batch.** AMQP pushes one `basic.deliver` at a time, so a batch handler's
+  `.batch(n)` is honoured by assembling the batch on the client - the mount site reads the same as
+  on a broker that batches natively. How the batch forms stays the descriptor's: a prefetch window
+  at least as wide as the batch, and `.batch_wait(..)` capping how long a batch that never fills
+  waits.
 - **Durable delayed retry.** `.delay(..)` routes `retry_after` through a broker TTL waiting queue
   that dead-letters back to the origin, keeping the delayed copy on the broker instead of the
   core in-process fallback.

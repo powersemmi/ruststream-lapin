@@ -602,17 +602,17 @@ async fn direct_reply_transform_redirects_and_echoes() {
     tb.shutdown().await.expect("shutdown");
 }
 
-// AMQP has no wire batch, so the in-process transport pages the way the real subscriber does -
+// AMQP has no wire batch, so the in-process transport batches the way the real subscriber does -
 // on the client, capped by the size the stream was opened with. Everything is already queued
-// when the stream is first polled, so the pages close on the size rather than on a deadline.
+// when the stream is first polled, so the batches close on the size rather than on a deadline.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pages_are_capped_by_the_size_the_stream_is_opened_with() {
+async fn batches_are_capped_by_the_size_the_stream_is_opened_with() {
     let broker = connected().await;
-    let mut subscriber = broker.subscribe("pages").await.expect("subscribe");
+    let mut subscriber = broker.subscribe("batches").await.expect("subscribe");
     let publisher = broker.publisher(LapinTestPublish);
     for payload in [b"p1".as_slice(), b"p2", b"p3", b"p4", b"p5"] {
         publisher
-            .publish(OutgoingMessage::new("pages", payload))
+            .publish(OutgoingMessage::new("batches", payload))
             .await
             .expect("publish");
     }
@@ -621,13 +621,13 @@ async fn pages_are_capped_by_the_size_the_stream_is_opened_with() {
     let mut payloads: Vec<Vec<u8>> = Vec::new();
     let mut stream = Box::pin(subscriber.batches(nonzero!(2)));
     while payloads.len() < 5 {
-        let page = tokio::time::timeout(WAIT, stream.next())
+        let batch = tokio::time::timeout(WAIT, stream.next())
             .await
-            .expect("page within timeout")
+            .expect("batch within timeout")
             .expect("stream has next")
-            .expect("page ok");
-        sizes.push(page.len());
-        for msg in page {
+            .expect("batch ok");
+        sizes.push(batch.len());
+        for msg in batch {
             payloads.push(msg.payload().to_vec());
             msg.ack().await.expect("ack");
         }
@@ -636,7 +636,7 @@ async fn pages_are_capped_by_the_size_the_stream_is_opened_with() {
     assert_eq!(
         sizes,
         vec![2, 2, 1],
-        "a page never carries more than its size"
+        "a batch never carries more than its size"
     );
     assert_eq!(
         payloads,
@@ -647,39 +647,39 @@ async fn pages_are_capped_by_the_size_the_stream_is_opened_with() {
             b"p4".to_vec(),
             b"p5".to_vec()
         ],
-        "paging preserves the publish order across pages"
+        "batching preserves the publish order across batches"
     );
 }
 
-#[subscriber(RabbitQueue::new("pages.settled"))]
-async fn settle_page(orders: &[Order]) -> HandlerOutcome {
+#[subscriber(RabbitQueue::new("batches.settled"))]
+async fn settle_batch(orders: &[Order]) -> HandlerOutcome {
     let _ = orders.len();
     HandlerOutcome::ack()
 }
 
-// A page handler mounts on the in-process transport exactly as it does on a server: the
-// capability is there either way, and the harness reports the pages the body was handed. Each
-// publish returns at quiescence, so each delivery arrives as a page of its own; that the size
-// caps a fuller page is proven against the transport above and against a server by the
+// A batch handler mounts on the in-process transport exactly as it does on a server: the
+// capability is there either way, and the harness reports the batches the body was handed. Each
+// publish returns at quiescence, so each delivery arrives as a batch of its own; that the size
+// caps a fuller batch is proven against the transport above and against a server by the
 // conformance batch suite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn page_handlers_mount_on_the_in_process_transport() {
+async fn batch_handlers_mount_on_the_in_process_transport() {
     let app =
         RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
-            b.include(settle_page.batch(nonzero!(4)));
+            b.include(settle_batch.batch(nonzero!(4)));
         });
     let tb = TestApp::start(app).await.expect("start");
 
     for id in 1..=2 {
         tb.broker::<LapinTestBroker>()
-            .publish("pages.settled", &Order { id })
+            .publish("batches.settled", &Order { id })
             .await
-            .expect("publish must drive the page to quiescence");
+            .expect("publish must drive the batch to quiescence");
     }
 
     tb.broker::<LapinTestBroker>()
-        .subscriber("pages.settled")
-        .assert_page_sizes(&[1, 1])
+        .subscriber("batches.settled")
+        .assert_batch_sizes(&[1, 1])
         .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");

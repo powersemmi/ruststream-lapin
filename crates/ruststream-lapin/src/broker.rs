@@ -277,7 +277,7 @@ impl ConnectedLapinBroker {
             channel,
             consumer,
             queue,
-            def.page_wait_of(),
+            def.batch_wait_of(),
             delay,
         ))
     }
