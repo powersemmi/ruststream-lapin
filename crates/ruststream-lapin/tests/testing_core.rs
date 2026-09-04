@@ -302,17 +302,17 @@ async fn transaction_abort_discards_buffer() {
     assert!(observed.is_empty(), "aborted messages must be discarded");
 }
 
-// The owned kind through the framework's typed sugar: `TypedPublisher::transaction()` opens one
-// transaction per call, each owning its buffer, so settling one never touches another.
+// The owned kind through the framework's typed sugar: `owned_transaction()` opens one transaction
+// per call, each owning its buffer, so settling one never touches another.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn owned_transactions_settle_independently_through_the_typed_sugar() {
-    use ruststream::runtime::TypedPublisher;
+    use ruststream::runtime::PublishExt;
 
     let broker = connected().await;
-    let publisher = TypedPublisher::new(broker.publisher(LapinTestPublish));
+    let publisher = broker.publisher(LapinTestPublish);
 
-    let mut kept = publisher.transaction().await.expect("open kept");
-    let mut discarded = publisher.transaction().await.expect("open discarded");
+    let mut kept = publisher.owned_transaction().await.expect("open kept");
+    let mut discarded = publisher.owned_transaction().await.expect("open discarded");
     kept.publish("orders", &Order { id: 1 })
         .await
         .expect("buffer kept");
@@ -557,7 +557,6 @@ async fn echo_id(order: &Order) -> Result<Order, HandlerOutcome> {
 // echo its correlation id, and fall through to the static destination without one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_reply_transform_redirects_and_echoes() {
-    use ruststream::runtime::TypedPublisher;
     use ruststream::testing::TestableBroker;
     use ruststream_lapin::DirectReplyTo;
 
@@ -566,8 +565,9 @@ async fn direct_reply_transform_redirects_and_echoes() {
     // test injects and observes through the other.
     let probe = broker.clone().connect().await.expect("connect");
     let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(broker, |b| {
-        let replies = TypedPublisher::new(LapinTestPublish).transform(DirectReplyTo);
-        b.include(echo_id).publisher(replies);
+        b.include(echo_id)
+            .publisher(LapinTestPublish)
+            .transform(DirectReplyTo);
     });
 
     // TestApp drives the lifecycle (subscriptions are open once `start` returns); the requests

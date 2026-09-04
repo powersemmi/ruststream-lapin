@@ -39,7 +39,7 @@
   buffers and awaits every broker confirm on commit (durable, fast, recommended);
   `.server_tx()` uses AMQP channel transactions for server-side atomicity.
 - **Owned and borrowed transactions.** Confirms buffer client-side, so the confirms publisher
-  also offers the owned kind: `transaction()` hands back a value owning its buffer, so any
+  also offers the owned kind: `owned_transaction()` hands back a value owning its buffer, so any
   number can be open on one handle, settling one never touches another, and the handle keeps
   publishing directly meanwhile. `server_tx` keeps only the borrowed kind - `tx.select` is
   channel state, one per channel.

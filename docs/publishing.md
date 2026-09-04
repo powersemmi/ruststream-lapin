@@ -47,7 +47,9 @@ purpose. That quiet failure is what the steps exist to prevent.
 ## Replying from a handler
 
 The framework's `publish(..)` form works unchanged: the handler returns the reply value and the
-runtime encodes and publishes it through the `TypedPublisher` the mount was given (see the
+runtime encodes and publishes it through the reply wiring the mount site chained -
+`.publisher(Publish::default())`, then `.codec(..)` or `.transform(..)` where the reply needs
+them (see the
 [core publishing guide](https://powersemmi.github.io/ruststream/) for the whole surface,
 including per-publisher transforms and app-wide publish layers). The
 [request/reply page](request-reply.md) shows the RPC variant, where a transform redirects each
@@ -102,12 +104,11 @@ Clones of a publisher share the underlying channel and transaction state.
 The framework has two transaction shapes, and which ones a publisher offers follows the
 transport:
 
-- **Borrowed** - the handle carries the transaction. `TypedPublisher::transactional()` then
-  `begin()` gives a scope over it, or call `begin_transaction / commit / abort` on the raw
-  publisher. Exactly one can be open per handle, so a second begin errors. Both publishers
-  support this.
-- **Owned** - the transaction is a value that owns its buffer, opened by
-  `TypedPublisher::transaction()` (or `OwnedTransactions::transaction` on the raw publisher).
+- **Borrowed** - the handle carries the transaction. `begin()` gives a scope over it, or call
+  `begin_transaction / commit / abort` on the raw publisher. Exactly one can be open per handle,
+  so a second begin errors. Both publishers support this.
+- **Owned** - the transaction is a value that owns its buffer, opened by `owned_transaction()`
+  (or `OwnedTransactions::transaction` on the raw publisher).
   Any number can be open on one handle at a time, settling one never touches another, and the
   handle keeps publishing directly meanwhile. `commit` and `abort` consume the value, so a
   double commit or a publish after settling is a compile error. Only the confirms publisher

@@ -12,16 +12,16 @@ use crate::events;
 /// a plain shipment handler.
 ///
 /// `record` replies through a policy targeting the `events` exchange (so the reply's routing key
-/// `order.recorded` is matched by topic bindings, not treated as a queue name). `TypedPublisher::new`
-/// pairs it with the default codec, reused to decode the event. The policy holds no connection, so
-/// the router is built long before anything connects and the runtime pairs it at startup. Naming
-/// the reply publisher is what commits that registration; `on_shipment` has no reply, so `include`
-/// commits it on its own. The router is a consuming builder, so the calls chain.
+/// `order.recorded` is matched by topic bindings, not treated as a queue name), named on the mount
+/// site with `publisher`; with no codec named after it the reply takes the default one, which also
+/// decodes the event. The policy holds no connection, so the router is built long before anything
+/// connects and the runtime pairs it at startup. `build` seals that reply wiring and commits the
+/// registration; `on_shipment` has no reply to wire, so `include` commits it on its own. The router
+/// is a consuming builder, so the calls chain.
 pub fn events() -> impl RouterDef<LapinBroker> {
-    let recorded = TypedPublisher::new(Publish::default().exchange("events"));
-
     Router::new()
         .include(events::record)
-        .publisher(recorded)
+        .publisher(Publish::default().exchange("events"))
+        .build()
         .include(events::on_shipment)
 }

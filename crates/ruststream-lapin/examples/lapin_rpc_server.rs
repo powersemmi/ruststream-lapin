@@ -50,10 +50,11 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     // --8<-- [start:mount]
     RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
-        // The reply publisher is a policy: it holds no connection, so it is declared here and
-        // paired with the broker by the runtime at startup.
-        let replies = TypedPublisher::new(Publish::default()).transform(DirectReplyTo);
-        b.include(check).publisher(replies);
+        // The reply wiring is a declaration: the policy holds no connection, and the runtime
+        // pairs it with the broker at startup. `transform` rides the publisher named before it.
+        b.include(check)
+            .publisher(Publish::default())
+            .transform(DirectReplyTo);
     })
     // --8<-- [end:mount]
 }

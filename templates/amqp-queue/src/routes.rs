@@ -11,17 +11,16 @@ use crate::orders;
 /// Builds the orders router: a publishing handler (replies to the `confirmations` queue) plus a
 /// plain one.
 ///
-/// `confirm` needs a publisher for its reply; `TypedPublisher::new` pairs the publish policy with
-/// the default codec, reused to decode the order. The policy holds no connection, so the router is
-/// built long before anything connects and the runtime pairs it at startup. Naming the reply
-/// publisher is what commits that registration; `on_cancel` has no reply, so `include` commits it
-/// on its own. The router is a consuming builder, so the calls chain; the registration list is
-/// opaque, hence `impl RouterDef`.
+/// `confirm` needs a publisher for its reply, named on the mount site with `publisher`; with no
+/// codec named after it the reply takes the default one, which also decodes the order. The policy
+/// holds no connection, so the router is built long before anything connects and the runtime pairs
+/// it at startup. `build` seals that reply wiring and commits the registration; `on_cancel` has no
+/// reply to wire, so `include` commits it on its own. The router is a consuming builder, so the
+/// calls chain; the registration list is opaque, hence `impl RouterDef`.
 pub fn orders() -> impl RouterDef<LapinBroker> {
-    let confirmations = TypedPublisher::new(Publish::default());
-
     Router::new()
         .include(orders::confirm)
-        .publisher(confirmations)
+        .publisher(Publish::default())
+        .build()
         .include(orders::on_cancel)
 }
