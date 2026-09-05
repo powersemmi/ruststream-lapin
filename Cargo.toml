@@ -18,7 +18,10 @@ authors = ["RustStream contributors"]
 [workspace.dependencies]
 ruststream-lapin = { path = "crates/ruststream-lapin" }
 
-ruststream = { version = ">=0.7.0, <0.8.0", default-features = false }
+# The lower bound names the pre-release on purpose: cargo keeps pre-releases out of a range that
+# does not mention one, so `>=0.7.0` alone would skip `0.7.0-rc.1`. The bound admits the candidate
+# now and the final `0.7.0` when it lands, so it needs no follow-up edit.
+ruststream = { version = ">=0.7.0-rc.1, <0.8.0", default-features = false }
 
 lapin = { version = "4.10", default-features = false, features = ["tokio"] }
 bytes = "1"
