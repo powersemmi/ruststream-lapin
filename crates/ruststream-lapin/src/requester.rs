@@ -1,6 +1,7 @@
 //! Request/reply over `RabbitMQ` direct reply-to (`amq.rabbitmq.reply-to`).
 
 use std::collections::HashMap;
+use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -68,8 +69,11 @@ impl LapinRequest {
 impl PublishPolicy<ConnectedLapinBroker> for LapinRequest {
     type Live = LapinRequester;
 
-    async fn pair(self, connected: &ConnectedLapinBroker) -> Result<Self::Live, PairError> {
-        Ok(self.bind(connected))
+    fn pair(
+        self,
+        connected: &ConnectedLapinBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(self.bind(connected)))
     }
 }
 

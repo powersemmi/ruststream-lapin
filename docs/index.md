@@ -7,15 +7,24 @@ requeues, and dead-lettering are protocol frames rather than client-side republi
 in-process test broker ships under the `testing` feature.
 
 ```toml
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-lapin = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-lapin = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
 `LapinBroker::new` is synchronous and does no I/O, so a RabbitMQ service is assembled with the
 same `#[ruststream::app]` macro as any other broker. The runtime connects the broker once at
 startup, before opening subscriptions; connecting consumes the broker and yields
-`ConnectedLapinBroker`, the only value carrying a subscribe or publish surface.
+`ConnectedLapinBroker`, the only value carrying a subscribe or publish surface. A service file
+imports `ruststream_lapin::prelude::*`, which brings the framework's own prelude with it.
+
+A handler body and a routes file name different things, so they import different things. A
+handler names capabilities - `Out<impl Publisher>`, `Out<impl TransactionalPublisher>`,
+`Out<impl RequestReply>` - and needs the framework's prelude alone, which is what keeps the same
+handler mountable on a real broker and on its in-process transport. A routes file names values,
+imports this crate's prelude, and writes the family's uniform mount-site policy names: `Publish`,
+`TransactionalPublish`, `Request`, aliased here to `LapinPublish`, `ConfirmsPublish` and
+`LapinRequest`.
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_quickstart.rs:handler"
@@ -29,7 +38,8 @@ startup, before opening subscriptions; connecting consumes the broker and yields
 
 - A subscription consumes one queue; the bare-string form `#[subscriber("orders")]` consumes the
   queue named `orders`, and the [`RabbitQueue`](queues.md) descriptor adds bindings, queue types,
-  and prefetch.
+  and prefetch. A batch handler names its size at the mount site and the crate assembles the batch
+  on the client, since AMQP has no wire batch; see [Batches](queues.md#batches).
 - On the publish side the message name is the routing key; the exchange is a property of the
   publish policy (the default exchange unless configured). See [Publishing](publishing.md).
 - Settlement is native: `ack` sends `basic.ack`, retry sends `basic.nack(requeue = true)`, drop
@@ -45,7 +55,7 @@ Which of the framework's optional capability traits this broker implements nativ
 | Capability | Native | Notes |
 | --- | --- | --- |
 | `Subscribe` | yes | Consumes the queue the subscription names; [`RabbitQueue`](queues.md) adds bindings, queue type, and prefetch. |
-| `BatchSubscriber` | no | AMQP pushes one `basic.deliver` at a time, so there is no wire-level batch. [Prefetch](queues.md#prefetch) is the flow-control window instead. |
+| `BatchSubscriber` | yes, client-side | AMQP pushes one `basic.deliver` at a time, so there is no wire-level batch: the batch is assembled on the client, to the size the mount site names, under the descriptor's prefetch window and `batch_wait`. See [Batches](queues.md#batches). |
 | `TransactionalPublisher` | yes | Both transactional publishers: `.confirms()` buffers client-side and awaits every confirm on commit, `.server_tx()` uses AMQP channel transactions. See [Three publishers](publishing.md#three-publishers). |
 | `OwnedTransactions` | yes (confirms only) | A confirms transaction is a client-side buffer, so any number can be open on one handle. `server_tx` puts the channel itself into transactional mode, which is channel state with exactly one instance. |
 | `RequestReply` | yes | `LapinRequest` pairs into a requester over direct reply-to with correlation-id multiplexing. See [Request/reply](request-reply.md). |

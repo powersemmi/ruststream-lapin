@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use ruststream::testing::Coordinator;
-use ruststream::{Headers, RawMessage};
+use ruststream::{HeaderMap, RawMessage};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -16,7 +16,10 @@ pub(crate) struct SubscriptionId(u64);
 #[derive(Debug, Clone)]
 pub(crate) struct TestDelivery {
     pub(crate) payload: Bytes,
-    pub(crate) headers: Headers,
+    pub(crate) headers: HeaderMap,
+    /// Set on the copy a `nack(requeue = true)` puts back, mirroring the flag the broker sets on
+    /// a redelivered AMQP delivery.
+    pub(crate) redelivered: bool,
 }
 
 pub(crate) type DeliverySender = mpsc::UnboundedSender<TestDelivery>;
@@ -75,7 +78,7 @@ impl KeyRouter {
         &self,
         queue: &str,
         payload: &Bytes,
-        headers: &Headers,
+        headers: &HeaderMap,
         coordinator: Option<&Coordinator>,
     ) {
         let senders: Vec<DeliverySender> = {
@@ -96,6 +99,7 @@ impl KeyRouter {
             let delivery = TestDelivery {
                 payload: payload.clone(),
                 headers: headers.clone(),
+                redelivered: false,
             };
             if sender.send(delivery).is_ok()
                 && let Some(coordinator) = coordinator

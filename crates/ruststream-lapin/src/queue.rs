@@ -1,15 +1,25 @@
 //! The queue descriptor: what a subscription binds to and, optionally, expects to exist.
 
 use std::num::NonZeroU16;
+use std::time::Duration;
 
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::SubscriptionSource;
+use ruststream::runtime::IntoSource;
 
 use crate::broker::ConnectedLapinBroker;
 use crate::delay::Delay;
 use crate::error::AmqpError;
 use crate::exchange::RabbitExchange;
 use crate::subscriber::LapinSubscriber;
+
+/// How long a partial batch waits for more deliveries before it goes to the handler, unless
+/// [`RabbitQueue::batch_wait`] says otherwise.
+///
+/// Fifty milliseconds is a compromise for a network transport: long enough for the broker to
+/// push the rest of a prefetch window across the connection (many round trips on any healthy
+/// link), short enough to bound how long the tail of a backlog sits unhandled.
+const DEFAULT_BATCH_WAIT: Duration = Duration::from_millis(50);
 
 /// The queue implementation selected at declaration time.
 ///
@@ -60,6 +70,7 @@ pub struct RabbitQueue {
     bindings: Vec<(RabbitExchange, String)>,
     arguments: FieldTable,
     prefetch: Option<NonZeroU16>,
+    batch_wait: Duration,
     delay: Option<Delay>,
 }
 
@@ -76,6 +87,7 @@ impl RabbitQueue {
             bindings: Vec::new(),
             arguments: FieldTable::default(),
             prefetch: None,
+            batch_wait: DEFAULT_BATCH_WAIT,
             delay: None,
         }
     }
@@ -178,6 +190,32 @@ impl RabbitQueue {
         self
     }
 
+    /// Caps how long a partial batch waits for more deliveries before it goes to the handler.
+    /// Defaults to 50 ms.
+    ///
+    /// AMQP delivers one message at a time, so a batch handler's `batch(n)` is honoured by
+    /// collecting deliveries on the client; how big a batch may be is the registration's word, and
+    /// this is the other half of the trade-off - the ceiling on how long a batch that never fills
+    /// keeps its deliveries. Raise it on a slow link or a sparse queue where fuller batches are
+    /// worth the wait; lower it where a batch arriving late costs more than a batch arriving
+    /// short. It has no effect on a subscription without a batch handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_lapin::RabbitQueue;
+    ///
+    /// let orders = RabbitQueue::new("orders").batch_wait(Duration::from_millis(200));
+    /// # let _ = orders;
+    /// ```
+    #[must_use]
+    pub fn batch_wait(mut self, batch_wait: Duration) -> Self {
+        self.batch_wait = batch_wait;
+        self
+    }
+
     /// Makes `retry_after` / `nack_after` native, routing delayed redeliveries through a broker
     /// waiting queue instead of the core in-process fallback.
     ///
@@ -228,8 +266,22 @@ impl RabbitQueue {
         self.prefetch.or(broker_default)
     }
 
+    pub(crate) const fn batch_wait_of(&self) -> Duration {
+        self.batch_wait
+    }
+
     pub(crate) fn delay_config(&self) -> Option<&Delay> {
         self.delay.as_ref()
+    }
+}
+
+/// The descriptor is its own source, so the manual path's `subscriber(source, body)` takes a
+/// `RabbitQueue` where the attribute path writes it in the decorator.
+impl IntoSource for RabbitQueue {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
     }
 }
 

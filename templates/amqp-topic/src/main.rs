@@ -14,8 +14,7 @@ mod events;
 mod routes;
 
 use ruststream::nonzero;
-use ruststream::runtime::{App, AppInfo, RustStream};
-use ruststream_lapin::LapinBroker;
+use ruststream_lapin::prelude::*;
 
 /// Builds the service: one RabbitMQ broker (declaring its topology) with the events router mounted.
 #[ruststream::app]

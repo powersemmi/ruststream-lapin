@@ -7,10 +7,7 @@
 //! cargo run --example lapin_keyed_lanes -- run
 //! ```
 
-use ruststream::runtime::{App, AppInfo, Ctx, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_lapin::context::keys::{Redelivered, RoutingKey};
-use ruststream_lapin::{LapinBroker, RabbitQueue};
+use ruststream_lapin::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -24,9 +21,9 @@ struct Order {
 // ordering), while different tenants run in parallel. `by_key` reads the partition key the
 // producer set on the message.
 #[subscriber(RabbitQueue::new("orders"), workers(8, by_key))]
-async fn on_order(order: &Order) -> HandlerResult {
+async fn on_order(order: &Order) -> HandlerOutcome {
     println!("order {} for tenant {}", order.id, order.tenant);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:consumer]
 
@@ -38,12 +35,12 @@ async fn audit(
     order: &Order,
     Ctx(routing_key): Ctx<RoutingKey>,
     Ctx(redelivered): Ctx<Redelivered>,
-) -> HandlerResult {
+) -> HandlerOutcome {
     println!(
         "order {} came via {routing_key} (redelivered: {redelivered})",
         order.id
     );
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:metadata]
 

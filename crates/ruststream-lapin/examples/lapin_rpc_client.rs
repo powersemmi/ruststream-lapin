@@ -22,10 +22,9 @@
 
 use std::time::Duration;
 
+use ruststream::OutgoingMessage;
 use ruststream::codec::{Codec, JsonCodec};
-use ruststream::runtime::{App, AppInfo, HandlerResult, Out, RustStream};
-use ruststream::{IncomingMessage, OutgoingMessage, RequestReply, subscriber};
-use ruststream_lapin::{LapinBroker, LapinRequest, LapinRequester};
+use ruststream_lapin::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -50,11 +49,14 @@ struct Stock {
 // --8<-- [start:client]
 /// A typed RPC call over the raw requester: encode the request, await the correlated reply,
 /// decode it.
-async fn check_stock(
-    requester: &LapinRequester,
+async fn check_stock<R>(
+    requester: &R,
     sku: &str,
     quantity: u32,
-) -> Result<Stock, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Stock, Box<dyn std::error::Error + Send + Sync>>
+where
+    R: RequestReply,
+{
     let request = CheckStock {
         sku: sku.to_owned(),
         quantity,
@@ -75,22 +77,22 @@ async fn check_stock(
 // order either way; only an unreachable inventory service (the RPC timed out or failed) asks
 // the broker to redeliver and try again later.
 #[subscriber("orders")]
-async fn place_order(order: &Order, Out(inventory): Out<LapinRequester>) -> HandlerResult {
+async fn place_order(order: &Order, Out(inventory): Out<impl RequestReply>) -> HandlerOutcome {
     match check_stock(inventory, &order.sku, order.quantity).await {
         Ok(stock) if stock.available => {
             println!("order accepted: {} x{}", order.sku, order.quantity);
-            HandlerResult::Ack
+            HandlerOutcome::ack()
         }
         Ok(_) => {
             println!(
                 "order rejected, out of stock: {} x{}",
                 order.sku, order.quantity
             );
-            HandlerResult::Ack
+            HandlerOutcome::ack()
         }
         Err(err) => {
             eprintln!("inventory unavailable, retrying later: {err}");
-            HandlerResult::retry()
+            HandlerOutcome::retry()
         }
     }
 }
@@ -103,7 +105,9 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         // The requester is a policy here: the runtime pairs it with the connection at startup
         // and hands the handler the live client.
-        b.include(place_order).publisher(LapinRequest::default());
+        b.include(place_order)
+            .out(DefaultSlot, Request::default())
+            .build();
     })
 }
 // --8<-- [end:app]

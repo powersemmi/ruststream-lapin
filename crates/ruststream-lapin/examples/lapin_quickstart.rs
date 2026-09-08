@@ -22,9 +22,8 @@
 //! ```
 
 // --8<-- [start:handler]
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::{nonzero, subscriber};
-use ruststream_lapin::LapinBroker;
+use ruststream::nonzero;
+use ruststream_lapin::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -33,9 +32,9 @@ struct Order {
 }
 
 #[subscriber("orders")]
-async fn handle(order: &Order) -> HandlerResult {
+async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 

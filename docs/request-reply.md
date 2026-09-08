@@ -18,7 +18,8 @@ matching reply resolves the call. Wrap the raw capability in a small typed call:
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_client.rs:client"
 ```
 
-Attach the policy at the mount site (`b.include(handler).publisher(LapinRequest::default())`)
+Bind the policy to the handler's slot at the mount site
+(`b.include(handler).out(DefaultSlot, Request::default()).build()`)
 and the live requester arrives in the handler as an `Out` parameter, so a handler calls the
 other service in the middle of its own message flow. The RPC timeout is the failure boundary,
 and it maps straight onto settlement: a business answer settles the order, an unreachable

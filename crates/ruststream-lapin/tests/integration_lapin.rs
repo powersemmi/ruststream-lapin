@@ -21,15 +21,16 @@ use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use tokio::sync::Notify;
 
-use ruststream::runtime::{AppInfo, Ctx, HandlerResult, RustStream, State};
+use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, PublishExt, RustStream, State};
 use ruststream::{
-    Broker, ConnectedBroker, FromRef, Headers, IncomingMessage, OutgoingMessage, Partitioned,
-    Publisher, Subscriber, nonzero, subscriber,
+    BatchSubscriber, Broker, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, Outgoing,
+    OutgoingMessage, Partitioned, Publisher, Serialized, Subscriber, TransactionalPublisher,
+    nonzero, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
-    Delay, LapinBroker, LapinMessage, LapinPublish, PARTITION_KEY_HEADER, QueueType,
-    RabbitExchange, RabbitQueue,
+    Delay, LapinBroker, LapinMessage, LapinPublish, LapinPublishExt, PARTITION_KEY_HEADER,
+    QueueType, RabbitExchange, RabbitQueue,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -86,7 +87,7 @@ async fn round_trip_on_default_exchange() {
         .await
         .expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     broker
         .publisher(LapinPublish::default())
@@ -288,7 +289,7 @@ async fn binary_header_values_round_trip() {
         .await
         .expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("x-blob", vec![0u8, 159, 146, 150]);
     headers.insert("x-tenant", "acme");
     broker
@@ -305,6 +306,65 @@ async fn binary_header_values_round_trip() {
     );
     assert_eq!(msg.headers().get_str("x-tenant"), Some("acme"));
     msg.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// Batches are assembled on the client, so a batch can only hold what the broker has already
+// pushed: a prefetch window narrower than the batch size caps the batch below it. The generous
+// `batch_wait` is what makes that the only explanation - with time to spare, an uncapped batch
+// would fill.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prefetch_caps_a_batch_below_its_size() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let queue = unique("batched-prefetch");
+    let mut subscriber = broker
+        .subscribe(
+            transient_queue(&queue)
+                .prefetch(nonzero!(1))
+                .batch_wait(Duration::from_millis(200)),
+        )
+        .await
+        .expect("subscribe");
+
+    let publisher = broker.publisher(LapinPublish::default());
+    for payload in [b"m1".as_slice(), b"m2", b"m3"] {
+        publisher
+            .publish(OutgoingMessage::new(&queue, payload))
+            .await
+            .expect("publish");
+    }
+
+    let mut received: Vec<Vec<u8>> = Vec::new();
+    let mut stream = Box::pin(subscriber.batches(nonzero!(3)));
+    while received.len() < 3 {
+        let batch = tokio::time::timeout(WAIT, stream.next())
+            .await
+            .expect("batch within timeout")
+            .expect("stream has next")
+            .expect("batch ok");
+        assert_eq!(
+            batch.len(),
+            1,
+            "a one-delivery prefetch window cannot fill a batch of three"
+        );
+        for msg in batch {
+            received.push(msg.payload().to_vec());
+            msg.ack().await.expect("ack");
+        }
+    }
+    assert_eq!(
+        received,
+        vec![b"m1".to_vec(), b"m2".to_vec(), b"m3".to_vec()],
+        "batching preserves the delivery order"
+    );
 
     drop(stream);
     broker.shutdown().await.expect("shutdown");
@@ -396,7 +456,7 @@ async fn partition_key_round_trips_through_the_header() {
         .await
         .expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
         .publisher(LapinPublish::default())
@@ -568,12 +628,12 @@ struct KeyedState {
 }
 
 #[subscriber(RabbitQueue::new(KEYED_LANES_QUEUE), workers(4, by_key))]
-async fn keyed_handler(order: &KeyedOrder, State(lanes): State<Lanes>) -> HandlerResult {
+async fn keyed_handler(order: &KeyedOrder, State(lanes): State<Lanes>) -> HandlerOutcome {
     lanes.enter(&order.tenant, order.id);
     // Widen the window so an erroneous same-key overlap would actually collide in `active`.
     tokio::time::sleep(Duration::from_millis(25)).await;
     lanes.leave(&order.tenant);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 /// Declares the keyed-lanes queue durable and empty, deleting any leftover from an aborted run so
@@ -616,7 +676,7 @@ async fn prequeue_keyed_deliveries(url: &str) {
         for tenant in 0..KEYED_TENANTS {
             let id = (round * KEYED_TENANTS + tenant) as u64;
             let tenant = format!("t{tenant}");
-            let mut headers = Headers::new();
+            let mut headers = HeaderMap::new();
             headers.insert(PARTITION_KEY_HEADER, tenant.clone());
             let body = format!("{{\"id\":{id},\"tenant\":\"{tenant}\"}}");
             publisher
@@ -774,17 +834,17 @@ async fn ctx_di(
     Ctx(redelivered): Ctx<keys::Redelivered>,
     Ctx(tag): Ctx<keys::DeliveryTag>,
     State(probe): State<CtxDiProbe>,
-) -> HandlerResult {
+) -> HandlerOutcome {
     {
         let mut seen = probe.seen.lock().expect("seen mutex poisoned");
         assert_eq!(order.seq, seen.len() as u64, "prequeued order preserved");
         seen.push((routing_key, redelivered, tag));
         if seen.len() < probe.expected {
-            return HandlerResult::Ack;
+            return HandlerOutcome::ack();
         }
     }
     probe.done.notify_waiters();
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -873,4 +933,165 @@ async fn ctx_extractors_inject_delivery_fields() {
             "delivery tags must be channel-local and increasing",
         );
     }
+}
+
+// The per-message AMQP properties the publish steps exist for. The assertion reads the delivery
+// off a raw lapin consumer rather than through the framework, so it sees the frame the broker
+// stored - which is the whole question - and the contrast case shows what the same names written
+// as plain headers do instead.
+
+/// Declares a durable probe queue on `channel`, removing any leftover from an aborted run.
+async fn declare_probe_queue(channel: &lapin::Channel, queue: &str, max_priority: Option<u8>) {
+    let _ = channel
+        .queue_delete(queue.into(), lapin::options::QueueDeleteOptions::default())
+        .await;
+    let mut arguments = lapin::types::FieldTable::default();
+    if let Some(max_priority) = max_priority {
+        arguments.insert(
+            "x-max-priority".into(),
+            lapin::types::AMQPValue::ShortInt(i16::from(max_priority)),
+        );
+    }
+    channel
+        .queue_declare(
+            queue.into(),
+            lapin::options::QueueDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
+            arguments,
+        )
+        .await
+        .expect("probe queue declare");
+}
+
+async fn next_delivery(consumer: &mut lapin::Consumer) -> lapin::message::Delivery {
+    tokio::time::timeout(WAIT, consumer.next())
+        .await
+        .expect("delivery within timeout")
+        .expect("consumer has next")
+        .expect("delivery ok")
+}
+
+async fn consume_probe_queue(channel: &lapin::Channel, queue: &str) -> lapin::Consumer {
+    channel
+        .basic_consume(
+            queue.into(),
+            lapin::types::ShortString::default(),
+            lapin::options::BasicConsumeOptions {
+                no_ack: true,
+                ..Default::default()
+            },
+            lapin::types::FieldTable::default(),
+        )
+        .await
+        .expect("probe consume")
+}
+
+fn expiration_of(delivery: &lapin::message::Delivery) -> Option<String> {
+    delivery
+        .properties
+        .expiration()
+        .as_ref()
+        .map(|value| value.as_str().to_owned())
+}
+
+/// Payload bytes under a name of their own: the property tests assert on the frame, so the body
+/// must reach the broker exactly as written, with no codec on the way.
+#[derive(Outgoing, Serialized)]
+struct Wire(Vec<u8>);
+
+impl Wire {
+    fn of(bytes: &[u8]) -> Self {
+        Self(bytes.to_vec())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_steps_reach_the_native_amqp_properties() {
+    let Some(url) = amqp_url() else { return };
+    let stepped_queue = unique("steps");
+    let headers_queue = unique("steps-headers");
+
+    let inspect = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+        .await
+        .expect("inspect connect");
+    let channel = inspect.create_channel().await.expect("inspect channel");
+    declare_probe_queue(&channel, &stepped_queue, Some(10)).await;
+    declare_probe_queue(&channel, &headers_queue, None).await;
+    let mut stepped = consume_probe_queue(&channel, &stepped_queue).await;
+    let mut headered = consume_probe_queue(&channel, &headers_queue).await;
+
+    let broker = LapinBroker::new(url).connect().await.expect("connect");
+    // Confirms, so every publish below has reached the broker once it resolves.
+    let publisher = broker.publisher(LapinPublish::default().confirms());
+
+    publisher
+        .with_priority(4)
+        .with_expiration(Duration::from_secs(60))
+        .message(&Wire::of(b"{\"id\":1}"))
+        .to(&stepped_queue)
+        .publish()
+        .await
+        .expect("publish with steps");
+
+    let delivery = next_delivery(&mut stepped).await;
+    assert_eq!(delivery.data, b"{\"id\":1}");
+    assert_eq!(delivery.properties.priority(), &Some(4));
+    assert_eq!(expiration_of(&delivery).as_deref(), Some("60000"));
+
+    // The borrowed transaction form keeps the properties across the client-side buffer.
+    publisher.begin_transaction().await.expect("begin");
+    publisher
+        .with_priority(9)
+        .message(&Wire::of(b"{\"id\":2}"))
+        .to(&stepped_queue)
+        .publish()
+        .await
+        .expect("publish into the transaction");
+    publisher.commit().await.expect("commit");
+
+    let delivery = next_delivery(&mut stepped).await;
+    assert_eq!(delivery.data, b"{\"id\":2}");
+    assert_eq!(delivery.properties.priority(), &Some(9));
+
+    // The same names as plain headers: they travel in the header table, and neither property is
+    // set - which is exactly what the steps exist to fix.
+    let mut headers = HeaderMap::new();
+    headers.insert("priority", "4");
+    headers.insert("expiration", "60000");
+    publisher
+        .message(&Wire::of(b"{\"id\":3}"))
+        .with_headers(headers)
+        .to(&headers_queue)
+        .publish()
+        .await
+        .expect("publish with headers");
+
+    let delivery = next_delivery(&mut headered).await;
+    assert_eq!(delivery.data, b"{\"id\":3}");
+    assert_eq!(delivery.properties.priority(), &None);
+    assert_eq!(expiration_of(&delivery), None);
+    let table = delivery
+        .properties
+        .headers()
+        .as_ref()
+        .expect("header table");
+    assert!(table.inner().contains_key("priority"));
+    assert!(table.inner().contains_key("expiration"));
+
+    broker.shutdown().await.expect("shutdown");
+    for queue in [&stepped_queue, &headers_queue] {
+        channel
+            .queue_delete(
+                queue.as_str().into(),
+                lapin::options::QueueDeleteOptions::default(),
+            )
+            .await
+            .expect("cleanup queue delete");
+    }
+    inspect
+        .close(200, "OK".into())
+        .await
+        .expect("inspect close");
 }

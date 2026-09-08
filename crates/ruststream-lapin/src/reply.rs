@@ -13,11 +13,33 @@ use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
 /// # Examples
 ///
 /// ```
-/// use ruststream::runtime::TypedPublisher;
-/// use ruststream_lapin::{DirectReplyTo, LapinPublish};
+/// use ruststream_lapin::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let replies = TypedPublisher::new(LapinPublish::default()).transform(DirectReplyTo);
-/// # let _ = replies;
+/// #[derive(Deserialize)]
+/// struct Ask {
+///     sku: String,
+/// }
+///
+/// #[derive(Serialize)]
+/// struct Stock {
+///     available: bool,
+/// }
+///
+/// #[subscriber("inventory.check", publish("inventory.check.unrouted"))]
+/// async fn check(ask: &Ask) -> Stock {
+///     Stock {
+///         available: !ask.sku.is_empty(),
+///     }
+/// }
+///
+/// let broker = LapinBroker::new("amqp://localhost:5672");
+/// let app = RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
+///     b.include(check)
+///         .out(Reply, Publish::default())
+///         .transform(DirectReplyTo);
+/// });
+/// # let _ = app;
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DirectReplyTo;

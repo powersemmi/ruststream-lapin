@@ -3,13 +3,14 @@
 //! Each of them exists only from a [`ConnectedLapinBroker`], so it always has a connection; the
 //! declaration half (what to publish and how) lives in [`crate::publish_policy`].
 
+use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use lapin::options::{BasicPublishOptions, ConfirmSelectOptions};
 use lapin::{BasicProperties, Channel};
 use lapin::{Confirmation, PublisherConfirm};
-use ruststream::{Headers, OutgoingMessage, Publisher, TransactionalPublisher};
+use ruststream::{HeaderMap, OutgoingMessage, Publisher, TransactionalPublisher};
 use tokio::sync::OnceCell;
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
@@ -17,8 +18,26 @@ use crate::convert;
 use crate::error::AmqpError;
 use crate::publish_policy::PublishOptions;
 
-/// One buffered publish: routing key, payload, headers.
-pub(crate) type Buffered = (String, Bytes, Headers);
+/// One buffered publish: everything the flush needs to rebuild the frame the caller asked for.
+///
+/// The per-message properties ride in the headers (see [`publish_step`](crate::publish_step)), so
+/// a buffered message carries them with no field of its own.
+#[derive(Debug, Clone)]
+pub(crate) struct Buffered {
+    pub(crate) routing_key: String,
+    pub(crate) payload: Bytes,
+    pub(crate) headers: HeaderMap,
+}
+
+impl Buffered {
+    pub(crate) fn new(msg: &OutgoingMessage<'_>) -> Self {
+        Self {
+            routing_key: msg.name().to_owned(),
+            payload: Bytes::copy_from_slice(msg.payload()),
+            headers: msg.headers().clone(),
+        }
+    }
+}
 
 pub(crate) async fn do_publish(
     channel: &Channel,
@@ -159,24 +178,25 @@ impl ConfirmsPublisher {
     pub(crate) async fn flush_owned(&self, buffered: &[Buffered]) -> Result<(), AmqpError> {
         // The whole buffer rides one channel; the first routing key names the flush in any
         // connection-level diagnostic.
-        let Some((first_key, _, _)) = buffered.first() else {
+        let Some(first) = buffered.first() else {
             return Ok(());
         };
-        self.conn.ensure_live(first_key)?;
-        let channel = self.channel(first_key).await?;
+        self.conn.ensure_live(&first.routing_key)?;
+        let channel = self.channel(&first.routing_key).await?;
 
         let mut confirms = Vec::with_capacity(buffered.len());
-        for (routing_key, payload, headers) in buffered {
-            let properties = convert::properties_for_publish(headers, self.options.persistent)?;
+        for entry in buffered {
+            let properties =
+                convert::properties_for_publish(&entry.headers, self.options.persistent)?;
             let confirm = do_publish(
                 channel,
                 &self.options.exchange,
-                routing_key,
-                payload,
+                &entry.routing_key,
+                &entry.payload,
                 properties,
             )
             .await?;
-            confirms.push((routing_key, confirm));
+            confirms.push((&entry.routing_key, confirm));
         }
         for (routing_key, confirm) in confirms {
             let confirmation = confirm.await.map_err(AmqpError::publish)?;
@@ -189,7 +209,7 @@ impl ConfirmsPublisher {
         &self,
         routing_key: &str,
         payload: &[u8],
-        headers: &Headers,
+        headers: &HeaderMap,
     ) -> Result<(), AmqpError> {
         self.conn.ensure_live(routing_key)?;
         let channel = self.channel(routing_key).await?;
@@ -236,11 +256,7 @@ impl Publisher for ConfirmsPublisher {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push((
-                    msg.name().to_owned(),
-                    Bytes::copy_from_slice(msg.payload()),
-                    msg.headers().clone(),
-                ));
+                buffer.push(Buffered::new(&msg));
                 return Ok(());
             }
         }
@@ -256,7 +272,7 @@ impl TransactionalPublisher for ConfirmsPublisher {
     ///
     /// Returns [`AmqpError::Transaction`] when a transaction is already open on this handle;
     /// the open transaction is left untouched.
-    async fn begin_transaction(&self) -> Result<(), Self::Error> {
+    fn begin_transaction(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let already_open = {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             let open = txn.is_some();
@@ -266,13 +282,13 @@ impl TransactionalPublisher for ConfirmsPublisher {
             open
         };
         if already_open {
-            return Err(AmqpError::Transaction(
+            return ready(Err(AmqpError::Transaction(
                 "a transaction is already open on this confirms publisher; commit or abort it \
                  before beginning another"
                     .to_owned(),
-            ));
+            )));
         }
-        Ok(())
+        ready(Ok(()))
     }
 
     /// Publishes the buffered messages in order and awaits every confirm.
@@ -298,21 +314,22 @@ impl TransactionalPublisher for ConfirmsPublisher {
             return Ok(());
         }
 
-        let target = buffered[0].0.as_str();
+        let target = buffered[0].routing_key.as_str();
         self.conn.ensure_live(target)?;
         let channel = self.channel(target).await?;
         let mut confirms = Vec::with_capacity(buffered.len());
-        for (routing_key, payload, headers) in &buffered {
-            let properties = convert::properties_for_publish(headers, self.options.persistent)?;
+        for entry in &buffered {
+            let properties =
+                convert::properties_for_publish(&entry.headers, self.options.persistent)?;
             let confirm = do_publish(
                 channel,
                 &self.options.exchange,
-                routing_key,
-                payload,
+                &entry.routing_key,
+                &entry.payload,
                 properties,
             )
             .await?;
-            confirms.push((routing_key, confirm));
+            confirms.push((&entry.routing_key, confirm));
         }
         for (routing_key, confirm) in confirms {
             let confirmation = confirm.await.map_err(AmqpError::publish)?;
@@ -326,18 +343,18 @@ impl TransactionalPublisher for ConfirmsPublisher {
     /// # Errors
     ///
     /// Returns [`AmqpError::Transaction`] when no transaction is open.
-    async fn abort(&self) -> Result<(), Self::Error> {
+    fn abort(&self) -> impl Future<Output = Result<(), Self::Error>> {
         let discarded = self
             .txn
             .lock()
             .expect("transaction buffer mutex poisoned")
             .take();
         if discarded.is_none() {
-            return Err(AmqpError::Transaction(
+            return ready(Err(AmqpError::Transaction(
                 "abort with no open transaction on this confirms publisher".to_owned(),
-            ));
+            )));
         }
-        Ok(())
+        ready(Ok(()))
     }
 }
 

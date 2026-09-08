@@ -8,18 +8,22 @@
 
 #![cfg(feature = "testing")]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
+use ruststream::runtime::{
+    AppInfo, Ctx, HandlerOutcome, Reply, RustStream, State, SubscriberSettings,
+};
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
-    Broker, ConnectedBroker, DescribeServer, Headers, IncomingMessage, OutgoingMessage,
-    Partitioned, Publisher, Subscriber, TransactionalPublisher, testing::expect_published,
+    BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap, IncomingMessage,
+    OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
+    testing::expect_published,
 };
+use ruststream_lapin::context::keys;
 use ruststream_lapin::testing::{
     ConnectedLapinTestBroker, LapinTestBroker, LapinTestMessage, LapinTestPublish,
 };
@@ -136,7 +140,7 @@ async fn headers_are_propagated_to_subscribers() {
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
     let publisher = broker.publisher(LapinTestPublish);
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("correlation-id", "abc-1");
     let outgoing = OutgoingMessage::new("orders", b"{}").with_headers(headers);
@@ -201,7 +205,7 @@ async fn partition_key_header_is_surfaced() {
     let broker = connected().await;
     let mut sub = broker.subscribe("keyed").await.expect("subscribe");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
         .publisher(LapinTestPublish)
@@ -301,17 +305,17 @@ async fn transaction_abort_discards_buffer() {
     assert!(observed.is_empty(), "aborted messages must be discarded");
 }
 
-// The owned kind through the framework's typed sugar: `TypedPublisher::transaction()` opens one
-// transaction per call, each owning its buffer, so settling one never touches another.
+// The owned kind through the framework's typed sugar: `owned_transaction()` opens one transaction
+// per call, each owning its buffer, so settling one never touches another.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn owned_transactions_settle_independently_through_the_typed_sugar() {
-    use ruststream::runtime::TypedPublisher;
+    use ruststream::runtime::PublishExt;
 
     let broker = connected().await;
-    let publisher = TypedPublisher::new(broker.publisher(LapinTestPublish));
+    let publisher = broker.publisher(LapinTestPublish);
 
-    let mut kept = publisher.transaction().await.expect("open kept");
-    let mut discarded = publisher.transaction().await.expect("open discarded");
+    let mut kept = publisher.owned_transaction().await.expect("open kept");
+    let mut discarded = publisher.owned_transaction().await.expect("open discarded");
     kept.publish("orders", &Order { id: 1 })
         .await
         .expect("buffer kept");
@@ -383,17 +387,17 @@ struct Order {
 }
 
 #[subscriber("orders")]
-async fn ack_order(order: &Order) -> HandlerResult {
+async fn ack_order(order: &Order) -> HandlerOutcome {
     let _ = order;
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 // The descriptor form must mount against the test broker through the testing-gated
 // `SubscriptionSource<LapinTestBroker>` impl on `RabbitQueue`.
 #[subscriber(RabbitQueue::new("payments"))]
-async fn ack_payment(order: &Order) -> HandlerResult {
+async fn ack_payment(order: &Order) -> HandlerOutcome {
     let _ = order;
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 /// Counts how many times the retry handler ran, so the test can wire it as typed app state.
@@ -401,14 +405,14 @@ async fn ack_payment(order: &Order) -> HandlerResult {
 struct Attempts(Arc<AtomicUsize>);
 
 #[subscriber(RabbitQueue::new("retry"))]
-async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerResult {
+async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> HandlerOutcome {
     let _ = order;
     // Requeue once, then acknowledge: exercises the `nack(requeue = true)` -> `enqueued`
     // re-count balanced against the delivery's `Drop` -> `consumed` decrement.
     if ctx.state().0.fetch_add(1, Ordering::SeqCst) == 0 {
-        HandlerResult::retry()
+        HandlerOutcome::retry()
     } else {
-        HandlerResult::Ack
+        HandlerOutcome::ack()
     }
 }
 
@@ -437,12 +441,88 @@ async fn test_app_drives_lapin_test_broker_to_quiescence() {
         .subscriber("orders")
         .assert_called_once()
         .with(&Order { id: 1 })
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
     tb.broker::<LapinTestBroker>()
         .subscriber("payments")
         .assert_called_once()
         .with(&Order { id: 2 })
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+/// One delivery as the `Ctx` handler below saw it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SeenDelivery {
+    exchange: String,
+    routing_key: String,
+    redelivered: bool,
+    delivery_tag: u64,
+}
+
+/// What that handler saw, one entry per delivery.
+#[derive(Clone, Default)]
+struct Seen(Arc<Mutex<Vec<SeenDelivery>>>);
+
+#[derive(Clone, FromRef)]
+struct MetadataState {
+    seen: Seen,
+}
+
+#[subscriber(RabbitQueue::new("metadata"))]
+async fn record_metadata(
+    order: &Order,
+    Ctx(exchange): Ctx<keys::Exchange>,
+    Ctx(routing_key): Ctx<keys::RoutingKey>,
+    Ctx(redelivered): Ctx<keys::Redelivered>,
+    Ctx(delivery_tag): Ctx<keys::DeliveryTag>,
+    State(seen): State<Seen>,
+) -> HandlerOutcome {
+    let _ = order;
+    seen.0
+        .lock()
+        .expect("seen mutex poisoned")
+        .push(SeenDelivery {
+            exchange,
+            routing_key,
+            redelivered,
+            delivery_tag,
+        });
+    HandlerOutcome::ack()
+}
+
+// A handler that binds AMQP delivery fields must mount on the in-process broker too: the
+// transport reports them against its own model (default exchange, queue name as the routing key,
+// per-subscription delivery tags), so the same handler is unit-testable without a server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctx_keys_resolve_against_the_in_process_transport() {
+    let seen = Seen::default();
+    let probe = seen.clone();
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .on_startup(
+            move |()| async move { Ok::<_, std::convert::Infallible>(MetadataState { seen }) },
+        )
+        .with_broker(LapinTestBroker::new(), |b| {
+            b.include(record_metadata);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<LapinTestBroker>()
+        .publish("metadata", &Order { id: 3 })
+        .await
+        .expect("publish must drive the reaction to quiescence");
+
+    let seen = probe.0.lock().expect("seen mutex poisoned").clone();
+    assert_eq!(
+        seen,
+        vec![SeenDelivery {
+            exchange: String::new(),
+            routing_key: "metadata".to_owned(),
+            redelivered: false,
+            delivery_tag: 1,
+        }],
+        "the default exchange, the queue name as the routing key, a first delivery, tag 1"
+    );
 
     tb.shutdown().await.expect("shutdown");
 }
@@ -466,13 +546,13 @@ async fn test_app_requeue_stays_balanced() {
     tb.broker::<LapinTestBroker>()
         .subscriber("retry")
         .assert_called(2)
-        .settled(HandlerResult::Ack);
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }
 
 #[subscriber(RabbitQueue::new("rpc.in"), publish("rpc.fallback"))]
-async fn echo_id(order: &Order) -> Result<Order, HandlerResult> {
+async fn echo_id(order: &Order) -> Result<Order, HandlerOutcome> {
     Ok(Order { id: order.id })
 }
 
@@ -480,7 +560,6 @@ async fn echo_id(order: &Order) -> Result<Order, HandlerResult> {
 // echo its correlation id, and fall through to the static destination without one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_reply_transform_redirects_and_echoes() {
-    use ruststream::runtime::TypedPublisher;
     use ruststream::testing::TestableBroker;
     use ruststream_lapin::DirectReplyTo;
 
@@ -489,8 +568,9 @@ async fn direct_reply_transform_redirects_and_echoes() {
     // test injects and observes through the other.
     let probe = broker.clone().connect().await.expect("connect");
     let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(broker, |b| {
-        let replies = TypedPublisher::new(LapinTestPublish).transform(DirectReplyTo);
-        b.include(echo_id).publisher(replies);
+        b.include(echo_id)
+            .out(Reply, LapinTestPublish)
+            .transform(DirectReplyTo);
     });
 
     // TestApp drives the lifecycle (subscriptions are open once `start` returns); the requests
@@ -498,7 +578,7 @@ async fn direct_reply_transform_redirects_and_echoes() {
     // publish API does not accept.
     let tb = TestApp::start(app).await.expect("start");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("reply-to", "rpc.replies");
     headers.insert("correlation-id", "c-9");
     probe.inject(OutgoingMessage::new("rpc.in", br#"{"id":9}"#).with_headers(headers));
@@ -518,6 +598,89 @@ async fn direct_reply_transform_redirects_and_echoes() {
         1,
         "a request without reply-to falls through to the mount name"
     );
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// AMQP has no wire batch, so the in-process transport batches the way the real subscriber does -
+// on the client, capped by the size the stream was opened with. Everything is already queued
+// when the stream is first polled, so the batches close on the size rather than on a deadline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn batches_are_capped_by_the_size_the_stream_is_opened_with() {
+    let broker = connected().await;
+    let mut subscriber = broker.subscribe("batches").await.expect("subscribe");
+    let publisher = broker.publisher(LapinTestPublish);
+    for payload in [b"p1".as_slice(), b"p2", b"p3", b"p4", b"p5"] {
+        publisher
+            .publish(OutgoingMessage::new("batches", payload))
+            .await
+            .expect("publish");
+    }
+
+    let mut sizes = Vec::new();
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    let mut stream = Box::pin(subscriber.batches(nonzero!(2)));
+    while payloads.len() < 5 {
+        let batch = tokio::time::timeout(WAIT, stream.next())
+            .await
+            .expect("batch within timeout")
+            .expect("stream has next")
+            .expect("batch ok");
+        sizes.push(batch.len());
+        for msg in batch {
+            payloads.push(msg.payload().to_vec());
+            msg.ack().await.expect("ack");
+        }
+    }
+
+    assert_eq!(
+        sizes,
+        vec![2, 2, 1],
+        "a batch never carries more than its size"
+    );
+    assert_eq!(
+        payloads,
+        vec![
+            b"p1".to_vec(),
+            b"p2".to_vec(),
+            b"p3".to_vec(),
+            b"p4".to_vec(),
+            b"p5".to_vec()
+        ],
+        "batching preserves the publish order across batches"
+    );
+}
+
+#[subscriber(RabbitQueue::new("batches.settled"))]
+async fn settle_batch(orders: &[Order]) -> HandlerOutcome {
+    let _ = orders.len();
+    HandlerOutcome::ack()
+}
+
+// A batch handler mounts on the in-process transport exactly as it does on a server: the
+// capability is there either way, and the harness reports the batches the body was handed. Each
+// publish returns at quiescence, so each delivery arrives as a batch of its own; that the size
+// caps a fuller batch is proven against the transport above and against a server by the
+// conformance batch suite.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn batch_handlers_mount_on_the_in_process_transport() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(settle_batch.batch(nonzero!(4)));
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    for id in 1..=2 {
+        tb.broker::<LapinTestBroker>()
+            .publish("batches.settled", &Order { id })
+            .await
+            .expect("publish must drive the batch to quiescence");
+    }
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("batches.settled")
+        .assert_batch_sizes(&[1, 1])
+        .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
 }

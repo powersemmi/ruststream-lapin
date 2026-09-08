@@ -2,7 +2,7 @@
 //! the delayed-message-exchange plugin.
 //!
 //! `retry_after(delay)` (a handler returning
-//! [`HandlerResult::retry_after`](ruststream::runtime::HandlerResult::retry_after), or a message
+//! [`HandlerOutcome::retry_after`](ruststream::runtime::HandlerOutcome::retry_after), or a message
 //! `nack_after`-ed) asks the broker to redeliver a message no sooner than `delay`. AMQP has no
 //! native per-message delay, so without a delay queue the runtime falls back to core's
 //! broker-agnostic deferred re-publish, which is at-most-once over the delay window and keeps the
@@ -19,7 +19,7 @@ use std::time::Duration;
 use lapin::Channel;
 use lapin::options::BasicPublishOptions;
 use lapin::types::ShortString;
-use ruststream::Headers;
+use ruststream::HeaderMap;
 
 use crate::convert;
 use crate::error::AmqpError;
@@ -162,13 +162,15 @@ impl DelayContext {
     pub(crate) async fn republish(
         &self,
         payload: &[u8],
-        headers: &Headers,
+        headers: &HeaderMap,
         delay: Duration,
     ) -> Result<(), AmqpError> {
         match &self.target {
             DelayTarget::WaitingQueue { waiting_queue } => {
+                // The waiting queue's own TTL replaces whatever expiration the delivery carried:
+                // the delay is what the copy waits for there.
                 let properties = convert::properties_for_publish(headers, true)?
-                    .with_expiration(ShortString::from(expiration_millis(delay)));
+                    .with_expiration(convert::expiration_millis(delay));
                 self.channel
                     .basic_publish(
                         ShortString::default(),
@@ -212,13 +214,6 @@ impl DelayContext {
     }
 }
 
-/// Renders a `delay` as milliseconds (as a string), for the AMQP per-message `expiration`.
-fn expiration_millis(delay: Duration) -> String {
-    u64::try_from(delay.as_millis())
-        .unwrap_or(u64::MAX)
-        .to_string()
-}
-
 impl fmt::Debug for DelayContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DelayContext")
@@ -229,7 +224,7 @@ impl fmt::Debug for DelayContext {
 
 #[cfg(test)]
 mod tests {
-    use super::{Delay, DelayTarget, expiration_millis};
+    use super::{Delay, DelayTarget};
 
     #[test]
     fn dlx_ttl_target_defaults_to_origin_dot_retry() {
@@ -257,14 +252,5 @@ mod tests {
                 routing_key: "orders".to_owned(),
             }
         );
-    }
-
-    #[test]
-    fn expiration_renders_milliseconds() {
-        assert_eq!(
-            expiration_millis(std::time::Duration::from_millis(1500)),
-            "1500"
-        );
-        assert_eq!(expiration_millis(std::time::Duration::from_secs(2)), "2000");
     }
 }

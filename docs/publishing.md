@@ -13,13 +13,43 @@ Messages are published persistent (delivery mode 2) by default; `.persistent(fal
 for fire-and-forget traffic where losing messages on a broker restart is acceptable.
 
 Well-known headers map onto native AMQP properties (`content-type`, `correlation-id`,
-`reply-to`, `message-id`); every other header travels in the AMQP header table as a byte string,
-so binary values round-trip.
+`reply-to`, `message-id`, plus the two per-message properties below); every other header travels
+in the AMQP header table as a byte string, so binary values round-trip. The mapping runs both
+ways, so a delivery reports its properties back under the same header names.
+
+## Per-message AMQP properties
+
+Two AMQP properties are set as steps on the publisher, before the publish builder:
+
+- `with_priority(n)` - the `priority` property. It orders deliveries on a queue declared with
+  `x-max-priority`; elsewhere the broker carries it to the consumer.
+- `with_expiration(ttl)` - the per-message `expiration` (TTL). The broker drops the message once
+  the TTL passes without it being consumed, dead-lettering it when the queue says so.
+
+Both come from `LapinPublishExt`, hand back a publisher the builder continues on, and chain. A
+handler bounds its slot with the trait and takes the step on the publisher it is injected:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_priority.rs:steps"
+```
+
+A step carries its property as a header - `amqp-priority` and `amqp-expiration`
+(`PRIORITY_HEADER` / `EXPIRATION_HEADER`) - which the publishers write onto the frame instead of
+into the header table. That is the same base-header mechanism any publish argument uses, so the
+property survives everywhere a header does: through both transaction kinds, through the `Out`
+slot with the publish still attributed to it under `TestApp`, and onto a message assembled by
+hand. A header named at the call site wins over the step, as it does over any other base.
+
+The protocol's own field names (`priority`, `expiration`) are **not** those headers: written
+under them, both values travel in the AMQP header table, which RabbitMQ reads for neither
+purpose. That quiet failure is what the steps exist to prevent.
 
 ## Replying from a handler
 
 The framework's `publish(..)` form works unchanged: the handler returns the reply value and the
-runtime encodes and publishes it through the `TypedPublisher` the mount was given (see the
+runtime encodes and publishes it through the reply wiring the mount site chained -
+`.out(Reply, Publish::default())`, then `.codec(..)` or `.transform(..)` where the reply needs
+them (see the
 [core publishing guide](https://powersemmi.github.io/ruststream/) for the whole surface,
 including per-publisher transforms and app-wide publish layers). The
 [request/reply page](request-reply.md) shows the RPC variant, where a transform redirects each
@@ -38,6 +68,11 @@ guarantee changes the type:
   `tx.rollback`): messages become visible atomically at commit. Slower (a synchronous round trip
   per commit), but the only option when partial flushes are unacceptable.
 
+A routes file writes the two it reaches for under the family's uniform mount-site names, which
+the [prelude](index.md) aliases: `Publish` is `LapinPublish` and `TransactionalPublish` is
+`ConfirmsPublish`, so a router reads the same whichever broker it is written against. Server
+transactions keep their own name, being a different guarantee rather than a second spelling.
+
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:confirms"
 ```
@@ -47,8 +82,9 @@ published), server transactions give all-or-nothing visibility.
 
 ## Transactional fan-out from a handler
 
-Attach the policy at the mount site and the handler receives the live publisher as an `Out`
-parameter. Here an order fans out into per-item shipment commands, published all-or-nothing:
+Bind the policy to the handler's slot at the mount site (`.out(marker, policy)`, sealed with
+`.build()`) and the handler receives the live publisher as an `Out` parameter. Here an order fans
+out into per-item shipment commands, published all-or-nothing:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_transactions.rs:dispatch"
@@ -69,12 +105,11 @@ Clones of a publisher share the underlying channel and transaction state.
 The framework has two transaction shapes, and which ones a publisher offers follows the
 transport:
 
-- **Borrowed** - the handle carries the transaction. `TypedPublisher::transactional()` then
-  `begin()` gives a scope over it, or call `begin_transaction / commit / abort` on the raw
-  publisher. Exactly one can be open per handle, so a second begin errors. Both publishers
-  support this.
-- **Owned** - the transaction is a value that owns its buffer, opened by
-  `TypedPublisher::transaction()` (or `OwnedTransactions::transaction` on the raw publisher).
+- **Borrowed** - the handle carries the transaction. `begin()` gives a scope over it, or call
+  `begin_transaction / commit / abort` on the raw publisher. Exactly one can be open per handle,
+  so a second begin errors. Both publishers support this.
+- **Owned** - the transaction is a value that owns its buffer, opened by `owned_transaction()`
+  (or `OwnedTransactions::transaction` on the raw publisher).
   Any number can be open on one handle at a time, settling one never touches another, and the
   handle keeps publishing directly meanwhile. `commit` and `abort` consume the value, so a
   double commit or a publish after settling is a compile error. Only the confirms publisher

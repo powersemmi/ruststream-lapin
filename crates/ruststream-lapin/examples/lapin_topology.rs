@@ -11,12 +11,11 @@
 
 use std::time::Duration;
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::{nonzero, subscriber};
+use ruststream::nonzero;
 use serde::Deserialize;
 
 // --8<-- [start:descriptor]
-use ruststream_lapin::{AMQPValue, Delay, LapinBroker, QueueType, RabbitExchange, RabbitQueue};
+use ruststream_lapin::prelude::*;
 
 #[derive(Debug, Deserialize)]
 struct OrderPlaced {
@@ -30,9 +29,9 @@ struct OrderPlaced {
     .bind(RabbitExchange::topic("events"), "order.*")
     .dead_letter_exchange("dead-letters")
     .prefetch(nonzero!(16)))]
-async fn on_order(event: &OrderPlaced) -> HandlerResult {
+async fn on_order(event: &OrderPlaced) -> HandlerOutcome {
     println!("order event {}", event.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:descriptor]
 
@@ -41,23 +40,37 @@ async fn on_order(event: &OrderPlaced) -> HandlerResult {
 #[subscriber(RabbitQueue::new("bounded")
     .argument("x-message-ttl", AMQPValue::LongLongInt(60_000))
     .argument("x-max-length", AMQPValue::LongLongInt(100_000)))]
-async fn on_bounded(event: &OrderPlaced) -> HandlerResult {
+async fn on_bounded(event: &OrderPlaced) -> HandlerOutcome {
     println!("bounded order {}", event.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:arguments]
+
+// --8<-- [start:batches]
+// A batch handler: the slice parameter is what asks for one. AMQP pushes one delivery at a time,
+// so the crate assembles the batch on the client - hence the two descriptor options: the prefetch
+// window has to be at least as wide as the batch size or the broker never has enough in flight to
+// fill one, and `batch_wait` caps how long a batch that never fills keeps its deliveries.
+#[subscriber(RabbitQueue::new("settlements")
+    .prefetch(nonzero!(64))
+    .batch_wait(Duration::from_millis(200)))]
+async fn on_settlement(events: &[OrderPlaced]) -> HandlerOutcome {
+    println!("settling {} orders", events.len());
+    HandlerOutcome::ack()
+}
+// --8<-- [end:batches]
 
 // --8<-- [start:delay]
 // `.delay(..)` makes `retry_after` native: a delayed message parks in a broker waiting queue for
 // the delay, then dead-letters back here - durable, off the service process. The waiting queue
 // (`charges.retry` by default) is declared under `declare_topology`.
 #[subscriber(RabbitQueue::new("charges").delay(Delay::dlx_ttl()))]
-async fn on_charge(event: &OrderPlaced) -> HandlerResult {
+async fn on_charge(event: &OrderPlaced) -> HandlerOutcome {
     if event.id == 0 {
         // Not ready yet: come back in 30s instead of spinning on an immediate requeue.
-        return HandlerResult::retry_after(Duration::from_secs(30));
+        return HandlerOutcome::retry_after(Duration::from_secs(30));
     }
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:delay]
 
@@ -74,6 +87,10 @@ fn app() -> impl App {
         b.include(on_order);
         b.include(on_bounded);
         b.include(on_charge);
+        // --8<-- [start:batches_mount]
+        // The batch size is the mount site's word, and a batch handler does not mount without it.
+        b.include(on_settlement.batch(nonzero!(32)));
+        // --8<-- [end:batches_mount]
     })
 }
 // --8<-- [end:app]

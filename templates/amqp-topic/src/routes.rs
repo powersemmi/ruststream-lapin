@@ -3,8 +3,8 @@
 //! Keeping registration in its own module lets the handlers stay broker-agnostic - the router binds
 //! to a concrete broker only when `main` mounts it.
 
-use ruststream::runtime::{Router, RouterDef, TypedPublisher};
-use ruststream_lapin::{LapinBroker, LapinPublish};
+use ruststream::runtime::RouterDef;
+use ruststream_lapin::prelude::*;
 
 use crate::events;
 
@@ -12,14 +12,16 @@ use crate::events;
 /// a plain shipment handler.
 ///
 /// `record` replies through a policy targeting the `events` exchange (so the reply's routing key
-/// `order.recorded` is matched by topic bindings, not treated as a queue name). `TypedPublisher::new`
-/// pairs it with the default codec, reused to decode the event. The policy holds no connection, so
-/// the router is built long before anything connects and the runtime pairs it at startup. The router
-/// is a consuming builder, so the calls chain.
+/// `order.recorded` is matched by topic bindings, not treated as a queue name), bound on the mount
+/// site with `out(Reply, ..)`; with no codec named after it the reply takes the default one, which
+/// also decodes the event. The policy holds no connection, so the router is built long before
+/// anything connects and the runtime pairs it at startup. `build` seals that reply wiring and
+/// commits the registration; `on_shipment` has no reply to wire, so `include` commits it on its
+/// own. The router is a consuming builder, so the calls chain.
 pub fn events() -> impl RouterDef<LapinBroker> {
-    let recorded = TypedPublisher::new(LapinPublish::default().exchange("events"));
-
     Router::new()
-        .include_publishing(events::record, recorded)
+        .include(events::record)
+        .out(Reply, Publish::default().exchange("events"))
+        .build()
         .include(events::on_shipment)
 }

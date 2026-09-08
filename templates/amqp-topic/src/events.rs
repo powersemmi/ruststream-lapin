@@ -3,11 +3,9 @@
 //! The handler binds to a [`RabbitQueue`] descriptor bound to the `events` topic exchange under
 //! the `order.*` pattern, so every routing key matching `order.<something>` lands here. Under
 //! `declare_topology(true)` the exchange, queue, and binding are declared when the subscription
-//! opens. Each delivery is `basic.ack`ed when the handler returns `Ack`.
+//! opens. Each delivery is `basic.ack`ed when the handler returns an acking outcome.
 
-use ruststream::runtime::HandlerResult;
-use ruststream::subscriber;
-use ruststream_lapin::{RabbitExchange, RabbitQueue};
+use ruststream_lapin::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +38,7 @@ pub async fn record(event: &OrderEvent) -> Recorded {
 
 /// Logs shipment events bound under a different pattern on the same exchange. No reply.
 #[subscriber(RabbitQueue::new("shipment-events").bind(RabbitExchange::topic("events"), "shipment.*"))]
-pub async fn on_shipment(event: &OrderEvent) -> HandlerResult {
+pub async fn on_shipment(event: &OrderEvent) -> HandlerOutcome {
     println!("shipment event {} ({})", event.id, event.kind);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }

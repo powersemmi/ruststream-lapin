@@ -32,6 +32,11 @@
   bare-string `#[subscriber("orders")]` form consumes the queue with that name.
 - **Infrastructure stays yours.** Descriptors describe the EXPECTED topology; nothing is created
   on the broker unless the service opts in with `.declare_topology(true)`.
+- **Batches without a wire batch.** AMQP pushes one `basic.deliver` at a time, so a batch handler's
+  `.batch(n)` is honoured by assembling the batch on the client - the mount site reads the same as
+  on a broker that batches natively. How the batch forms stays the descriptor's: a prefetch window
+  at least as wide as the batch, and `.batch_wait(..)` capping how long a batch that never fills
+  waits.
 - **Durable delayed retry.** `.delay(..)` routes `retry_after` through a broker TTL waiting queue
   that dead-letters back to the origin, keeping the delayed copy on the broker instead of the
   core in-process fallback.
@@ -39,7 +44,7 @@
   buffers and awaits every broker confirm on commit (durable, fast, recommended);
   `.server_tx()` uses AMQP channel transactions for server-side atomicity.
 - **Owned and borrowed transactions.** Confirms buffer client-side, so the confirms publisher
-  also offers the owned kind: `transaction()` hands back a value owning its buffer, so any
+  also offers the owned kind: `owned_transaction()` hands back a value owning its buffer, so any
   number can be open on one handle, settling one never touches another, and the handle keeps
   publishing directly meanwhile. `server_tx` keeps only the borrowed kind - `tx.select` is
   channel state, one per channel.
@@ -59,8 +64,8 @@
 
 ```toml
 [dependencies]
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-lapin = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-lapin = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 

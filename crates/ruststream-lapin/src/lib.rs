@@ -2,6 +2,9 @@
 //! [RustStream](https://github.com/powersemmi/ruststream) messaging framework, backed by
 //! [`lapin`].
 //!
+//! A service imports [`prelude`] and has both this crate's vocabulary and the framework's own
+//! prelude in scope from that one glob.
+//!
 //! # Transport model
 //!
 //! A subscription consumes one queue; [`RabbitQueue`] describes the queue and its bindings, and
@@ -9,6 +12,13 @@
 //! publish side [`OutgoingMessage::name`](ruststream::OutgoingMessage) is the routing key, sent
 //! to the publisher's exchange (the default exchange unless configured, where the routing key
 //! addresses the queue with that name).
+//!
+//! AMQP pushes one `basic.deliver` at a time, so a batch handler's size is honoured by assembling
+//! the batch on the client: [`LapinSubscriber`] offers `BatchSubscriber` through the framework's
+//! own buffer. How the batch forms is the descriptor's:
+//! [`prefetch`](RabbitQueue::prefetch) has to be at least as wide as the batch, and
+//! [`batch_wait`](RabbitQueue::batch_wait) caps how long a batch that never fills keeps its
+//! deliveries.
 //!
 //! Settlement uses the protocol natively, without client-side republishing:
 //!
@@ -44,6 +54,7 @@ mod error;
 mod exchange;
 mod message;
 mod publish_policy;
+mod publish_step;
 mod publisher;
 mod queue;
 mod reply;
@@ -53,6 +64,7 @@ mod topology;
 mod transaction;
 
 pub mod context;
+pub mod prelude;
 #[cfg(feature = "testing")]
 pub mod testing;
 
@@ -62,6 +74,7 @@ pub use error::AmqpError;
 pub use exchange::RabbitExchange;
 pub use message::{LapinMessage, PARTITION_KEY_HEADER};
 pub use publish_policy::{ConfirmsPublish, LapinPublish, LapinPublishPolicy, ServerTxPublish};
+pub use publish_step::{EXPIRATION_HEADER, LapinPublishExt, PRIORITY_HEADER, WithProperties};
 pub use publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
 pub use queue::{QueueType, RabbitQueue};
 pub use reply::DirectReplyTo;

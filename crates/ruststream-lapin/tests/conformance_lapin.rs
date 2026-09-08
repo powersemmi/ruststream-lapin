@@ -4,7 +4,8 @@
 //! (synchronous construction, consuming `connect`, subscribe through the crate's own descriptor,
 //! publish, ack, consuming `shutdown`, and a pre-shutdown publisher erroring afterwards) through
 //! the real `LapinBroker`; the capability suites prove the optional trait implementations, both
-//! transaction kinds included. All but `run_suite` are gated behind `AMQP_TEST_URL` (see
+//! transaction kinds and client-side batching included. All but `run_suite` are gated behind
+//! `AMQP_TEST_URL` (see
 //! `docker-compose.test.yml` and `just test-brokers`).
 
 #![cfg(feature = "testing")]
@@ -41,6 +42,20 @@ async fn lapin_test_broker_passes_conformance_suite() {
 async fn passes_lifecycle() {
     let Some(url) = amqp_url() else { return };
     harness::lifecycle(
+        || LapinBroker::new(url.clone()).declare_topology(true),
+        conformance_queue,
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+// AMQP has no wire batch, so the batches come from the crate's client-side buffer; the suite
+// proves that buffer honours the size a registration opens the subscription with.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_batches() {
+    let Some(url) = amqp_url() else { return };
+    capabilities::batches(
         || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
         |connected| connected.publisher(LapinPublish::default()),

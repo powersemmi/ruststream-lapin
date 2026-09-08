@@ -20,28 +20,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, msrv]
+        # The floor, what users build with, and the early warning. Releases in between add
+        # nothing: what fails on a later one fails on the floor too. Keep the floor in step
+        # with `rust-version` in the workspace manifest.
+        toolchain: [stable, beta, "1.88"]
+    # Installing a toolchain does not select it: `rust-toolchain.toml` outranks the rustup
+    # default the install action sets. RUSTUP_TOOLCHAIN outranks the file.
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      # The MSRV leg follows `rust-version` in Cargo.toml, so an MSRV bump is a one-line change.
-      - name: Resolve toolchain
-        id: toolchain
-        env:
-          TOOLCHAIN: ${{ matrix.toolchain }}
-        run: |
-          if [ "$TOOLCHAIN" = "msrv" ]; then
-            TOOLCHAIN="$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)"
-            test -n "$TOOLCHAIN"
-          fi
-          echo "toolchain=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ steps.toolchain.outputs.toolchain }}
+          toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -53,6 +48,13 @@ jobs:
 
       - name: cargo clippy
         if: matrix.toolchain == 'stable'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # Advisory, not a gate: surfaces a lint added by the next clippy release six weeks before
+      # it turns the build red.
+      - name: cargo clippy (beta, advisory)
+        if: matrix.toolchain == 'beta'
+        continue-on-error: true
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: cargo check (no default features)
@@ -71,6 +73,83 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps
+
+  features:
+    name: Each feature alone
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      # Every feature of this crate is additive, and the all-features build hides a `cfg` that
+      # only compiles because a neighbouring feature pulled the item in. --no-dev-deps: a
+      # dev-dependency in scope masks a missing feature gate in the library.
+      - name: cargo hack check (each feature)
+        run: cargo hack check --workspace --each-feature --no-dev-deps
+
+  minimal-versions:
+    name: Minimal versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nightly (resolver only)
+        uses: dtolnay/rust-toolchain@nightly
+
+      # The floor, for the build step below. Keep the version in step with `rust-version` in the
+      # workspace manifest.
+      - name: Install the MSRV toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The full flag rather than -Z direct-minimal-versions: the narrow one leaves the assembled
+      # graph unverified, and that is what a user builds. It costs the pinning list below.
+      - name: Resolve minimal versions
+        run: cargo +nightly update -Z minimal-versions
+
+      # Too-loose bounds in third-party manifests under the AMQP transport. Drop each pin when the
+      # crate that declares the bound moves its own floor.
+      - name: Pin dependencies whose declared bounds are too loose
+        run: |
+          # der-parser on num-bigint: 0.4.0 calls `div_ceil` by reference.
+          cargo update -p num-bigint --precise 0.4.4
+          # native-tls on openssl: 0.10.29 and its openssl-sys predate OpenSSL 3.
+          cargo update -p openssl-sys --precise 0.9.107
+          cargo update -p openssl --precise 0.10.72
+          # async-rs imports `tokio_stream::wrappers`, added in 0.1.2.
+          cargo update -p tokio-stream --precise 0.1.2
+          # tcp-stream calls `Identity::from_pkcs8`, added in 0.2.9.
+          cargo update -p native-tls --precise 0.2.9
+
+      # Minimum dependencies on the minimum compiler: the worst case a user can assemble.
+      # Resolution above needs nightly, so only this step drops to the floor.
+      - name: Build and test against minimal versions
+        env:
+          RUSTUP_TOOLCHAIN: "1.88"
+        run: |
+          cargo check --locked --workspace --all-targets --all-features
+          cargo test --locked --workspace --all-features --no-fail-fast
 
   broker-integration:
     name: "Broker integration (RabbitMQ)"
@@ -164,6 +243,9 @@ jobs:
             mkdir -p "$dest"
             cargo generate --path "templates/$tpl" \
               --name smoke --destination "$dest" --vcs none
+            # Assert cargo-generate dropped the `.liquid` suffix; without the manifest the append
+            # below would write one of its own.
+            test -f "$dest/smoke/Cargo.toml"
             {
               echo ""
               echo "[patch.crates-io]"

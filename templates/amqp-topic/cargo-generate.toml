@@ -4,5 +4,8 @@
 #   cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-topic --name my-service
 #
 # `{{project-name}}` (the --name value) is a cargo-generate built-in; no placeholders need declaring.
+#
+# The manifest is `Cargo.toml.liquid` (cargo-generate drops the suffix): cargo parses every
+# `Cargo.toml` in a repository when it walks a git source, and rejects the placeholder name.
 [template]
 description = "A RabbitMQ topic-exchange (routing-key patterns, declared topology) RustStream starter service"

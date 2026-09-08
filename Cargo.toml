@@ -2,11 +2,13 @@
 resolver = "3"
 members = ["crates/ruststream-lapin"]
 # cargo-generate scaffolds: their sources carry `{{project-name}}` placeholders that are not valid
-# Rust/TOML until rendered, so they stay out of the workspace.
+# Rust/TOML until rendered, so they stay out of the workspace. The scaffold manifests are named
+# `Cargo.toml.liquid` on top of that: git-source package discovery ignores `exclude` and parses
+# every `Cargo.toml` in the repository.
 exclude = ["templates"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -16,7 +18,10 @@ authors = ["RustStream contributors"]
 [workspace.dependencies]
 ruststream-lapin = { path = "crates/ruststream-lapin" }
 
-ruststream = { version = ">=0.6.1, <0.7.0", default-features = false }
+# The lower bound names the pre-release on purpose: cargo keeps pre-releases out of a range that
+# does not mention one, so `>=0.7.0` alone would skip `0.7.0-rc.1`. The bound admits the candidate
+# now and the final `0.7.0` when it lands, so it needs no follow-up edit.
+ruststream = { version = ">=0.7.0-rc.1, <0.8.0", default-features = false }
 
 lapin = { version = "4.10", default-features = false, features = ["tokio"] }
 bytes = "1"
