@@ -47,7 +47,11 @@ correlation id; compose it onto the reply publisher at mount time:
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:mount"
 ```
 
-The handler stays a pure request-to-reply function, testable in-process like any other.
+The handler stays a pure request-to-reply function, testable in-process like any other. So is the
+pair: `LapinRequest` pairs against [`LapinTestBroker`](testing.md) as well, which gives every
+request a private reply address and a correlation id there too, so an RPC client handler and its
+responder run against each other under `TestApp` with the mount sites they ship with. What the
+in-process transport cannot stand in for is the at-most-once nature below.
 
 ## Semantics
 

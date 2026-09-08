@@ -4,8 +4,12 @@
 //! (synchronous construction, consuming `connect`, subscribe through the crate's own descriptor,
 //! publish, ack, consuming `shutdown`, and a pre-shutdown publisher erroring afterwards) through
 //! the real `LapinBroker`; the capability suites prove the optional trait implementations, both
-//! transaction kinds and client-side batching included. All but `run_suite` are gated behind
-//! `AMQP_TEST_URL` (see
+//! transaction kinds and client-side batching included.
+//!
+//! The capability suites run twice, once against each transport. The in-process pass is what
+//! keeps the test broker honest: it claims a capability only where the real publisher has one,
+//! and the suite it passes is the suite the real publisher passes. The live pass is the one that
+//! proves the AMQP implementation, and it is gated behind `AMQP_TEST_URL` (see
 //! `docker-compose.test.yml` and `just test-brokers`).
 
 #![cfg(feature = "testing")]
@@ -32,6 +36,66 @@ fn conformance_queue(name: &str) -> RabbitQueue {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lapin_test_broker_passes_conformance_suite() {
     harness::run_suite(LapinTestBroker::new).await;
+}
+
+// The capability suites again, in process. Each production policy pairs against the test broker
+// into the stand-in for the publisher it produces on a server, and a stand-in that claims a
+// capability owes the same contract: these run the very suites the live broker runs below,
+// against the same policy values a routes file writes.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_request_reply() {
+    capabilities::request_reply(
+        LapinTestBroker::new,
+        |name| RabbitQueue::new(name),
+        |connected| connected.requester(LapinRequest::default()),
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_transactions_with_confirms() {
+    capabilities::transactions(
+        LapinTestBroker::new,
+        |name| RabbitQueue::new(name),
+        |connected| connected.publisher(LapinPublish::default().confirms()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_owned_transactions_with_confirms() {
+    capabilities::owned_transactions(
+        LapinTestBroker::new,
+        |name| RabbitQueue::new(name),
+        |connected| connected.publisher(LapinPublish::default().confirms()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_transactions_with_server_tx() {
+    capabilities::transactions(
+        LapinTestBroker::new,
+        |name| RabbitQueue::new(name),
+        |connected| connected.publisher(LapinPublish::default().server_tx()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_batches() {
+    capabilities::batches(
+        LapinTestBroker::new,
+        |name| RabbitQueue::new(name),
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
 }
 
 // `make_source` / `make_publisher` must stay closures: their bounds are higher-ranked

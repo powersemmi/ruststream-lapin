@@ -12,7 +12,7 @@ use ruststream::{
 };
 
 use super::broker::TestBrokerState;
-use super::router::{DeliveryReceiver, DeliverySender, SubscriptionId, TestDelivery};
+use super::router::{DeliveryReceiver, SubscriptionId, TestDelivery};
 use crate::error::AmqpError;
 
 /// In-process subscriber on one queue name.
@@ -28,12 +28,14 @@ pub struct LapinTestSubscriber {
 impl LapinTestSubscriber {
     pub(crate) fn open(state: &Arc<TestBrokerState>, queue: String) -> Self {
         let (id, sender, receiver) = state.router.subscribe(queue.clone());
+        // The router keeps its own clone; holding a second one here would keep the delivery
+        // channel open past a shutdown that cleared the subscription table.
+        drop(sender);
         let coordinator = state.coordinator();
         let deliveries = TestDeliveries {
             state: Arc::clone(state),
             id,
             queue: queue.clone(),
-            sender,
             receiver,
             coordinator,
             next_tag: 1,
@@ -98,7 +100,6 @@ struct TestDeliveries {
     state: Arc<TestBrokerState>,
     id: SubscriptionId,
     queue: String,
-    sender: DeliverySender,
     receiver: DeliveryReceiver,
     coordinator: Option<Coordinator>,
     /// The next channel-local delivery tag. AMQP numbers deliveries per channel from 1, and a
@@ -118,8 +119,8 @@ impl Subscriber for TestDeliveries {
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let Self {
+            state,
             receiver,
-            sender,
             coordinator,
             queue,
             next_tag,
@@ -135,7 +136,7 @@ impl Subscriber for TestDeliveries {
                         delivery: Some(delivery),
                         queue: queue.clone(),
                         delivery_tag,
-                        sender: sender.clone(),
+                        state: Arc::clone(state),
                         coordinator: coordinator.clone(),
                     })
                 })
@@ -155,11 +156,33 @@ pub struct LapinTestMessage {
     queue: String,
     delivery_tag: u64,
     redelivered: bool,
-    sender: DeliverySender,
+    state: Arc<TestBrokerState>,
     coordinator: Option<Coordinator>,
 }
 
 impl LapinTestMessage {
+    /// Wraps a delivery that reached a caller directly rather than through a subscription: the
+    /// reply of a [`LapinTestRequester`](super::LapinTestRequester) request.
+    ///
+    /// Direct reply-to is a no-ack consumer, so the settle calls have nothing to do; the queue
+    /// this names is the request's private reply address, which the requester closes as it
+    /// returns, so a `nack(requeue = true)` finds no consumer and the delivery ends there.
+    pub(crate) fn from_reply(
+        state: &Arc<TestBrokerState>,
+        queue: String,
+        delivery_tag: u64,
+        delivery: TestDelivery,
+    ) -> Self {
+        Self {
+            redelivered: delivery.redelivered,
+            delivery: Some(delivery),
+            queue,
+            delivery_tag,
+            state: Arc::clone(state),
+            coordinator: state.coordinator(),
+        }
+    }
+
     fn take(&mut self) -> TestDelivery {
         // The settle methods consume `self`, so a second settle cannot compile; reaching this
         // twice is an internal invariant violation.
@@ -247,7 +270,10 @@ impl IncomingMessage for LapinTestMessage {
         ready(Ok(()))
     }
 
-    /// Re-enqueues to the same subscription (`requeue = true`) or drops (`requeue = false`).
+    /// Re-enqueues on the same queue (`requeue = true`) or drops (`requeue = false`).
+    ///
+    /// A requeued message goes back through the queue rather than to this subscription, so with
+    /// competing consumers the redelivery can land on another one, as it does on a server.
     ///
     /// # Errors
     ///
@@ -256,11 +282,10 @@ impl IncomingMessage for LapinTestMessage {
         let mut delivery = self.take();
         // The copy that goes back carries the redelivered flag, as a broker would set it.
         delivery.redelivered = requeue;
-        if requeue && self.sender.send(delivery).is_ok() {
-            // This bypasses the router fanout, so account for the new in-flight delivery here.
-            if let Some(coordinator) = &self.coordinator {
-                coordinator.enqueued();
-            }
+        if requeue {
+            self.state
+                .router
+                .deliver(&self.queue, delivery, self.coordinator.as_ref());
         }
         ready(Ok(()))
     }

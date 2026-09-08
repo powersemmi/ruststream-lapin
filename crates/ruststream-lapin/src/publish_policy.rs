@@ -16,10 +16,11 @@ use crate::publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
 
 use self::sealed::Sealed;
 
-mod sealed {
-    /// Seals [`LapinPublishPolicy`](super::LapinPublishPolicy): pairing an AMQP publisher opens
-    /// no channel of its own, and the synchronous
-    /// [`publisher`](crate::ConnectedLapinBroker::publisher) accessor depends on that.
+pub(crate) mod sealed {
+    /// Seals [`LapinPublishPolicy`](super::LapinPublishPolicy) and its in-process counterpart
+    /// `LapinTestPublishPolicy`: pairing an AMQP publisher opens no channel of its own, and the
+    /// synchronous [`publisher`](crate::ConnectedLapinBroker::publisher) accessor depends on
+    /// that.
     pub trait Sealed {}
 
     impl Sealed for super::LapinPublish {}

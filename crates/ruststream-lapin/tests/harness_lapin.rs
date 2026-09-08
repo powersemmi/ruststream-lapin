@@ -14,7 +14,7 @@ use ruststream::testing::TestApp;
 use ruststream::{OutSlot, Outgoing};
 use ruststream_lapin::PRIORITY_HEADER;
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::testing::{LapinTestBroker, LapinTestPublish};
+use ruststream_lapin::testing::LapinTestBroker;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,7 +60,7 @@ async fn ship(
 async fn deliver(order: &Order) -> TestApp<()> {
     let app =
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
-            b.include(ship).out(Shipments, LapinTestPublish).build();
+            b.include(ship).out(Shipments, Publish::default()).build();
         });
     let tb = TestApp::start(app).await.expect("start");
     tb.broker::<LapinTestBroker>()
