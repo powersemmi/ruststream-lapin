@@ -91,7 +91,8 @@ parameters, one key each:
 ```
 
 A handler that declares `ctx: &mut Context<'_, AmqpContext>` reads the same fields with
-`ctx.context(KEY)`.
+`ctx.context(KEY)`. The prelude carries the keys but not the context type, so import that from
+`ruststream_lapin::context`.
 
 ## Keyed worker lanes
 
