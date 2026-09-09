@@ -1,11 +1,13 @@
 # Testing
 
-The `testing` feature ships `LapinTestBroker`, an in-process stand-in for RabbitMQ in
-application tests: the same handlers, descriptors, and wiring, no server. It follows the same
-ladder as the real broker (synchronous `new`, consuming `connect`, consuming `shutdown`), routes
-by exact queue name (the default-exchange model), records every publish, and plugs into the
-framework's `TestApp` harness, which drives each publish to quiescence so assertions never race
-the handlers.
+Test a RabbitMQ service without a RabbitMQ server. The `testing` feature ships `LapinTestBroker`,
+an in-process stand-in that runs the same handlers, descriptors and wiring as production. It
+routes by exact queue name, the default-exchange model, and records every publish, so a test can
+assert on what a handler sent.
+
+Build the app around it exactly as you build the real one and hand it to the framework's
+`TestApp` harness. Each publish through the harness drives the handlers to quiescence, so an
+assertion never races them.
 
 ```toml
 [dev-dependencies]
@@ -20,20 +22,19 @@ ruststream-lapin = { version = "0.7", features = ["testing"] }
 --8<-- "crates/ruststream-lapin/examples/lapin_testing.rs:testapp"
 ```
 
-[Batches](queues.md#batches) come along: the transport assembles them on the client exactly as the
-real subscriber does, so a `&[T]` handler mounts on the test broker unchanged and
+A `&[T]` handler mounts on the test broker unchanged: the transport assembles
+[batches](queues.md#batches) on the client exactly as the real subscriber does, and
 `assert_batch_sizes(..)` reports the batches the body was handed.
 
-Delivery metadata comes along too: a handler reading AMQP fields through
-[`AmqpContext`](queues.md#delivery-metadata) - as `Ctx<RoutingKey>` extractors or a
-`ctx: &mut Context<'_, AmqpContext>` parameter - mounts on the test broker unchanged. The
-transport reports those fields against its own model: the default exchange, the queue name as the
-routing key, a delivery tag numbered per subscription, and `redelivered` set on a requeue.
+A handler reading AMQP fields through [`AmqpContext`](queues.md#delivery-metadata) mounts
+unchanged too. The transport fills those fields from its own model: the default exchange, the
+queue name as the routing key, a delivery tag numbered per subscription, and `redelivered` set on
+a requeue.
 
 ## What the test broker does not simulate
 
-Exchange types, bindings, dead-lettering, prefetch, and request/reply are transport behavior;
-exercise them against a real server. The crate's own integration tests run that way, gated on
+Exchange routing, bindings, dead-lettering, prefetch and request/reply are server behaviour:
+exercise them against a real RabbitMQ. The crate's own integration tests run that way, gated on
 `AMQP_TEST_URL`:
 
 ```text
