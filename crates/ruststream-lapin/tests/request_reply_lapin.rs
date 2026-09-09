@@ -37,7 +37,7 @@ struct CheckStock {
     sku: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Outgoing, Serialize)]
 struct Stock {
     available: bool,
 }

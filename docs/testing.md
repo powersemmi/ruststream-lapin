@@ -68,8 +68,7 @@ crate's integration tests instead.
 
 - **Nothing waits for a consumer.** A message published to a queue nobody consumes is dropped,
   the way an unroutable message is, and a subscription only ever sees what was published after it
-  opened. This is the contract the framework's own conformance suite requires of an in-process
-  broker, not an omission.
+  opened.
 - **Prefetch.** With no backlog to hold messages in, there is nothing to withhold: deliveries are
   pushed as they arrive, no consumer is ever skipped for being at its unacked limit, and
   `prefetch(..)` changes no distribution. Prefetch bounds are a server behaviour.
