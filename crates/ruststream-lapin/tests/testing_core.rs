@@ -20,7 +20,7 @@ use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
     BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap, IncomingMessage,
-    OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
+    Outgoing, OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
     testing::expect_published,
 };
 use ruststream_lapin::context::keys;
@@ -381,7 +381,9 @@ async fn publishing_after_shutdown_errors() {
     assert!(matches!(err, AmqpError::Closed { .. }), "got {err}");
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+// `Outgoing` without a name: `Order` is also the reply of the RPC handler below, whose
+// destination is the requester's address rather than a property of the type.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
 struct Order {
     id: u64,
 }
@@ -598,6 +600,81 @@ async fn direct_reply_transform_redirects_and_echoes() {
         1,
         "a request without reply-to falls through to the mount name"
     );
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+/// The confirmation of one order, addressed by its own declaration.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
+#[outgoing(name = "confirmations")]
+struct Confirmation {
+    id: u64,
+}
+
+#[subscriber("orders.declared", publish)]
+async fn confirm_order(order: &Order) -> Confirmation {
+    Confirmation { id: order.id }
+}
+
+/// A receipt with no declared destination: the mount site says where it goes.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
+struct Receipt {
+    id: u64,
+}
+
+#[subscriber("orders.mounted", publish("receipts"))]
+async fn receipt_for(order: &Order) -> Receipt {
+    Receipt { id: order.id }
+}
+
+// A reply type that declares its own destination publishes there, on the queue name the AMQP
+// publisher turns into a routing key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declared_reply_lands_where_its_type_says() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(confirm_order).out(Reply, LapinTestPublish);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<LapinTestBroker>()
+        .publish("orders.declared", &Order { id: 4 })
+        .await
+        .expect("publish must drive the reply to quiescence");
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("orders.declared")
+        .assert_called_once();
+    tb.broker::<LapinTestBroker>()
+        .published::<Confirmation>("confirmations")
+        .assert_called_once()
+        .with(&Confirmation { id: 4 });
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// A reply type that declares nothing takes the mount site's name, which is what the direct
+// reply-to fallback rests on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undeclared_reply_lands_at_the_mount_name() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(receipt_for).out(Reply, LapinTestPublish);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<LapinTestBroker>()
+        .publish("orders.mounted", &Order { id: 5 })
+        .await
+        .expect("publish must drive the reply to quiescence");
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("orders.mounted")
+        .assert_called_once();
+    tb.broker::<LapinTestBroker>()
+        .published::<Receipt>("receipts")
+        .assert_called_once()
+        .with(&Receipt { id: 5 });
 
     tb.shutdown().await.expect("shutdown");
 }

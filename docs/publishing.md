@@ -46,13 +46,18 @@ purpose. That quiet failure is what the steps exist to prevent.
 
 ## Replying from a handler
 
-The framework's `publish(..)` form works unchanged: the handler returns the reply value and the
-runtime encodes and publishes it through the reply wiring the mount site chained -
-`.out(Reply, Publish::default())`, then `.codec(..)` or `.transform(..)` where the reply needs
-them (see the
-[core publishing guide](https://powersemmi.github.io/ruststream/) for the whole surface,
-including per-publisher transforms and app-wide publish layers). The
-[request/reply page](request-reply.md) shows the RPC variant, where a transform redirects each
+A publishing handler returns the reply value, and the runtime publishes it. The reply type
+declares where it goes with `#[outgoing(name = "..")]`. A type that declares none is published
+under the name the `publish("..")` clause gives.
+
+Either name is a routing key, and the policy at the mount site names the exchange:
+`.out(Reply, Publish::default())` replies on the default exchange, and
+`.out(Reply, Publish::default().exchange("events"))` on a topic exchange. The steps after it fill
+the rest of the reply wiring: `.codec(..)` sets the reply codec, `.transform(..)` changes each
+reply before it is published.
+
+The [core publishing guide](https://powersemmi.github.io/ruststream/) has the whole reply surface.
+The [request/reply page](request-reply.md) shows the RPC variant, where a transform redirects each
 reply to the requester's private address.
 
 ## Three publishers

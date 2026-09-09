@@ -31,17 +31,19 @@ service asks for redelivery:
 
 ## The responder
 
-The responder is an ordinary `#[subscriber(.., publish(..))]` handler: decode the request,
-return the reply. `Err` settles without replying, and the requester's timeout is the recovery
-mechanism:
+The responder is an ordinary publishing handler: decode the request, return the reply. `Err`
+settles without replying, and the requester's timeout is the recovery mechanism.
+
+An RPC reply goes wherever the request asked, so its type declares no destination of its own. The
+`publish("..")` clause names the address for a request that arrives without a reply-to header:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:handler"
 ```
 
-What makes it an RPC responder is the reply destination. `DirectReplyTo` is a ready-made publish
-transform that sends each reply back to the address the requester asked for and echoes its
-correlation id; compose it onto the reply publisher at mount time:
+What makes it an RPC responder is the transform. `DirectReplyTo` sends each reply back to the
+address the requester asked for and echoes its correlation id; compose it onto the reply publisher
+at mount time:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:mount"

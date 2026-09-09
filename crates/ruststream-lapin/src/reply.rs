@@ -7,8 +7,9 @@ use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
 ///
 /// This is the canonical responder wiring for [request/reply over `RabbitMQ` direct
 /// reply-to](crate::LapinRequester): compose it onto the reply publisher at mount time and the
-/// handler stays a pure request-to-reply function. Requests without a `reply-to` header fall
-/// through to the mount's static destination.
+/// handler stays a pure request-to-reply function. A request without a `reply-to` header falls
+/// through to the destination the reply resolves to on its own: the `publish("..")` name at the
+/// mount site, or the reply type's own `#[outgoing(name = "..")]` declaration.
 ///
 /// # Examples
 ///
@@ -21,7 +22,9 @@ use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
 ///     sku: String,
 /// }
 ///
-/// #[derive(Serialize)]
+/// // An RPC reply goes wherever the request asked, so the destination belongs to the mount
+/// // site and the type declares none.
+/// #[derive(Serialize, Outgoing)]
 /// struct Stock {
 ///     available: bool,
 /// }
