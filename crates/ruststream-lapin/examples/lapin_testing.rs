@@ -1,8 +1,8 @@
 //! In-process unit-testing: the same handlers and descriptors, no `RabbitMQ` server.
 //!
 //! The `testing` feature ships `LapinTestBroker`, an in-process stand-in for `RabbitMQ`. Build
-//! the app around it exactly as in production, drive publishes with `TestApp::publish` (which
-//! waits for the handlers to settle), and assert on what they did.
+//! the app around it exactly as in production and hand it to `TestApp`. A publish through the
+//! harness returns once the handlers have settled, so the assertions after it never race them.
 //!
 //! ```text
 //! cargo run --example lapin_testing --features testing
