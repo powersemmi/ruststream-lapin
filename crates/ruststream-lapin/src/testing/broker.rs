@@ -8,7 +8,7 @@ use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
     Broker, ConnectedBroker, DefaultPublish, DescribeServer, OutgoingMessage, RawMessage,
-    ServerSpec, Subscribe,
+    RedeliveryAddress, ServerSpec, Subscribe,
 };
 
 use super::publisher::LapinTestPublishPolicy;
@@ -213,6 +213,14 @@ impl Subscribe for ConnectedLapinTestBroker {
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         ConnectedLapinTestBroker::subscribe(self, name).await
+    }
+
+    /// The queue name, the answer the real broker gives.
+    ///
+    /// Staying silent here would let an app that wires `retry_via` over `#[subscriber("orders")]`
+    /// refuse to start in a test and start on a server, or the reverse once the answer changed.
+    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
+        Some(RedeliveryAddress::new(name.to_owned()))
     }
 }
 

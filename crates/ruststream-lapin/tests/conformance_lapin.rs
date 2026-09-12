@@ -14,6 +14,7 @@
 
 #![cfg(feature = "testing")]
 
+use ruststream::Name;
 use ruststream::conformance::{capabilities, harness};
 use ruststream_lapin::testing::LapinTestBroker;
 use ruststream_lapin::{LapinBroker, LapinPublish, LapinRequest, RabbitQueue};
@@ -51,6 +52,32 @@ async fn test_broker_passes_lifecycle() {
     harness::lifecycle(
         LapinTestBroker::new,
         |name| RabbitQueue::new(name),
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+// The same ladder over the bare-string form, which resolves through `Subscribe` rather than
+// through the crate's descriptor: `#[subscriber("orders")]` has a redelivery address of its own to
+// answer, and it is answered by a different method.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_lifecycle_by_name() {
+    harness::lifecycle(
+        LapinTestBroker::new,
+        |name| Name::new(name.to_owned()),
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_lifecycle_by_name() {
+    let Some(url) = amqp_url() else { return };
+    harness::lifecycle(
+        || LapinBroker::new(url.clone()).declare_topology(true),
+        |name| Name::new(name.to_owned()),
         |connected| connected.publisher(LapinPublish::default()),
     )
     .await;
