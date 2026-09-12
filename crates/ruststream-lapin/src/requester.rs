@@ -20,7 +20,7 @@ use crate::message::LapinMessage;
 use crate::publish_policy::{LapinPublishPolicy, PublishOptions};
 
 /// The pseudo-queue `RabbitMQ` rewrites per-request for direct reply-to.
-const REPLY_TO: &str = "amq.rabbitmq.reply-to";
+pub(crate) const REPLY_TO: &str = "amq.rabbitmq.reply-to";
 
 type Pending = Mutex<HashMap<String, oneshot::Sender<LapinMessage>>>;
 

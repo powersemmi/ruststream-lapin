@@ -344,8 +344,14 @@ pub trait LapinPublishExt: Publisher {
 impl LapinPublishExt for crate::publisher::LapinPublisher {}
 impl LapinPublishExt for crate::publisher::ConfirmsPublisher {}
 impl LapinPublishExt for crate::publisher::ServerTxPublisher {}
+// The in-process stand-ins carry the step for the same three publishers, so a handler bounded
+// `Out<impl LapinPublishExt>` mounts on the test broker exactly as it mounts on a server.
 #[cfg(feature = "testing")]
 impl LapinPublishExt for crate::testing::LapinTestPublisher {}
+#[cfg(feature = "testing")]
+impl LapinPublishExt for crate::testing::ConfirmsTestPublisher {}
+#[cfg(feature = "testing")]
+impl LapinPublishExt for crate::testing::ServerTxTestPublisher {}
 
 // Grafted onto the slot entry a handler body actually holds, next to the framework's own
 // capability delegations on it. Resolving the step there keeps the publish attributed to its
