@@ -51,13 +51,14 @@
   number can be open on one handle, settling one never touches another, and the handle keeps
   publishing directly meanwhile. `server_tx` keeps only the borrowed kind - `tx.select` is
   channel state, one per channel.
-- **Per-message AMQP properties.** `with_priority(n)` and `with_expiration(ttl)` from
-  `LapinPublishExt` are steps taken on a live publisher, before the publish builder, and they
-  travel as base headers this crate's publishers write onto the frame. So a property survives
-  wherever a header does: through both transaction kinds, and through an `Out` slot with the
-  publish still attributed to it under the test harness. Written under the protocol's own field
-  names instead, both values would sit in the AMQP header table, which the broker reads for
-  neither purpose.
+- **Per-message AMQP properties.** The `priority`, the per-message `expiration` (TTL) and the
+  delivery mode are typed settings (`LapinPublishOptions`), never headers. The mount site fixes
+  them for every message on the policy (`Publish::default().priority(3)`), and the publish builder
+  adjusts one message with `.priority(9)`, `.expiration(ttl)` or `.persistent(false)`. A step is a
+  position on the builder rather than a wrapper around the publisher, so it keeps the codec and
+  the destination the mount site gave it, holds through both transaction kinds, and stays
+  attributed to its `Out` slot under the test harness. Written into the header table instead, a
+  value would reach the broker as a table entry it reads for no purpose.
 - **Request/reply over direct reply-to.** `LapinRequest` pairs into a requester implementing the
   framework's `RequestReply` capability on `amq.rabbitmq.reply-to` with correlation-id
   multiplexing. The responder side is a mount-site transform, `DirectReplyTo`, so the handler
@@ -140,16 +141,16 @@ topology. `#[ruststream::app]` generates `main`, so the binary understands `run`
 
 ## Test it
 
-The same handler, the same mount chain, against the in-process broker: no server, and the
-routes name the test broker's own policy.
+The same handler and the same mount chain, against the in-process broker: no server, and the
+routes file does not change - the crate's own policies pair here too.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_lapin::testing::{LapinTestBroker, LapinTestPublish};
+use ruststream_lapin::testing::LapinTestBroker;
 
 let service = RustStream::new(AppInfo::new("orders", "0.1.0"))
     .with_broker(LapinTestBroker::new(), |b| {
-        b.include(settle).out(DefaultSlot, LapinTestPublish).build();
+        b.include(settle).out(DefaultSlot, Publish::default()).build();
     });
 let tb = TestApp::start(service).await?;
 
@@ -170,8 +171,8 @@ tb.broker::<LapinTestBroker>()
     .with(&Receipt { order_id: 42 });
 ```
 
-Exchange types, bindings, dead-lettering, prefetch and request/reply are transport behaviour: the
-env-gated suite exercises those against a real server (`just test-brokers`).
+Exchange routing, bindings, dead-lettering, prefetch and publisher confirms are server behaviour:
+the env-gated suite exercises those against a real RabbitMQ (`just test-brokers`).
 
 ## Scaffold a service
 

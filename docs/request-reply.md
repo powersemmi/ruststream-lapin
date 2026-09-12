@@ -33,8 +33,10 @@ settles the message, an unreachable service asks for redelivery:
 The responder is an ordinary publishing handler: decode the request, return the reply. `Err`
 settles without replying, and the requester's timeout is the recovery mechanism.
 
-An RPC reply goes wherever the request asked, so its type declares no destination of its own. The
-`publish("..")` clause names the address for a request that arrives without a reply-to header:
+An RPC reply goes wherever the request asked, so its type must declare no destination of its own -
+`DirectReplyTo` names the destination per delivery, and the mount site refuses it over a reply type
+that has already declared one. The `publish("..")` clause names the address for a request that
+arrives without a reply-to header, and it is what the generated AsyncAPI document reports:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:handler"

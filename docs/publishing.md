@@ -8,40 +8,49 @@ The message name is the routing key. The exchange is a property of the policy: t
 exchange unless `.exchange("events")` names another. On the default exchange the routing key
 addresses the queue with that name, which is why the quickstart works with no topology at all.
 
-Messages are published persistent (delivery mode 2). You can opt out with `.persistent(false)`
-where losing messages on a broker restart is acceptable.
-
-Four well-known headers map onto native AMQP properties: `content-type`, `correlation-id`,
-`reply-to` and `message-id`, plus the two per-message properties below. Every other header goes
-into the AMQP header table as a byte string, so binary values round-trip. The mapping runs both
-ways, so a delivery reports its properties back under the same header names.
+Four headers map onto native AMQP properties: `content-type`, `correlation-id`, `reply-to` and
+`message-id`. Every other header goes into the AMQP header table as a byte string, so binary values
+round-trip.
 
 ## Per-message AMQP properties
 
-Two AMQP properties are set as steps on the publisher, before the publish builder:
+Three AMQP properties belong to the message rather than to the publisher: the `priority`, the
+per-message `expiration` (TTL), and the delivery mode. The mount site fixes what every message
+carries, and the publish builder adjusts one of them for one message.
 
-- `with_priority(n)` - the `priority` property. It orders deliveries on a queue declared with
-  `x-max-priority`; on any other queue it reaches the consumer without affecting the order.
-- `with_expiration(ttl)` - the per-message `expiration` (TTL). The broker drops the message once
-  the TTL passes without it being consumed, dead-lettering it when the queue says so.
-
-Both come from `LapinPublishExt` and return a publisher, so the steps chain and the publish
-builder continues on the result. A handler bounds its slot with the trait to reach them:
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_priority.rs:mount"
+```
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_priority.rs:steps"
 ```
 
-A step carries its property as a header - `amqp-priority` and `amqp-expiration`
-(`PRIORITY_HEADER` / `EXPIRATION_HEADER`) - which the publishers write onto the frame instead of
-into the header table. It is the base-header mechanism every publish argument uses, so the
-property holds through both transaction kinds, through an `Out` slot with the publish still
-attributed to that slot under `TestApp`, and on a message assembled by hand. A header named at the
-call site wins over the step, as it does over any other base.
+The three steps are `priority(n)`, `expiration(ttl)` and `persistent(flag)`, and the policy carries
+the same three names for the defaults. What a publish leaves alone is what the mount site fixed.
 
-The protocol's own field names (`priority`, `expiration`) are **not** those headers. A value
-written under them goes into the AMQP header table, which RabbitMQ reads for neither purpose, and
-the message is delivered without the property.
+- `priority` orders deliveries on a queue declared with `x-max-priority`; on any other queue it
+  reaches the consumer without affecting the order. Unset by default.
+- `expiration` makes the broker drop the message once the TTL passes without it being consumed,
+  dead-lettering it when the queue says so. Unset by default, so messages do not expire.
+- `persistent` is delivery mode 2, which is the default. Opt out where losing messages on a broker
+  restart is acceptable.
+
+A step is a position on the publish builder, not a wrapper around the publisher. So a stepped
+publish keeps the codec and the destination the mount site gave it, it holds through both
+transaction kinds, and under `TestApp` it stays attributed to its `Out` slot. A handler body that
+takes a step is the one place a body names this crate: bound the slot
+`Out<impl Publisher<Options = LapinPublishOptions>, Marker>` and import
+`ruststream_lapin::prelude::*`.
+
+None of the three travels as a header. Written into the header table - under the protocol's own
+names (`priority`, `expiration`) or under the names a delivery reports them with - a value reaches
+RabbitMQ as a table entry it reads for no purpose, and the message is delivered without the
+property.
+
+A delivery does report them back as headers, under `amqp-priority` and `amqp-expiration`
+(`PRIORITY_HEADER` / `EXPIRATION_HEADER`), so a handler reads an incoming priority where it reads
+everything else.
 
 ## Replying from a handler
 

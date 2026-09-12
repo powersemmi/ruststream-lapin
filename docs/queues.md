@@ -118,9 +118,11 @@ native dead-letter target. A handler that drops a message settles with
 A handler that returns `HandlerOutcome::retry_after(delay)` asks for redelivery no sooner than
 `delay`, the not-ready-yet case where an immediate requeue would spin. By default the runtime
 handles this with its broker-agnostic fallback, and the delayed copy waits in the service process,
-at-most-once over the window. `.delay(..)` makes it native instead: the message parks in a broker
-waiting queue with a per-message TTL and dead-letters back to the origin queue when the TTL fires,
-so the delayed copy lives on the broker.
+at-most-once over the window; it is published back under the queue's own name, which is what
+addresses the queue on the default exchange. `.delay(..)` makes it native instead: the message
+parks in a broker waiting queue with a per-message TTL and dead-letters back to the origin queue
+when the TTL fires, so the delayed copy lives on the broker and a restart mid-window loses
+nothing.
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"

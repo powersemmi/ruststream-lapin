@@ -50,6 +50,33 @@ A `&[T]` handler mounts on the test broker unchanged: the transport assembles
 [batches](queues.md#batches) on the client exactly as the real subscriber does, and
 `assert_batch_sizes(..)` reports the batches the body was handed.
 
+## Asserting on per-message properties
+
+A handler that adjusts an [AMQP property](publishing.md#per-message-amqp-properties) for one
+message is asserted on from two sides. `with_options(..)` reads back what the publish builder's
+steps asked for, and `assert_options_default()` asserts that no step ran and the mount site's own
+settings applied. Both live on the slot view, `tb.out::<Marker>()`.
+
+```rust
+tb.out::<Shipments>()
+    .assert_called_once()
+    .with_options(&LapinPublishOptions {
+        priority: Some(9),
+        ..LapinPublishOptions::default()
+    });
+```
+
+What a consumer ends up seeing is the resolved value, and the transport reports it the way a real
+delivery does - as the `amqp-priority` and `amqp-expiration` headers. So the broker's publish log
+asserts on the outcome, whether it came from a step or from the mount site:
+
+```rust
+tb.broker::<LapinTestBroker>()
+    .published::<Shipment>("shipments")
+    .assert_called_once()
+    .with_header("amqp-priority", "9");
+```
+
 A handler reading AMQP fields through [`AmqpContext`](queues.md#delivery-metadata) mounts
 unchanged too. The transport fills those fields from its own model: the default exchange, the
 queue name as the routing key, a delivery tag numbered per subscription, and `redelivered` set on

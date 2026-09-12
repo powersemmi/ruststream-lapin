@@ -18,7 +18,11 @@ the only value carrying a subscribe or publish surface.
 
 A handler body names capabilities: `Out<impl Publisher>`, `Out<impl TransactionalPublisher>`,
 `Out<impl RequestReply>`. It imports the framework's prelude alone, which is what keeps one
-handler mountable on a real broker and on the in-process test broker.
+handler mountable on a real broker and on the in-process test broker. One body imports this
+crate's prelude too: one that adjusts an
+[AMQP property](publishing.md#per-message-amqp-properties) for a single message. It names the
+settings type rather than a publisher type - `Out<impl Publisher<Options = LapinPublishOptions>>` -
+so the handler stays mountable on both.
 
 A routes file names values and imports `ruststream_lapin::prelude::*`, which brings the
 framework's prelude with it. It adds the family's uniform mount-site names: `Publish`,
