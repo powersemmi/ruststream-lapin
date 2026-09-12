@@ -58,12 +58,7 @@ steps asked for, and `assert_options_default()` asserts that no step ran and the
 settings applied. Both live on the slot view, `tb.out::<Marker>()`.
 
 ```rust
-tb.out::<Shipments>()
-    .assert_called_once()
-    .with_options(&LapinPublishOptions {
-        priority: Some(9),
-        ..LapinPublishOptions::default()
-    });
+--8<-- "crates/ruststream-lapin/examples/lapin_testing.rs:options"
 ```
 
 What a consumer ends up seeing is the resolved value, and the transport reports it the way a real
@@ -71,10 +66,7 @@ delivery does - as the `amqp-priority` and `amqp-expiration` headers. So the bro
 asserts on the outcome, whether it came from a step or from the mount site:
 
 ```rust
-tb.broker::<LapinTestBroker>()
-    .published::<Shipment>("shipments")
-    .assert_called_once()
-    .with_header("amqp-priority", "9");
+--8<-- "crates/ruststream-lapin/examples/lapin_testing.rs:delivered"
 ```
 
 A handler reading AMQP fields through [`AmqpContext`](queues.md#delivery-metadata) mounts
