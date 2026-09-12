@@ -72,9 +72,9 @@ AMQP 没有协议级的批次（Broker 一次只推一个 `basic.deliver`），�
 
 ## 投递元数据 { #delivery-metadata }
 
-`AmqpContext` 给出既不属于负载也不属于消息头的 AMQP 投递元数据：交换机、路由键、重投标志，以及
-信道内的投递标签。每个字段在 `context::keys` 里都有一个零大小的键，处理器用提取器参数点名自己
-需要的字段，一个字段一个键：
+`AmqpContext` 给出既不属于负载也不属于消息头的 AMQP 投递元数据：交换机、路由键、重新投递标志，
+以及信道内的投递标签。每个字段在 `context::keys` 里都有一个零大小的键，处理器用提取器参数点名
+自己需要的字段，一个字段一个键：
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_keyed_lanes.rs:metadata"
@@ -83,9 +83,9 @@ AMQP 没有协议级的批次（Broker 一次只推一个 `basic.deliver`），�
 声明了 `ctx: &mut Context<'_, AmqpContext>` 的处理器，用 `ctx.context(KEY)` 读同样的字段。
 prelude 导出这些键，但不导出上下文类型，后者从 `ruststream_lapin::context` 导入。
 
-## 按键分区的 worker { #keyed-worker-lanes }
+## 按键的工作分区 { #keyed-worker-lanes }
 
-订阅可以用 `workers(n, by_key)` 把处理分到多个 worker 上，并让共享同一个键的投递留在同一个分区里
+订阅可以用 `workers(n, by_key)` 把处理分到多个工作分区上，并让共享同一个键的投递留在同一个分区里
 （键内有序，跨键并行）：
 
 ```rust
@@ -102,7 +102,7 @@ prelude 导出这些键，但不导出上下文类型，后者从 `ruststream_la
 
 ## 延迟重试 { #delayed-retry }
 
-返回 `HandlerOutcome::retry_after(delay)` 的处理器，要求不早于 `delay` 再投递一次，也就是「还没
+返回 `HandlerOutcome::retry_after(delay)` 的处理器，要求不早于 `delay` 再重新投递，也就是「还没
 就绪」这一种情形，此时立刻重新入队只会空转。默认情况下运行时用它与 Broker 无关的兜底路径处理
 这件事：延迟的副本在服务进程里等待，整个窗口内是至多一次；它按队列自己的名字发布回去，因为在
 默认交换机上正是它寻址到该队列。`.delay(..)` 改用原生方式：消息停在 Broker 的等待队列里，
@@ -133,8 +133,8 @@ Broker 上启用该插件，特性开关就是为此而设。
 --8<-- "crates/ruststream-lapin/examples/lapin_consistent_hash.rs:shards"
 ```
 
-一致性哈希路由发生在 Broker 上，分的是队列；而按键分区的 worker 分的是一个消费者内部的工作。用
-之前先在 Broker 上启用插件；该特性默认关闭，因为它不在原版 RabbitMQ 里。
+一致性哈希路由发生在 Broker 上，分的是队列；而工作分区分的是一个消费者内部的工作。用之前先在
+Broker 上启用插件；该特性默认关闭，因为它不在原版 RabbitMQ 里。
 
 ## 原始参数 { #raw-arguments }
 

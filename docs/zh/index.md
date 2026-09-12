@@ -54,7 +54,7 @@ serde = { version = "1", features = ["derive"] }
 | `TransactionalPublisher` | 是 | 两个事务发布者都支持：`.confirms()` 在客户端缓冲，提交时等齐每一条确认；`.server_tx()` 用 AMQP 的信道事务。见[三个发布者](publishing.md#three-publishers)。 |
 | `OwnedTransactions` | 是（仅 confirms） | confirms 事务是一个客户端缓冲，所以同一个句柄上开多少个都行。`server_tx` 把信道本身切进事务模式，而那是信道状态，只存在一份。 |
 | `RequestReply` | 是 | `LapinRequest` 构造出一个基于 direct reply-to 的请求方，按 correlation-id 多路复用。见[请求与回复](request-reply.md)。 |
-| `Partitioned` | 是 | 生产方把键写进 `amqp-partition-key` 消息头，运行时的 worker 分区读它；AMQP 本身不解释该消息头。见[按键分区的 worker](queues.md#keyed-worker-lanes)。 |
+| `Partitioned` | 是 | 生产方把键写进 `amqp-partition-key` 消息头，运行时的工作分区读它；AMQP 本身不解释该消息头。见[按键的工作分区](queues.md#keyed-worker-lanes)。 |
 | `Seekable` + `Positioned` | 否 | 队列不保留历史，无处可回。 |
 | `DescribeServer` | 是 | 报告连接的主机，AsyncAPI 文档记录的就是它。 |
 
