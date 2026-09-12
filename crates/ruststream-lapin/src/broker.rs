@@ -384,10 +384,17 @@ impl ClosedLapinBroker {
 /// metadata must not block startup on a URI the connection itself will reject anyway.
 fn host_of(uri: &str) -> String {
     let after_scheme = uri.split_once("://").map_or(uri, |(_, rest)| rest);
-    let after_auth = after_scheme
+    // The vhost path and the query go before the userinfo: a vhost may contain an `@`, and cutting
+    // the userinfo first would read that one as the separator and report the vhost as the host.
+    // The connection reads the URI the same way, so the description cannot disagree with it.
+    let authority = after_scheme
+        .split(['/', '?'])
+        .next()
+        .unwrap_or(after_scheme);
+    // The last `@` of what is left: a password may contain one.
+    let host = authority
         .rsplit_once('@')
-        .map_or(after_scheme, |(_, rest)| rest);
-    let host = after_auth.split(['/', '?']).next().unwrap_or(after_auth);
+        .map_or(authority, |(_, host)| host);
     host.to_owned()
 }
 
@@ -401,6 +408,17 @@ mod tests {
         assert_eq!(host_of("amqp://user:pass@rabbit:5672/prod"), "rabbit:5672");
         assert_eq!(host_of("amqps://rabbit/vhost"), "rabbit");
         assert_eq!(host_of("rabbit:5672"), "rabbit:5672");
+        // A vhost may contain an `@`, so the path is cut before the userinfo is.
+        assert_eq!(host_of("amqp://rabbit:5672/my@vhost"), "rabbit:5672");
+        // Both an `@` in the userinfo and one in the vhost: each is cut at its own step.
+        assert_eq!(
+            host_of("amqp://user:p@ss@rabbit:5672/my@vhost"),
+            "rabbit:5672"
+        );
+        assert_eq!(
+            host_of("amqp://rabbit:5672/prod?heartbeat=30"),
+            "rabbit:5672"
+        );
     }
 
     // `new` records the settings without connecting: no server is needed to build the broker or
