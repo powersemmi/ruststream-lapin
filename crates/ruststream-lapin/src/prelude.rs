@@ -23,6 +23,11 @@
 //! is written against. A service that speaks to more than one broker keeps a routes file per
 //! broker and names the prefixed originals ([`LapinPublish`], [`ConfirmsPublish`],
 //! [`LapinRequest`]) where two of them meet.
+//!
+//! One kind of handler body does import this prelude: one that adjusts an AMQP property for a
+//! single message. The steps of [`LapinPublishSteps`] come from here, and the slot they run on is
+//! bounded `Out<impl Publisher<Options = LapinPublishOptions>, Marker>` - the options type is what
+//! the compiler matches, so the body still names no publisher type.
 
 pub use ruststream::prelude::*;
 
@@ -33,7 +38,8 @@ pub use ruststream::{OwnedTransactions, RequestReply, Transaction, Transactional
 pub use crate::context::keys::{DeliveryTag, Exchange, Redelivered, RoutingKey};
 pub use crate::{
     AMQPValue, ConfirmsPublish, Delay, DirectReplyTo, FieldTable, LapinBroker, LapinPublish,
-    LapinPublishExt, LapinRequest, QueueType, RabbitExchange, RabbitQueue, ServerTxPublish,
+    LapinPublishOptions, LapinPublishSteps, LapinRequest, QueueType, RabbitExchange, RabbitQueue,
+    ServerTxPublish,
 };
 
 /// The policy names a mount site writes, uniform across the broker family: `Publish` is

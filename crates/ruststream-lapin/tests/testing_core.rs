@@ -60,7 +60,7 @@ async fn pub_sub_round_trip_through_broker_traits() {
     let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"o1"))
+        .publish(OutgoingMessage::new("orders", b"o1"), None)
         .await
         .expect("publish");
 
@@ -77,7 +77,7 @@ async fn publisher_rejects_empty_routing_key() {
     let broker = connected().await;
     let publisher = broker.publisher(LapinPublish::default());
     let err = publisher
-        .publish(OutgoingMessage::new("", b"x"))
+        .publish(OutgoingMessage::new("", b"x"), None)
         .await
         .expect_err("empty routing key must be rejected");
     assert!(format!("{err}").contains("routing key"), "got {err}");
@@ -95,7 +95,7 @@ async fn competing_consumers_share_the_deliveries() {
 
     for payload in [b"m1".as_slice(), b"m2", b"m3", b"m4"] {
         publisher
-            .publish(OutgoingMessage::new("shared", payload))
+            .publish(OutgoingMessage::new("shared", payload), None)
             .await
             .expect("publish");
     }
@@ -119,7 +119,7 @@ async fn a_requeue_goes_back_to_the_queue() {
     let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("retried", b"m1"))
+        .publish(OutgoingMessage::new("retried", b"m1"), None)
         .await
         .expect("publish");
 
@@ -154,11 +154,11 @@ async fn distinct_queues_are_isolated() {
     let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"o"))
+        .publish(OutgoingMessage::new("orders", b"o"), None)
         .await
         .expect("publish o");
     publisher
-        .publish(OutgoingMessage::new("events", b"e"))
+        .publish(OutgoingMessage::new("events", b"e"), None)
         .await
         .expect("publish e");
 
@@ -176,7 +176,7 @@ async fn nack_requeue_redelivers_to_same_subscriber() {
     let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"once"))
+        .publish(OutgoingMessage::new("orders", b"once"), None)
         .await
         .expect("publish");
 
@@ -207,7 +207,7 @@ async fn headers_are_propagated_to_subscribers() {
     headers.insert("content-type", "application/json");
     headers.insert("correlation-id", "abc-1");
     let outgoing = OutgoingMessage::new("orders", b"{}").with_headers(headers);
-    publisher.publish(outgoing).await.expect("publish");
+    publisher.publish(outgoing, None).await.expect("publish");
 
     let mut stream = Box::pin(subscriber.stream());
     let msg = tokio::time::timeout(WAIT, stream.next())
@@ -225,11 +225,11 @@ async fn expect_published_observes_publishes() {
     let broker = connected().await;
     let publisher = broker.publisher(LapinPublish::default());
     publisher
-        .publish(OutgoingMessage::new("events", b"first"))
+        .publish(OutgoingMessage::new("events", b"first"), None)
         .await
         .expect("publish first");
     publisher
-        .publish(OutgoingMessage::new("events", b"second"))
+        .publish(OutgoingMessage::new("events", b"second"), None)
         .await
         .expect("publish second");
     let observed = expect_published(&broker, "events", 2, Duration::from_secs(1)).await;
@@ -247,7 +247,7 @@ async fn stream_can_be_reentered() {
     let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"one"))
+        .publish(OutgoingMessage::new("orders", b"one"), None)
         .await
         .expect("publish one");
     {
@@ -256,7 +256,7 @@ async fn stream_can_be_reentered() {
     }
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"two"))
+        .publish(OutgoingMessage::new("orders", b"two"), None)
         .await
         .expect("publish two");
     let mut stream = Box::pin(subscriber.stream());
@@ -272,7 +272,10 @@ async fn partition_key_header_is_surfaced() {
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new("keyed", b"payload").with_headers(headers))
+        .publish(
+            OutgoingMessage::new("keyed", b"payload").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -302,7 +305,7 @@ async fn partition_key_absent_yields_none() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new("unkeyed", b"payload"))
+        .publish(OutgoingMessage::new("unkeyed", b"payload"), None)
         .await
         .expect("publish");
 
@@ -333,11 +336,11 @@ async fn transaction_buffers_until_commit() {
 
     publisher.begin_transaction().await.expect("begin");
     publisher
-        .publish(OutgoingMessage::new("tx", b"first"))
+        .publish(OutgoingMessage::new("tx", b"first"), None)
         .await
         .expect("publish first");
     publisher
-        .publish(OutgoingMessage::new("tx", b"second"))
+        .publish(OutgoingMessage::new("tx", b"second"), None)
         .await
         .expect("publish second");
 
@@ -359,7 +362,7 @@ async fn transaction_abort_discards_buffer() {
 
     publisher.begin_transaction().await.expect("begin");
     publisher
-        .publish(OutgoingMessage::new("tx", b"discarded"))
+        .publish(OutgoingMessage::new("tx", b"discarded"), None)
         .await
         .expect("publish");
     publisher.abort().await.expect("abort");
@@ -420,7 +423,7 @@ async fn transaction_misuse_is_reported() {
     );
     // The rejected begin must not have disturbed the open transaction.
     publisher
-        .publish(OutgoingMessage::new("tx", b"kept"))
+        .publish(OutgoingMessage::new("tx", b"kept"), None)
         .await
         .expect("publish inside the transaction");
     publisher.commit().await.expect("commit");
@@ -438,7 +441,7 @@ async fn publishing_after_shutdown_errors() {
     broker.shutdown().await.expect("shutdown");
 
     let err = publisher
-        .publish(OutgoingMessage::new("orders", b"late"))
+        .publish(OutgoingMessage::new("orders", b"late"), None)
         .await
         .expect_err("a publish through the closed transport must error");
     assert!(matches!(err, AmqpError::Closed { .. }), "got {err}");
@@ -752,7 +755,7 @@ async fn batches_are_capped_by_the_size_the_stream_is_opened_with() {
     let publisher = broker.publisher(LapinPublish::default());
     for payload in [b"p1".as_slice(), b"p2", b"p3", b"p4", b"p5"] {
         publisher
-            .publish(OutgoingMessage::new("batches", payload))
+            .publish(OutgoingMessage::new("batches", payload), None)
             .await
             .expect("publish");
     }

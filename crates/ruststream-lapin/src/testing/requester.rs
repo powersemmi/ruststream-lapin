@@ -13,6 +13,7 @@ use super::publisher::{LapinTestPublishPolicy, Routed};
 use super::router::{DeliveryReceiver, SubscriptionId};
 use super::subscriber::LapinTestMessage;
 use crate::error::AmqpError;
+use crate::publish_step::LapinPublishOptions;
 use crate::requester::{LapinRequest, REPLY_TO};
 
 /// The private reply address of one in-flight request.
@@ -112,7 +113,7 @@ impl Drop for Inbox {
 ///     let mut headers = HeaderMap::new();
 ///     headers.insert("correlation-id", ask.headers().correlation_id().unwrap_or("").to_owned());
 ///     publisher
-///         .publish(OutgoingMessage::new(&reply_to, b"in stock").with_headers(headers))
+///         .publish(OutgoingMessage::new(&reply_to, b"in stock").with_headers(headers), None)
 ///         .await?;
 ///     ask.ack().await?;
 ///     Ok::<_, Box<dyn std::error::Error>>(())
@@ -135,6 +136,7 @@ pub struct LapinTestRequester {
 
 impl Publisher for LapinTestRequester {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
     /// Publishes `msg` without expecting a reply, like the live requester's plain publish.
     ///
@@ -142,8 +144,12 @@ impl Publisher for LapinTestRequester {
     ///
     /// Returns [`AmqpError::InvalidOptions`] when the routing key is empty and
     /// [`AmqpError::Closed`] once the transport has shut down.
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.route.send(&msg))
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(self.route.send(&msg, options))
     }
 }
 
@@ -173,8 +179,12 @@ impl RequestReply for LapinTestRequester {
         let mut headers = msg.headers().clone();
         headers.insert("reply-to", inbox.address.clone());
         headers.insert("correlation-id", inbox.correlation_id.clone());
-        self.route
-            .send(&OutgoingMessage::new(msg.name(), msg.payload()).with_headers(headers))?;
+        // The request itself has no call site to adjust settings: the policy's are the whole
+        // answer, which is what the live requester does too.
+        self.route.send(
+            &OutgoingMessage::new(msg.name(), msg.payload()).with_headers(headers),
+            None,
+        )?;
 
         // One deadline for the whole wait, not per delivery: an uncorrelated reply must not buy
         // the request another full timeout.
@@ -223,7 +233,7 @@ impl PublishPolicy<ConnectedLapinTestBroker> for LapinRequest {
 impl LapinTestPublishPolicy for LapinRequest {
     fn bind(self, connected: &ConnectedLapinTestBroker) -> Self::Live {
         LapinTestRequester {
-            route: Routed::new(connected),
+            route: Routed::new(connected, self.publish_options().clone()),
         }
     }
 }

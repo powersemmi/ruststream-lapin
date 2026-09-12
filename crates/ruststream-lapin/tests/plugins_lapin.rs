@@ -95,7 +95,10 @@ async fn consistent_hash_exchange_distributes_across_shards() {
     let total = 40u32;
     for i in 0..total {
         publisher
-            .publish(OutgoingMessage::new(&format!("key-{i}"), &i.to_be_bytes()))
+            .publish(
+                OutgoingMessage::new(&format!("key-{i}"), &i.to_be_bytes()),
+                None,
+            )
             .await
             .expect("publish");
     }
@@ -143,7 +146,7 @@ async fn delayed_message_exchange_holds_then_redelivers() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"later"))
+        .publish(OutgoingMessage::new(&queue, b"later"), None)
         .await
         .expect("publish");
 

@@ -209,7 +209,10 @@ async fn a_reply_that_does_not_correlate_is_dropped() {
         let mut headers = HeaderMap::new();
         headers.insert("correlation-id", "someone-elses-question");
         publisher
-            .publish(OutgoingMessage::new(&reply_to, b"{}").with_headers(headers))
+            .publish(
+                OutgoingMessage::new(&reply_to, b"{}").with_headers(headers),
+                None,
+            )
             .await
             .expect("reply publish");
         ack(ask).await;

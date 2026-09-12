@@ -42,6 +42,20 @@ async fn lapin_test_broker_passes_conformance_suite() {
     harness::run_suite(LapinTestBroker::new).await;
 }
 
+// The ladder in process, the redelivery address included: the test broker answers with the queue
+// name exactly as the live one does, so a suite run without a server already catches an answer
+// that reaches nothing.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_passes_lifecycle() {
+    harness::lifecycle(
+        LapinTestBroker::new,
+        |name| RabbitQueue::new(name),
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
 // The capability suites again, in process. Each production policy pairs against the test broker
 // into the stand-in for the publisher it produces on a server, and a stand-in that claims a
 // capability owes the same contract: these run the very suites the live broker runs below,

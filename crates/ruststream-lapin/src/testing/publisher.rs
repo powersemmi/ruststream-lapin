@@ -23,9 +23,11 @@ use ruststream::{
 use tracing::warn;
 
 use super::broker::{ConnectedLapinTestBroker, TestBrokerState};
+use crate::convert;
 use crate::error::AmqpError;
 use crate::publish_policy::sealed::Sealed;
-use crate::publish_policy::{ConfirmsPublish, LapinPublish, ServerTxPublish};
+use crate::publish_policy::{ConfirmsPublish, LapinPublish, PublishOptions, ServerTxPublish};
+use crate::publish_step::{EXPIRATION_HEADER, LapinPublishOptions, PRIORITY_HEADER};
 use crate::publisher::Buffered;
 
 /// A publish policy that pairs with the connected test broker, the in-process counterpart of
@@ -57,17 +59,19 @@ pub trait LapinTestPublishPolicy: PublishPolicy<ConnectedLapinTestBroker> + Seal
     fn bind(self, connected: &ConnectedLapinTestBroker) -> Self::Live;
 }
 
-/// The transport handle every in-process publisher holds: the router plus the checks a live
-/// publisher makes before the broker would.
+/// The transport handle every in-process publisher holds: the router, the policy's own settings,
+/// and the checks a live publisher makes before the broker would.
 #[derive(Debug, Clone)]
 pub(super) struct Routed {
     state: Arc<TestBrokerState>,
+    options: PublishOptions,
 }
 
 impl Routed {
-    pub(super) fn new(connected: &ConnectedLapinTestBroker) -> Self {
+    pub(super) fn new(connected: &ConnectedLapinTestBroker, options: PublishOptions) -> Self {
         Self {
             state: connected.state(),
+            options,
         }
     }
 
@@ -76,17 +80,27 @@ impl Routed {
     }
 
     /// Routes `msg` to the queue its name addresses.
-    pub(super) fn send(&self, msg: &OutgoingMessage<'_>) -> Result<(), AmqpError> {
+    pub(super) fn send(
+        &self,
+        msg: &OutgoingMessage<'_>,
+        options: Option<&LapinPublishOptions>,
+    ) -> Result<(), AmqpError> {
         self.send_parts(
             msg.name(),
             &Bytes::copy_from_slice(msg.payload()),
             msg.headers(),
+            options,
         )
     }
 
     /// The same fanout for a buffered message, which is already split into its parts.
     fn send_buffered(&self, entry: &Buffered) -> Result<(), AmqpError> {
-        self.send_parts(&entry.routing_key, &entry.payload, &entry.headers)
+        self.send_parts(
+            &entry.routing_key,
+            &entry.payload,
+            &entry.headers,
+            Some(&entry.options),
+        )
     }
 
     fn send_parts(
@@ -94,15 +108,43 @@ impl Routed {
         routing_key: &str,
         payload: &Bytes,
         headers: &HeaderMap,
+        options: Option<&LapinPublishOptions>,
     ) -> Result<(), AmqpError> {
         self.check(routing_key)?;
+        let delivered = self.delivered_headers(headers, options);
         self.state.router.publish(
             routing_key,
             payload,
-            headers,
+            &delivered,
             self.state.coordinator().as_ref(),
         );
         Ok(())
+    }
+
+    /// The headers a consumer of this message sees.
+    ///
+    /// A real publish turns the resolved settings into AMQP frame fields, and a real delivery
+    /// reports them back as headers; the transport has no frame, so it goes straight to the second
+    /// half. A test therefore reads a priority off a delivery here exactly as it reads it off a
+    /// delivery from a server.
+    fn delivered_headers(
+        &self,
+        headers: &HeaderMap,
+        options: Option<&LapinPublishOptions>,
+    ) -> HeaderMap {
+        let resolved = self.options.resolve(options);
+        let mut delivered = headers.clone();
+        // A policy that names neither leaves the delivery exactly as the call site built it.
+        if let Some(priority) = resolved.priority {
+            delivered.insert(PRIORITY_HEADER, priority.to_string());
+        }
+        if let Some(ttl) = resolved.expiration {
+            delivered.insert(
+                EXPIRATION_HEADER,
+                convert::expiration_millis(ttl).as_str().to_owned(),
+            );
+        }
+        delivered
     }
 
     /// The two failures a live publisher reports before the message reaches the transport: an
@@ -130,26 +172,30 @@ struct Buffering {
 }
 
 impl Buffering {
-    fn new(connected: &ConnectedLapinTestBroker) -> Self {
+    fn new(connected: &ConnectedLapinTestBroker, options: PublishOptions) -> Self {
         Self {
-            route: Routed::new(connected),
+            route: Routed::new(connected, options),
             txn: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Buffers `msg` inside an open transaction, or routes it straight away.
-    fn publish(&self, msg: &OutgoingMessage<'_>) -> Result<(), AmqpError> {
+    fn publish(
+        &self,
+        msg: &OutgoingMessage<'_>,
+        options: Option<&LapinPublishOptions>,
+    ) -> Result<(), AmqpError> {
         // Checked before buffering, not only at the flush: the live publishers reject an
         // unusable routing key and a dead connection at the call that made the mistake.
         self.route.check(msg.name())?;
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push(Buffered::new(msg));
+                buffer.push(Buffered::new(msg, options));
                 return Ok(());
             }
         }
-        self.route.send(msg)
+        self.route.send(msg, options)
     }
 
     fn begin(&self, publisher: &str) -> Result<(), AmqpError> {
@@ -209,9 +255,12 @@ impl Buffering {
 /// handler mounted on this policy fails to compile here as it does on a real server, and
 /// [`confirms`](LapinPublish::confirms) is the transition that fixes it in both places.
 ///
-/// The policy's exchange and persistence are inert: the transport routes by exact queue name and
-/// has nothing to persist to. Like the real publishers it aliases the transport and may outlive
-/// it, so after the broker shuts down every publish reports [`AmqpError::Closed`].
+/// The policy's per-message settings are honoured: a
+/// [`priority`](LapinPublish::priority) or an [`expiration`](LapinPublish::expiration), from the
+/// policy or from a publish builder step, reaches the delivery as the header a real delivery
+/// reports it under. The exchange and the delivery mode are inert: the transport routes by exact
+/// queue name and has nothing to persist to. Like the real publishers it aliases the transport and
+/// may outlive it, so after the broker shuts down every publish reports [`AmqpError::Closed`].
 ///
 /// # Examples
 ///
@@ -224,7 +273,7 @@ impl Buffering {
 /// let broker = LapinTestBroker::new().connect().await?;
 /// let publisher = broker.publisher(LapinPublish::default());
 /// publisher
-///     .publish(OutgoingMessage::new("orders", b"{}".as_slice()))
+///     .publish(OutgoingMessage::new("orders", b"{}".as_slice()), None)
 ///     .await?;
 /// # Ok(())
 /// # }
@@ -236,6 +285,7 @@ pub struct LapinTestPublisher {
 
 impl Publisher for LapinTestPublisher {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
     /// Routes `msg` to the subscribers of the queue named by `msg.name()`.
     ///
@@ -243,8 +293,12 @@ impl Publisher for LapinTestPublisher {
     ///
     /// Returns [`AmqpError::InvalidOptions`] when the routing key is empty and
     /// [`AmqpError::Closed`] once the transport has shut down.
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.route.send(&msg))
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(self.route.send(&msg, options))
     }
 }
 
@@ -262,7 +316,7 @@ impl PublishPolicy<ConnectedLapinTestBroker> for LapinPublish {
 impl LapinTestPublishPolicy for LapinPublish {
     fn bind(self, connected: &ConnectedLapinTestBroker) -> Self::Live {
         LapinTestPublisher {
-            route: Routed::new(connected),
+            route: Routed::new(connected, self.publish_options().clone()),
         }
     }
 }
@@ -297,7 +351,7 @@ impl LapinTestPublishPolicy for LapinPublish {
 ///
 /// publisher.begin_transaction().await?;
 /// publisher
-///     .publish(OutgoingMessage::new("orders", b"{}".as_slice()))
+///     .publish(OutgoingMessage::new("orders", b"{}".as_slice()), None)
 ///     .await?;
 /// publisher.commit().await?;
 /// # Ok(())
@@ -313,6 +367,7 @@ const CONFIRMS: &str = "confirms test publisher";
 
 impl Publisher for ConfirmsTestPublisher {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
     /// Routes `msg`, or buffers it when a transaction is open on this handle.
     ///
@@ -320,8 +375,12 @@ impl Publisher for ConfirmsTestPublisher {
     ///
     /// Returns [`AmqpError::InvalidOptions`] when the routing key is empty and
     /// [`AmqpError::Closed`] once the transport has shut down.
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.buffering.publish(&msg))
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(self.buffering.publish(&msg, options))
     }
 }
 
@@ -391,7 +450,7 @@ impl PublishPolicy<ConnectedLapinTestBroker> for ConfirmsPublish {
 impl LapinTestPublishPolicy for ConfirmsPublish {
     fn bind(self, connected: &ConnectedLapinTestBroker) -> Self::Live {
         ConfirmsTestPublisher {
-            buffering: Buffering::new(connected),
+            buffering: Buffering::new(connected, self.publish_options().clone()),
         }
     }
 }
@@ -416,7 +475,7 @@ impl LapinTestPublishPolicy for ConfirmsPublish {
 ///     .publisher(LapinPublish::default().confirms())
 ///     .transaction()
 ///     .await?;
-/// txn.publish(OutgoingMessage::new("orders", b"{}".as_slice()))
+/// txn.publish(OutgoingMessage::new("orders", b"{}".as_slice()), None)
 ///     .await?;
 /// txn.commit().await?;
 /// # Ok(())
@@ -455,9 +514,10 @@ impl Drop for ConfirmsTestTransaction {
 
 impl Transaction for ConfirmsTestTransaction {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
-    /// Buffers `msg` in this transaction; nothing reaches the router before
-    /// [`commit`](Self::commit).
+    /// Buffers `msg` and the per-message settings its call site adjusted; nothing reaches the
+    /// router before [`commit`](Self::commit).
     ///
     /// # Errors
     ///
@@ -466,6 +526,7 @@ impl Transaction for ConfirmsTestTransaction {
     fn publish(
         &mut self,
         msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         if msg.name().is_empty() {
             return ready(Err(AmqpError::InvalidOptions(
@@ -473,7 +534,7 @@ impl Transaction for ConfirmsTestTransaction {
                     .to_owned(),
             )));
         }
-        self.buffered.push(Buffered::new(&msg));
+        self.buffered.push(Buffered::new(&msg, options));
         ready(Ok(()))
     }
 
@@ -537,7 +598,7 @@ impl Transaction for ConfirmsTestTransaction {
 ///
 /// publisher.begin_transaction().await?;
 /// publisher
-///     .publish(OutgoingMessage::new("ledger", b"{}".as_slice()))
+///     .publish(OutgoingMessage::new("ledger", b"{}".as_slice()), None)
 ///     .await?;
 /// publisher.abort().await?;
 /// # Ok(())
@@ -553,6 +614,7 @@ const SERVER_TX: &str = "server-transactional test publisher";
 
 impl Publisher for ServerTxTestPublisher {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
     /// Routes `msg`, or stages it when a transaction is open on this handle.
     ///
@@ -560,8 +622,12 @@ impl Publisher for ServerTxTestPublisher {
     ///
     /// Returns [`AmqpError::InvalidOptions`] when the routing key is empty and
     /// [`AmqpError::Closed`] once the transport has shut down.
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.buffering.publish(&msg))
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(self.buffering.publish(&msg, options))
     }
 }
 
@@ -610,7 +676,7 @@ impl PublishPolicy<ConnectedLapinTestBroker> for ServerTxPublish {
 impl LapinTestPublishPolicy for ServerTxPublish {
     fn bind(self, connected: &ConnectedLapinTestBroker) -> Self::Live {
         ServerTxTestPublisher {
-            buffering: Buffering::new(connected),
+            buffering: Buffering::new(connected, self.publish_options().clone()),
         }
     }
 }

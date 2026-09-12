@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use lapin::options::{BasicConsumeOptions, BasicQosOptions};
 use lapin::types::{FieldTable, ShortString};
 use lapin::{Channel, Connection, ConnectionProperties};
-use ruststream::{Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe};
+use ruststream::{
+    Broker, ConnectedBroker, DefaultPublish, DescribeServer, RedeliveryAddress, ServerSpec,
+    Subscribe,
+};
 
 use crate::convert;
 use crate::delay::DelayContext;
@@ -197,9 +200,12 @@ impl Broker for LapinBroker {
 
 /// `DescribeServer` reports the configured AMQP address, which is what the `AsyncAPI` document
 /// records for the service.
+///
+/// The document is published and shared, so the credentials an AMQP URI carries must not reach it.
+/// `ServerSpec::from_url` drops them, along with the scheme and the vhost path.
 impl DescribeServer for LapinBroker {
     fn describe_server(&self) -> ServerSpec {
-        ServerSpec::new(host_of(&self.uri), "amqp")
+        ServerSpec::from_url(&self.uri, "amqp")
     }
 }
 
@@ -226,7 +232,7 @@ impl ConnectedLapinBroker {
     /// The `AsyncAPI` server description of the connection this broker dialled.
     #[must_use]
     pub fn server_spec(&self) -> ServerSpec {
-        ServerSpec::new(host_of(&self.uri), "amqp")
+        ServerSpec::from_url(&self.uri, "amqp")
     }
 
     /// Opens a subscription for `def`, declaring its topology first when the broker opted in.
@@ -356,6 +362,17 @@ impl Subscribe for ConnectedLapinBroker {
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         ConnectedLapinBroker::subscribe(self, RabbitQueue::new(name)).await
     }
+
+    /// The queue name, which is what a publisher on the default exchange routes by.
+    ///
+    /// This is where the runtime's deferred `retry_after` fallback publishes its copy. It reaches
+    /// the queue as long as the retry publisher sends on the default exchange, which is what
+    /// [`LapinPublish`] does unless [`exchange`](LapinPublish::exchange) says otherwise; pointing
+    /// that publisher at a topic exchange with no binding under the queue name would send the
+    /// copy nowhere, so bind it or leave the retry publisher on the default exchange.
+    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
+        Some(RedeliveryAddress::new(name.to_owned()))
+    }
 }
 
 impl DefaultPublish for ConnectedLapinBroker {
@@ -380,43 +397,37 @@ impl ClosedLapinBroker {
     }
 }
 
-/// Extracts the `host[:port]` part of an AMQP URI for `AsyncAPI` metadata; never fails, because
-/// metadata must not block startup on a URI the connection itself will reject anyway.
-fn host_of(uri: &str) -> String {
-    let after_scheme = uri.split_once("://").map_or(uri, |(_, rest)| rest);
-    // The vhost path and the query go before the userinfo: a vhost may contain an `@`, and cutting
-    // the userinfo first would read that one as the separator and report the vhost as the host.
-    // The connection reads the URI the same way, so the description cannot disagree with it.
-    let authority = after_scheme
-        .split(['/', '?'])
-        .next()
-        .unwrap_or(after_scheme);
-    // The last `@` of what is left: a password may contain one.
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    host.to_owned()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{DescribeServer, LapinBroker, host_of};
+    use super::{DescribeServer, LapinBroker};
 
+    fn described_host(uri: &str) -> String {
+        LapinBroker::new(uri)
+            .describe_server()
+            .host
+            .expect("an AMQP URI always names a host")
+    }
+
+    // The published document must carry the coordinate and nothing else, whatever an operator put
+    // in the connection URI: no password, no vhost.
     #[test]
-    fn host_extraction_handles_auth_vhost_and_bare_forms() {
-        assert_eq!(host_of("amqp://localhost:5672"), "localhost:5672");
-        assert_eq!(host_of("amqp://user:pass@rabbit:5672/prod"), "rabbit:5672");
-        assert_eq!(host_of("amqps://rabbit/vhost"), "rabbit");
-        assert_eq!(host_of("rabbit:5672"), "rabbit:5672");
+    fn the_description_is_the_host_alone_whatever_the_uri_carries() {
+        assert_eq!(described_host("amqp://localhost:5672"), "localhost:5672");
+        assert_eq!(
+            described_host("amqp://user:pass@rabbit:5672/prod"),
+            "rabbit:5672"
+        );
+        assert_eq!(described_host("amqps://rabbit/vhost"), "rabbit");
+        assert_eq!(described_host("rabbit:5672"), "rabbit:5672");
         // A vhost may contain an `@`, so the path is cut before the userinfo is.
-        assert_eq!(host_of("amqp://rabbit:5672/my@vhost"), "rabbit:5672");
+        assert_eq!(described_host("amqp://rabbit:5672/my@vhost"), "rabbit:5672");
         // Both an `@` in the userinfo and one in the vhost: each is cut at its own step.
         assert_eq!(
-            host_of("amqp://user:p@ss@rabbit:5672/my@vhost"),
+            described_host("amqp://user:p@ss@rabbit:5672/my@vhost"),
             "rabbit:5672"
         );
         assert_eq!(
-            host_of("amqp://rabbit:5672/prod?heartbeat=30"),
+            described_host("amqp://rabbit:5672/prod?heartbeat=30"),
             "rabbit:5672"
         );
     }

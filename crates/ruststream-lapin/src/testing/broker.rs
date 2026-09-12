@@ -97,7 +97,7 @@ impl std::fmt::Debug for TestBrokerState {
 /// let mut subscriber = broker.subscribe("orders").await?;
 /// broker
 ///     .publisher(LapinPublish::default())
-///     .publish(OutgoingMessage::new("orders", b"{}"))
+///     .publish(OutgoingMessage::new("orders", b"{}"), None)
 ///     .await?;
 /// # Ok(())
 /// # }

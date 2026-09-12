@@ -29,8 +29,8 @@ use ruststream::{
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
-    Delay, LapinBroker, LapinMessage, LapinPublish, LapinPublishExt, PARTITION_KEY_HEADER,
-    QueueType, RabbitExchange, RabbitQueue,
+    Delay, EXPIRATION_HEADER, LapinBroker, LapinMessage, LapinPublish, LapinPublishSteps,
+    PARTITION_KEY_HEADER, PRIORITY_HEADER, QueueType, RabbitExchange, RabbitQueue,
 };
 
 mod live;
@@ -95,7 +95,10 @@ async fn round_trip_on_default_exchange() {
     headers.insert("content-type", "application/json");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"{\"id\":1}").with_headers(headers))
+        .publish(
+            OutgoingMessage::new(&queue, b"{\"id\":1}").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -132,11 +135,11 @@ async fn topic_binding_routes_by_pattern() {
 
     let publisher = broker.publisher(LapinPublish::default().exchange(&exchange));
     publisher
-        .publish(OutgoingMessage::new("order.created", b"hit"))
+        .publish(OutgoingMessage::new("order.created", b"hit"), None)
         .await
         .expect("publish hit");
     publisher
-        .publish(OutgoingMessage::new("payment.created", b"miss"))
+        .publish(OutgoingMessage::new("payment.created", b"miss"), None)
         .await
         .expect("publish miss");
 
@@ -169,7 +172,7 @@ async fn quorum_queue_declares_and_delivers() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"q1"))
+        .publish(OutgoingMessage::new(&queue, b"q1"), None)
         .await
         .expect("publish");
 
@@ -215,7 +218,7 @@ async fn nack_requeue_marks_redelivered() {
         .expect("subscribe");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"again"))
+        .publish(OutgoingMessage::new(&queue, b"again"), None)
         .await
         .expect("publish");
 
@@ -260,7 +263,7 @@ async fn reject_dead_letters_into_dlx() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"poison"))
+        .publish(OutgoingMessage::new(&queue, b"poison"), None)
         .await
         .expect("publish");
 
@@ -298,7 +301,10 @@ async fn binary_header_values_round_trip() {
     headers.insert("x-tenant", "acme");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"payload").with_headers(headers))
+        .publish(
+            OutgoingMessage::new(&queue, b"payload").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -341,7 +347,7 @@ async fn prefetch_caps_a_batch_below_its_size() {
     let publisher = broker.publisher(LapinPublish::default());
     for payload in [b"m1".as_slice(), b"m2", b"m3"] {
         publisher
-            .publish(OutgoingMessage::new(&queue, payload))
+            .publish(OutgoingMessage::new(&queue, payload), None)
             .await
             .expect("publish");
     }
@@ -392,7 +398,7 @@ async fn prefetch_caps_unacknowledged_deliveries() {
     let publisher = broker.publisher(LapinPublish::default());
     for payload in [b"m1".as_slice(), b"m2", b"m3"] {
         publisher
-            .publish(OutgoingMessage::new(&queue, payload))
+            .publish(OutgoingMessage::new(&queue, payload), None)
             .await
             .expect("publish");
     }
@@ -432,7 +438,7 @@ async fn server_tx_publisher_is_plain_outside_a_transaction() {
 
     let publisher = broker.publisher(LapinPublish::default().server_tx());
     publisher
-        .publish(OutgoingMessage::new(&queue, b"direct"))
+        .publish(OutgoingMessage::new(&queue, b"direct"), None)
         .await
         .expect("publish");
 
@@ -464,7 +470,10 @@ async fn partition_key_round_trips_through_the_header() {
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"payload").with_headers(headers))
+        .publish(
+            OutgoingMessage::new(&queue, b"payload").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -495,7 +504,7 @@ async fn nack_after_redelivers_through_the_delay_queue() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"later"))
+        .publish(OutgoingMessage::new(&queue, b"later"), None)
         .await
         .expect("publish");
 
@@ -686,6 +695,7 @@ async fn prequeue_keyed_deliveries(url: &str) {
             publisher
                 .publish(
                     OutgoingMessage::new(KEYED_LANES_QUEUE, body.as_bytes()).with_headers(headers),
+                    None,
                 )
                 .await
                 .expect("publish");
@@ -1027,14 +1037,15 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     let mut headered = consume_probe_queue(&channel, &headers_queue).await;
 
     let broker = LapinBroker::new(url).connect().await.expect("connect");
-    // Confirms, so every publish below has reached the broker once it resolves.
-    let publisher = broker.publisher(LapinPublish::default().confirms());
+    // Confirms, so every publish below has reached the broker once it resolves. The policy fixes
+    // a priority for every message it sends.
+    let publisher = broker.publisher(LapinPublish::default().priority(2).confirms());
 
     publisher
-        .with_priority(4)
-        .with_expiration(Duration::from_secs(60))
         .message(&Wire::of(b"{\"id\":1}"))
         .to(&stepped_queue)
+        .priority(4)
+        .expiration(Duration::from_secs(60))
         .publish()
         .await
         .expect("publish with steps");
@@ -1044,12 +1055,25 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     assert_eq!(delivery.properties.priority(), &Some(4));
     assert_eq!(expiration_of(&delivery).as_deref(), Some("60000"));
 
-    // The borrowed transaction form keeps the properties across the client-side buffer.
+    // A publish that names no step carries what the mount site fixed, and nothing else.
+    publisher
+        .message(&Wire::of(b"{\"id\":4}"))
+        .to(&stepped_queue)
+        .publish()
+        .await
+        .expect("publish with the policy defaults");
+
+    let delivery = next_delivery(&mut stepped).await;
+    assert_eq!(delivery.data, b"{\"id\":4}");
+    assert_eq!(delivery.properties.priority(), &Some(2));
+    assert_eq!(expiration_of(&delivery), None);
+
+    // The borrowed transaction form keeps the settings across the client-side buffer.
     publisher.begin_transaction().await.expect("begin");
     publisher
-        .with_priority(9)
         .message(&Wire::of(b"{\"id\":2}"))
         .to(&stepped_queue)
+        .priority(9)
         .publish()
         .await
         .expect("publish into the transaction");
@@ -1059,12 +1083,17 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     assert_eq!(delivery.data, b"{\"id\":2}");
     assert_eq!(delivery.properties.priority(), &Some(9));
 
-    // The same names as plain headers: they travel in the header table, and neither property is
-    // set - which is exactly what the steps exist to fix.
+    // The same values written as headers, under the protocol's own names and under the names a
+    // delivery reports them with: they travel in the header table and set no property at all,
+    // which is exactly what the steps exist to fix. A publisher with no policy setting either, so
+    // a property that does turn up came from the header.
+    let plain = broker.publisher(LapinPublish::default().confirms());
     let mut headers = HeaderMap::new();
     headers.insert("priority", "4");
     headers.insert("expiration", "60000");
-    publisher
+    headers.insert(PRIORITY_HEADER, "4");
+    headers.insert(EXPIRATION_HEADER, "60000");
+    plain
         .message(&Wire::of(b"{\"id\":3}"))
         .with_headers(headers)
         .to(&headers_queue)
@@ -1082,7 +1111,7 @@ async fn publish_steps_reach_the_native_amqp_properties() {
         .as_ref()
         .expect("header table");
     assert!(table.inner().contains_key("priority"));
-    assert!(table.inner().contains_key("expiration"));
+    assert!(table.inner().contains_key(PRIORITY_HEADER));
 
     broker.shutdown().await.expect("shutdown");
     for queue in [&stepped_queue, &headers_queue] {

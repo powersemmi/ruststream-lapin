@@ -51,7 +51,7 @@ where
         };
         let payload = JsonCodec.encode(&command).expect("serializable");
         let outgoing = OutgoingMessage::new("shipments", payload.as_ref());
-        if let Err(err) = publisher.publish(outgoing).await {
+        if let Err(err) = publisher.publish(outgoing, None).await {
             publisher.abort().await.ok();
             return Err(err);
         }
