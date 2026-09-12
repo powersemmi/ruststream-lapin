@@ -20,8 +20,12 @@ use ruststream::{
 };
 use ruststream_lapin::{LapinBroker, LapinPublish, RabbitQueue};
 
+mod live;
+
+/// The plugin stand's address, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing
+/// address fails the suite instead of skipping it.
 fn plugins_url() -> Option<String> {
-    std::env::var("AMQP_PLUGINS_TEST_URL").ok()
+    live::url("AMQP_PLUGINS_TEST_URL")
 }
 
 fn unique(base: &str) -> String {

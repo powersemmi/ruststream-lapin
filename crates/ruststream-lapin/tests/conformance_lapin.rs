@@ -14,8 +14,12 @@ use ruststream::conformance::{capabilities, harness};
 use ruststream_lapin::testing::LapinTestBroker;
 use ruststream_lapin::{LapinBroker, LapinPublish, LapinRequest, RabbitQueue};
 
+mod live;
+
+/// The broker address, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing address
+/// fails the suite instead of skipping it.
 fn amqp_url() -> Option<String> {
-    std::env::var("AMQP_TEST_URL").ok()
+    live::url("AMQP_TEST_URL")
 }
 
 /// Conformance queues are throwaways: auto-deleted once the suite's consumer goes away.

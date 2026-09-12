@@ -171,9 +171,13 @@ jobs:
       - name: Start RabbitMQ
         run: docker compose -f docker-compose.test.yml up -d --wait
 
+      # RUSTSTREAM_REQUIRE_LIVE is this job's contract with the suites: a broker is up, so a test
+      # that skips is a defect rather than a convenience. Without it a live test returns before
+      # its first assertion and reports ok, which reads exactly like a run that did the work.
       - name: Run RabbitMQ integration tests
         env:
           AMQP_TEST_URL: amqp://127.0.0.1:5672
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-lapin --test integration_lapin -- --test-threads=1
 
       # run_suite in-process plus lifecycle, transactions (confirms and server tx), and
@@ -181,6 +185,7 @@ jobs:
       - name: Run RabbitMQ conformance suite
         env:
           AMQP_TEST_URL: amqp://127.0.0.1:5672
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-lapin --features testing --test conformance_lapin -- --test-threads=1
 
       - name: Stop RabbitMQ
@@ -206,9 +211,12 @@ jobs:
       - name: Start the plugin-enabled RabbitMQ
         run: docker compose -f docker-compose.test.yml --profile plugins up -d --wait rabbitmq-plugins
 
+      # The plugin stand has an address of its own, so it needs the same contract: this job's
+      # three tests are the only ones that ever exercise the two plugins.
       - name: Run plugin feature tests
         env:
           AMQP_PLUGINS_TEST_URL: amqp://127.0.0.1:5673
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: cargo test -p ruststream-lapin --features plugin-consistent-hash,plugin-dme --test plugins_lapin -- --test-threads=1
 
       - name: Stop the plugin-enabled RabbitMQ
