@@ -696,7 +696,7 @@ async fn receipt_for(order: &Order) -> Receipt {
 async fn a_declared_reply_lands_where_its_type_says() {
     let app =
         RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
-            b.include(confirm_order).out(Reply, LapinTestPublish);
+            b.include(confirm_order).out(Reply, LapinPublish::default());
         });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -722,7 +722,7 @@ async fn a_declared_reply_lands_where_its_type_says() {
 async fn an_undeclared_reply_lands_at_the_mount_name() {
     let app =
         RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
-            b.include(receipt_for).out(Reply, LapinTestPublish);
+            b.include(receipt_for).out(Reply, LapinPublish::default());
         });
     let tb = TestApp::start(app).await.expect("start");
 
