@@ -1,10 +1,12 @@
 //! Integration tests for the in-process AMQP test broker.
 //!
-//! Most cases drive the public surface (`LapinTestBroker`, `LapinTestPublisher`,
+//! Most cases drive the public surface (`LapinTestBroker`, the stand-in publishers,
 //! `LapinTestSubscriber`) directly, to keep failures localised; the `TestApp`-driven cases at
 //! the end exercise the `TestableBroker` quiescence wiring (coordinator install,
-//! `enqueued`/`consumed`) through the harness. Real AMQP semantics (bindings, dead-lettering,
-//! prefetch, request/reply) live in `tests/integration_lapin.rs` against a live `RabbitMQ`.
+//! `enqueued`/`consumed`) through the harness. Request/reply on the same transport lives in
+//! `tests/request_reply_lapin.rs`, and the AMQP semantics the transport does not model
+//! (bindings, dead-lettering, prefetch) in `tests/integration_lapin.rs` against a live
+//! `RabbitMQ`.
 
 #![cfg(feature = "testing")]
 
@@ -20,14 +22,12 @@ use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
     BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap, IncomingMessage,
-    OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
+    Outgoing, OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
     testing::expect_published,
 };
 use ruststream_lapin::context::keys;
-use ruststream_lapin::testing::{
-    ConnectedLapinTestBroker, LapinTestBroker, LapinTestMessage, LapinTestPublish,
-};
-use ruststream_lapin::{AmqpError, PARTITION_KEY_HEADER, RabbitQueue};
+use ruststream_lapin::testing::{ConnectedLapinTestBroker, LapinTestBroker, LapinTestMessage};
+use ruststream_lapin::{AmqpError, LapinPublish, PARTITION_KEY_HEADER, RabbitQueue};
 use serde::{Deserialize, Serialize};
 
 const WAIT: Duration = Duration::from_secs(1);
@@ -57,10 +57,10 @@ async fn pub_sub_round_trip_through_broker_traits() {
     let broker = connected().await;
 
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"o1"))
+        .publish(OutgoingMessage::new("orders", b"o1"), None)
         .await
         .expect("publish");
 
@@ -75,12 +75,75 @@ async fn pub_sub_round_trip_through_broker_traits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publisher_rejects_empty_routing_key() {
     let broker = connected().await;
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
     let err = publisher
-        .publish(OutgoingMessage::new("", b"x"))
+        .publish(OutgoingMessage::new("", b"x"), None)
         .await
         .expect_err("empty routing key must be rejected");
     assert!(format!("{err}").contains("routing key"), "got {err}");
+}
+
+// A queue with several consumers is a work queue: each delivery goes to exactly one of them, in
+// rotation. A service that scales a handler horizontally must not see every copy processed twice
+// in process when a server would hand each message out once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn competing_consumers_share_the_deliveries() {
+    let broker = connected().await;
+    let mut first = broker.subscribe("shared").await.expect("subscribe first");
+    let mut second = broker.subscribe("shared").await.expect("subscribe second");
+    let publisher = broker.publisher(LapinPublish::default());
+
+    for payload in [b"m1".as_slice(), b"m2", b"m3", b"m4"] {
+        publisher
+            .publish(OutgoingMessage::new("shared", payload), None)
+            .await
+            .expect("publish");
+    }
+
+    let mut first_stream = Box::pin(first.stream());
+    let mut second_stream = Box::pin(second.stream());
+    assert_eq!(next_payload(&mut first_stream).await, b"m1");
+    assert_eq!(next_payload(&mut second_stream).await, b"m2");
+    assert_eq!(next_payload(&mut first_stream).await, b"m3");
+    assert_eq!(next_payload(&mut second_stream).await, b"m4");
+}
+
+// A requeue goes back through the queue rather than to the consumer that rejected it, so the
+// redelivery can land on a sibling - which is what a server does, and what makes a retry test
+// with competing consumers mean anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_requeue_goes_back_to_the_queue() {
+    let broker = connected().await;
+    let mut first = broker.subscribe("retried").await.expect("subscribe first");
+    let mut second = broker.subscribe("retried").await.expect("subscribe second");
+    let publisher = broker.publisher(LapinPublish::default());
+
+    publisher
+        .publish(OutgoingMessage::new("retried", b"m1"), None)
+        .await
+        .expect("publish");
+
+    let mut first_stream = Box::pin(first.stream());
+    let msg = tokio::time::timeout(WAIT, first_stream.next())
+        .await
+        .expect("delivery within timeout")
+        .expect("stream has next")
+        .expect("delivery ok");
+    assert!(!msg.redelivered(), "the first delivery is not a redelivery");
+    msg.nack(true).await.expect("requeue");
+
+    let mut second_stream = Box::pin(second.stream());
+    let redelivered = tokio::time::timeout(WAIT, second_stream.next())
+        .await
+        .expect("redelivery within timeout")
+        .expect("stream has next")
+        .expect("delivery ok");
+    assert_eq!(redelivered.payload(), b"m1");
+    assert!(
+        redelivered.redelivered(),
+        "the copy that goes back is marked redelivered"
+    );
+    redelivered.ack().await.expect("ack");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -88,14 +151,14 @@ async fn distinct_queues_are_isolated() {
     let broker = connected().await;
     let mut orders = broker.subscribe("orders").await.expect("subscribe orders");
     let mut events = broker.subscribe("events").await.expect("subscribe events");
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"o"))
+        .publish(OutgoingMessage::new("orders", b"o"), None)
         .await
         .expect("publish o");
     publisher
-        .publish(OutgoingMessage::new("events", b"e"))
+        .publish(OutgoingMessage::new("events", b"e"), None)
         .await
         .expect("publish e");
 
@@ -110,10 +173,10 @@ async fn distinct_queues_are_isolated() {
 async fn nack_requeue_redelivers_to_same_subscriber() {
     let broker = connected().await;
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"once"))
+        .publish(OutgoingMessage::new("orders", b"once"), None)
         .await
         .expect("publish");
 
@@ -138,13 +201,13 @@ async fn nack_requeue_redelivers_to_same_subscriber() {
 async fn headers_are_propagated_to_subscribers() {
     let broker = connected().await;
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
 
     let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("correlation-id", "abc-1");
     let outgoing = OutgoingMessage::new("orders", b"{}").with_headers(headers);
-    publisher.publish(outgoing).await.expect("publish");
+    publisher.publish(outgoing, None).await.expect("publish");
 
     let mut stream = Box::pin(subscriber.stream());
     let msg = tokio::time::timeout(WAIT, stream.next())
@@ -160,13 +223,13 @@ async fn headers_are_propagated_to_subscribers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expect_published_observes_publishes() {
     let broker = connected().await;
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
     publisher
-        .publish(OutgoingMessage::new("events", b"first"))
+        .publish(OutgoingMessage::new("events", b"first"), None)
         .await
         .expect("publish first");
     publisher
-        .publish(OutgoingMessage::new("events", b"second"))
+        .publish(OutgoingMessage::new("events", b"second"), None)
         .await
         .expect("publish second");
     let observed = expect_published(&broker, "events", 2, Duration::from_secs(1)).await;
@@ -181,10 +244,10 @@ async fn expect_published_observes_publishes() {
 async fn stream_can_be_reentered() {
     let broker = connected().await;
     let mut subscriber = broker.subscribe("orders").await.expect("subscribe");
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"one"))
+        .publish(OutgoingMessage::new("orders", b"one"), None)
         .await
         .expect("publish one");
     {
@@ -193,7 +256,7 @@ async fn stream_can_be_reentered() {
     }
 
     publisher
-        .publish(OutgoingMessage::new("orders", b"two"))
+        .publish(OutgoingMessage::new("orders", b"two"), None)
         .await
         .expect("publish two");
     let mut stream = Box::pin(subscriber.stream());
@@ -208,8 +271,11 @@ async fn partition_key_header_is_surfaced() {
     let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
-        .publisher(LapinTestPublish)
-        .publish(OutgoingMessage::new("keyed", b"payload").with_headers(headers))
+        .publisher(LapinPublish::default())
+        .publish(
+            OutgoingMessage::new("keyed", b"payload").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -238,8 +304,8 @@ async fn partition_key_absent_yields_none() {
     let mut sub = broker.subscribe("unkeyed").await.expect("subscribe");
 
     broker
-        .publisher(LapinTestPublish)
-        .publish(OutgoingMessage::new("unkeyed", b"payload"))
+        .publisher(LapinPublish::default())
+        .publish(OutgoingMessage::new("unkeyed", b"payload"), None)
         .await
         .expect("publish");
 
@@ -266,15 +332,15 @@ async fn describe_server_returns_amqp_protocol() {
 async fn transaction_buffers_until_commit() {
     let broker = connected().await;
     let mut sub = broker.subscribe("tx").await.expect("subscribe");
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default().confirms());
 
     publisher.begin_transaction().await.expect("begin");
     publisher
-        .publish(OutgoingMessage::new("tx", b"first"))
+        .publish(OutgoingMessage::new("tx", b"first"), None)
         .await
         .expect("publish first");
     publisher
-        .publish(OutgoingMessage::new("tx", b"second"))
+        .publish(OutgoingMessage::new("tx", b"second"), None)
         .await
         .expect("publish second");
 
@@ -292,11 +358,11 @@ async fn transaction_buffers_until_commit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transaction_abort_discards_buffer() {
     let broker = connected().await;
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default().confirms());
 
     publisher.begin_transaction().await.expect("begin");
     publisher
-        .publish(OutgoingMessage::new("tx", b"discarded"))
+        .publish(OutgoingMessage::new("tx", b"discarded"), None)
         .await
         .expect("publish");
     publisher.abort().await.expect("abort");
@@ -312,7 +378,7 @@ async fn owned_transactions_settle_independently_through_the_typed_sugar() {
     use ruststream::runtime::PublishExt;
 
     let broker = connected().await;
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default().confirms());
 
     let mut kept = publisher.owned_transaction().await.expect("open kept");
     let mut discarded = publisher.owned_transaction().await.expect("open discarded");
@@ -339,7 +405,7 @@ async fn owned_transactions_settle_independently_through_the_typed_sugar() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transaction_misuse_is_reported() {
     let broker = connected().await;
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default().confirms());
 
     assert!(
         publisher.commit().await.is_err(),
@@ -357,7 +423,7 @@ async fn transaction_misuse_is_reported() {
     );
     // The rejected begin must not have disturbed the open transaction.
     publisher
-        .publish(OutgoingMessage::new("tx", b"kept"))
+        .publish(OutgoingMessage::new("tx", b"kept"), None)
         .await
         .expect("publish inside the transaction");
     publisher.commit().await.expect("commit");
@@ -371,17 +437,19 @@ async fn transaction_misuse_is_reported() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publishing_after_shutdown_errors() {
     let broker = connected().await;
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
     broker.shutdown().await.expect("shutdown");
 
     let err = publisher
-        .publish(OutgoingMessage::new("orders", b"late"))
+        .publish(OutgoingMessage::new("orders", b"late"), None)
         .await
         .expect_err("a publish through the closed transport must error");
     assert!(matches!(err, AmqpError::Closed { .. }), "got {err}");
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+// `Outgoing` without a name: `Order` is also the reply of the RPC handler below, whose
+// destination is the requester's address rather than a property of the type.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
 struct Order {
     id: u64,
 }
@@ -569,7 +637,7 @@ async fn direct_reply_transform_redirects_and_echoes() {
     let probe = broker.clone().connect().await.expect("connect");
     let app = RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(broker, |b| {
         b.include(echo_id)
-            .out(Reply, LapinTestPublish)
+            .out(Reply, LapinPublish::default())
             .transform(DirectReplyTo);
     });
 
@@ -602,6 +670,81 @@ async fn direct_reply_transform_redirects_and_echoes() {
     tb.shutdown().await.expect("shutdown");
 }
 
+/// The confirmation of one order, addressed by its own declaration.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
+#[outgoing(name = "confirmations")]
+struct Confirmation {
+    id: u64,
+}
+
+#[subscriber("orders.declared", publish)]
+async fn confirm_order(order: &Order) -> Confirmation {
+    Confirmation { id: order.id }
+}
+
+/// A receipt with no declared destination: the mount site says where it goes.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Outgoing)]
+struct Receipt {
+    id: u64,
+}
+
+#[subscriber("orders.mounted", publish("receipts"))]
+async fn receipt_for(order: &Order) -> Receipt {
+    Receipt { id: order.id }
+}
+
+// A reply type that declares its own destination publishes there, on the queue name the AMQP
+// publisher turns into a routing key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declared_reply_lands_where_its_type_says() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(confirm_order).out(Reply, LapinPublish::default());
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<LapinTestBroker>()
+        .publish("orders.declared", &Order { id: 4 })
+        .await
+        .expect("publish must drive the reply to quiescence");
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("orders.declared")
+        .assert_called_once();
+    tb.broker::<LapinTestBroker>()
+        .published::<Confirmation>("confirmations")
+        .assert_called_once()
+        .with(&Confirmation { id: 4 });
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// A reply type that declares nothing takes the mount site's name, which is what the direct
+// reply-to fallback rests on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undeclared_reply_lands_at_the_mount_name() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(receipt_for).out(Reply, LapinPublish::default());
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<LapinTestBroker>()
+        .publish("orders.mounted", &Order { id: 5 })
+        .await
+        .expect("publish must drive the reply to quiescence");
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("orders.mounted")
+        .assert_called_once();
+    tb.broker::<LapinTestBroker>()
+        .published::<Receipt>("receipts")
+        .assert_called_once()
+        .with(&Receipt { id: 5 });
+
+    tb.shutdown().await.expect("shutdown");
+}
+
 // AMQP has no wire batch, so the in-process transport batches the way the real subscriber does -
 // on the client, capped by the size the stream was opened with. Everything is already queued
 // when the stream is first polled, so the batches close on the size rather than on a deadline.
@@ -609,10 +752,10 @@ async fn direct_reply_transform_redirects_and_echoes() {
 async fn batches_are_capped_by_the_size_the_stream_is_opened_with() {
     let broker = connected().await;
     let mut subscriber = broker.subscribe("batches").await.expect("subscribe");
-    let publisher = broker.publisher(LapinTestPublish);
+    let publisher = broker.publisher(LapinPublish::default());
     for payload in [b"p1".as_slice(), b"p2", b"p3", b"p4", b"p5"] {
         publisher
-            .publish(OutgoingMessage::new("batches", payload))
+            .publish(OutgoingMessage::new("batches", payload), None)
             .await
             .expect("publish");
     }

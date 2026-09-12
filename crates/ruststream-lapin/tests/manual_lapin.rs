@@ -13,10 +13,10 @@ use std::time::Duration;
 use ruststream::prelude::*;
 use ruststream::testing::{TestApp, expect_published};
 use ruststream::{Broker, ConnectedBroker, Outgoing};
-use ruststream_lapin::RabbitQueue;
 use ruststream_lapin::context::AmqpContext;
 use ruststream_lapin::context::keys::RoutingKey;
-use ruststream_lapin::testing::{LapinTestBroker, LapinTestPublish};
+use ruststream_lapin::testing::LapinTestBroker;
+use ruststream_lapin::{LapinPublish, RabbitQueue};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -72,7 +72,7 @@ async fn a_handle_body_mounts_on_the_queue_descriptor() {
 
     let app = RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(broker, |b| {
         b.include(subscriber(RabbitQueue::new("orders"), Audit).build())
-            .out(DefaultSlot, LapinTestPublish)
+            .out(DefaultSlot, LapinPublish::default())
             .build();
     });
     let tb = TestApp::start(app).await.expect("start");

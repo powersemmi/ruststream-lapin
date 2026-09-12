@@ -165,11 +165,14 @@ impl DelayContext {
         headers: &HeaderMap,
         delay: Duration,
     ) -> Result<(), AmqpError> {
+        // A redelivery has no call site to adjust anything, so the copy carries what the original
+        // delivery reported.
+        let options = convert::redelivery_options(headers);
         match &self.target {
             DelayTarget::WaitingQueue { waiting_queue } => {
                 // The waiting queue's own TTL replaces whatever expiration the delivery carried:
                 // the delay is what the copy waits for there.
-                let properties = convert::properties_for_publish(headers, true)?
+                let properties = convert::properties_for_publish(headers, &options)?
                     .with_expiration(convert::expiration_millis(delay));
                 self.channel
                     .basic_publish(
@@ -189,7 +192,7 @@ impl DelayContext {
             } => {
                 use lapin::types::{AMQPValue, FieldTable};
 
-                let mut properties = convert::properties_for_publish(headers, true)?;
+                let mut properties = convert::properties_for_publish(headers, &options)?;
                 let mut table = properties
                     .headers()
                     .clone()

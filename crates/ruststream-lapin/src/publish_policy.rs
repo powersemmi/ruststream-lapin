@@ -8,18 +8,21 @@
 //! keeping the options.
 
 use std::future::{Future, ready};
+use std::time::Duration;
 
 use ruststream::{PairError, PublishPolicy};
 
 use crate::broker::ConnectedLapinBroker;
+use crate::publish_step::LapinPublishOptions;
 use crate::publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
 
 use self::sealed::Sealed;
 
-mod sealed {
-    /// Seals [`LapinPublishPolicy`](super::LapinPublishPolicy): pairing an AMQP publisher opens
-    /// no channel of its own, and the synchronous
-    /// [`publisher`](crate::ConnectedLapinBroker::publisher) accessor depends on that.
+pub(crate) mod sealed {
+    /// Seals [`LapinPublishPolicy`](super::LapinPublishPolicy) and its in-process counterpart
+    /// `LapinTestPublishPolicy`: pairing an AMQP publisher opens no channel of its own, and the
+    /// synchronous [`publisher`](crate::ConnectedLapinBroker::publisher) accessor depends on
+    /// that.
     pub trait Sealed {}
 
     impl Sealed for super::LapinPublish {}
@@ -28,20 +31,88 @@ mod sealed {
     impl Sealed for crate::requester::LapinRequest {}
 }
 
-/// The options every `RabbitMQ` publish policy carries: where to publish and how durably.
+/// What every `RabbitMQ` publish policy carries: where to publish, and the per-message properties
+/// a publish through it takes unless its own call site says otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PublishOptions {
     pub(crate) exchange: String,
-    pub(crate) persistent: bool,
+    pub(crate) defaults: LapinPublishOptions,
+}
+
+impl PublishOptions {
+    /// The settings one publish carries: what its call site adjusted, over the policy's defaults.
+    pub(crate) fn resolve(&self, call: Option<&LapinPublishOptions>) -> LapinPublishOptions {
+        call.map_or(self.defaults, |call| call.over(&self.defaults))
+    }
 }
 
 impl Default for PublishOptions {
     fn default() -> Self {
         Self {
             exchange: String::new(),
-            persistent: true,
+            defaults: LapinPublishOptions {
+                persistent: Some(true),
+                ..LapinPublishOptions::default()
+            },
         }
     }
+}
+
+/// Writes the four policy setters every publish policy of this crate shares.
+///
+/// They differ only in the type they return, and a policy is a newtype over [`PublishOptions`],
+/// so the bodies would be four copies each. The documentation is written once here and reaches
+/// every policy's rustdoc.
+macro_rules! publish_policy_settings {
+    ($policy:ident) => {
+        impl $policy {
+            /// What this policy hands the publisher it pairs into.
+            ///
+            /// The live publishers take the value by move at `bind`; this borrow is for the
+            /// in-process stand-ins, which clone it.
+            #[cfg(feature = "testing")]
+            pub(crate) const fn publish_options(&self) -> &PublishOptions {
+                &self.0
+            }
+
+            /// Publishes to `exchange` instead of the default exchange.
+            pub fn exchange(mut self, exchange: impl Into<String>) -> Self {
+                self.0.exchange = exchange.into();
+                self
+            }
+
+            /// Whether messages are marked persistent (delivery mode 2). Defaults to `true`.
+            ///
+            /// One message departs from this with the publish builder's
+            /// [`persistent`](crate::LapinPublishSteps::persistent) step.
+            pub fn persistent(mut self, persistent: bool) -> Self {
+                self.0.defaults.persistent = Some(persistent);
+                self
+            }
+
+            /// The AMQP `priority` property messages carry. Unset by default, so the broker sees
+            /// no priority at all.
+            ///
+            /// It only orders deliveries on a queue declared with `x-max-priority`. One message
+            /// departs from this with the publish builder's
+            /// [`priority`](crate::LapinPublishSteps::priority) step.
+            pub fn priority(mut self, priority: u8) -> Self {
+                self.0.defaults.priority = Some(priority);
+                self
+            }
+
+            /// The AMQP per-message `expiration` (TTL) messages carry: the broker drops one once
+            /// `ttl` has passed without it being consumed. Unset by default, so messages do not
+            /// expire.
+            ///
+            /// One message departs from this with the publish builder's
+            /// [`expiration`](crate::LapinPublishSteps::expiration) step.
+            pub fn expiration(mut self, ttl: Duration) -> Self {
+                self.0.defaults.expiration = Some(ttl);
+                self
+            }
+        }
+    };
 }
 
 /// A publish policy that pairs with a connected `RabbitMQ` broker without opening a channel.
@@ -61,20 +132,25 @@ pub trait LapinPublishPolicy: PublishPolicy<ConnectedLapinBroker> + Sealed {
 /// [`OutgoingMessage::name`](ruststream::OutgoingMessage::name) is the routing key; the target
 /// exchange is a property of the policy (the default exchange unless
 /// [`exchange`](Self::exchange) says otherwise). On the default exchange the routing key
-/// addresses the queue with that name. Messages are published persistent (delivery mode 2)
-/// unless [`persistent(false)`](Self::persistent) opts out.
+/// addresses the queue with that name.
+///
+/// The policy is also where the per-message AMQP properties get their defaults:
+/// [`persistent`](Self::persistent), [`priority`](Self::priority) and
+/// [`expiration`](Self::expiration) fix what every publish through it carries, and the publish
+/// builder's own steps ([`LapinPublishSteps`](crate::LapinPublishSteps)) adjust one message over
+/// them.
 ///
 /// It pairs into [`LapinPublisher`], and it is the broker's
 /// [`DefaultPublish`](ruststream::DefaultPublish) policy, so a `publish("dest")` handler mounted
 /// without an explicit publisher replies through it. [`confirms`](Self::confirms) and
-/// [`server_tx`](Self::server_tx) move to the transactional policies, keeping the options.
+/// [`server_tx`](Self::server_tx) move to the transactional policies, keeping the settings.
 ///
 /// # Examples
 ///
 /// ```
 /// use ruststream_lapin::LapinPublish;
 ///
-/// let events = LapinPublish::default().exchange("events");
+/// let events = LapinPublish::default().exchange("events").priority(3);
 /// let shipments = LapinPublish::default().confirms();
 /// # let _ = (events, shipments);
 /// ```
@@ -83,18 +159,6 @@ pub trait LapinPublishPolicy: PublishPolicy<ConnectedLapinBroker> + Sealed {
 pub struct LapinPublish(PublishOptions);
 
 impl LapinPublish {
-    /// Publishes to `exchange` instead of the default exchange.
-    pub fn exchange(mut self, exchange: impl Into<String>) -> Self {
-        self.0.exchange = exchange.into();
-        self
-    }
-
-    /// Whether messages are marked persistent (delivery mode 2). Defaults to `true`.
-    pub fn persistent(mut self, persistent: bool) -> Self {
-        self.0.persistent = persistent;
-        self
-    }
-
     /// Moves to the policy that awaits broker confirms, with buffering transactions.
     ///
     /// The recommended transactional publisher: durable and much faster than AMQP server
@@ -111,6 +175,8 @@ impl LapinPublish {
         ServerTxPublish(self.0)
     }
 }
+
+publish_policy_settings!(LapinPublish);
 
 impl PublishPolicy<ConnectedLapinBroker> for LapinPublish {
     type Live = LapinPublisher;
@@ -146,19 +212,7 @@ impl LapinPublishPolicy for LapinPublish {
 #[must_use]
 pub struct ConfirmsPublish(PublishOptions);
 
-impl ConfirmsPublish {
-    /// Publishes to `exchange` instead of the default exchange.
-    pub fn exchange(mut self, exchange: impl Into<String>) -> Self {
-        self.0.exchange = exchange.into();
-        self
-    }
-
-    /// Whether messages are marked persistent (delivery mode 2). Defaults to `true`.
-    pub fn persistent(mut self, persistent: bool) -> Self {
-        self.0.persistent = persistent;
-        self
-    }
-}
+publish_policy_settings!(ConfirmsPublish);
 
 impl PublishPolicy<ConnectedLapinBroker> for ConfirmsPublish {
     type Live = ConfirmsPublisher;
@@ -194,19 +248,7 @@ impl LapinPublishPolicy for ConfirmsPublish {
 #[must_use]
 pub struct ServerTxPublish(PublishOptions);
 
-impl ServerTxPublish {
-    /// Publishes to `exchange` instead of the default exchange.
-    pub fn exchange(mut self, exchange: impl Into<String>) -> Self {
-        self.0.exchange = exchange.into();
-        self
-    }
-
-    /// Whether messages are marked persistent (delivery mode 2). Defaults to `true`.
-    pub fn persistent(mut self, persistent: bool) -> Self {
-        self.0.persistent = persistent;
-        self
-    }
-}
+publish_policy_settings!(ServerTxPublish);
 
 impl PublishPolicy<ConnectedLapinBroker> for ServerTxPublish {
     type Live = ServerTxPublisher;

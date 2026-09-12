@@ -1,11 +1,12 @@
 //! The queue descriptor: what a subscription binds to and, optionally, expects to exist.
 
+use std::future::{Future, ready};
 use std::num::NonZeroU16;
 use std::time::Duration;
 
 use lapin::types::{AMQPValue, FieldTable, ShortString};
-use ruststream::SubscriptionSource;
 use ruststream::runtime::IntoSource;
+use ruststream::{RedeliveryAddress, SubscriptionSource};
 
 use crate::broker::ConnectedLapinBroker;
 use crate::delay::Delay;
@@ -298,6 +299,21 @@ impl SubscriptionSource<ConnectedLapinBroker> for RabbitQueue {
     ) -> Result<Self::Subscriber, AmqpError> {
         connected.subscribe(self).await
     }
+
+    /// The queue name: on the default exchange a routing key addresses the queue that carries it,
+    /// so that is where the runtime's deferred `retry_after` copy reaches this subscription again.
+    ///
+    /// The answer holds for a retry publisher on the default exchange, which is what
+    /// [`LapinPublish`](crate::LapinPublish) is unless configured otherwise. A publisher aimed at
+    /// a topic or direct exchange reaches the queue only through a binding under this name, so
+    /// bind it there or leave the retry publisher on the default exchange.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedLapinBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, AmqpError>> {
+        // The name is on the descriptor, so nothing has to be asked of the broker.
+        ready(Ok(Some(RedeliveryAddress::new(self.name.clone()))))
+    }
 }
 
 #[cfg(feature = "testing")]
@@ -313,5 +329,15 @@ impl SubscriptionSource<crate::testing::ConnectedLapinTestBroker> for RabbitQueu
         connected: &crate::testing::ConnectedLapinTestBroker,
     ) -> Result<Self::Subscriber, AmqpError> {
         connected.subscribe(self.name).await
+    }
+
+    /// The queue name, the same answer the live broker gives: the in-process transport routes by
+    /// exact queue name on the default-exchange model, so a retry publisher reaches the
+    /// subscription in a test exactly where it reaches it on a server.
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedLapinTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, AmqpError>> {
+        ready(Ok(Some(RedeliveryAddress::new(self.name.clone()))))
     }
 }

@@ -1,6 +1,5 @@
-//! Per-message AMQP properties from a handler: an expedited order leaves at a higher priority and
-//! with a TTL. The handler bounds its slot with `LapinPublishExt`; the publisher comes from the
-//! policy attached at the mount site.
+//! Per-message AMQP properties from a handler: every shipment carries the priority the mount site
+//! fixed, and an expedited one leaves at a higher priority with a TTL of its own.
 //!
 //! The priority only orders deliveries on a queue declared with `x-max-priority`:
 //!
@@ -30,16 +29,23 @@ struct Shipment {
 }
 
 // --8<-- [start:steps]
-/// An expedited order jumps the queue: `with_priority` writes the AMQP `priority` property, and
-/// `with_expiration` gives the message an hour before the broker drops it.
+/// An expedited order jumps the queue: `priority` writes the AMQP `priority` property for this one
+/// message, and `expiration` gives it an hour before the broker drops it. An ordinary order names
+/// neither step and ships at the priority the mount site fixed.
+///
+/// The slot is bounded by the options type rather than by a publisher type, so the body still
+/// names no broker type; the steps come from this crate's prelude.
 #[subscriber("orders")]
-async fn ship(order: &Order, Out(shipments): Out<impl LapinPublishExt>) -> HandlerOutcome {
+async fn ship(
+    order: &Order,
+    Out(shipments): Out<impl Publisher<Options = LapinPublishOptions>>,
+) -> HandlerOutcome {
     let shipment = Shipment { order_id: order.id };
     let sent = if order.expedited {
         shipments
-            .with_priority(9)
-            .with_expiration(Duration::from_secs(3600))
             .message(&shipment)
+            .priority(9)
+            .expiration(Duration::from_secs(3600))
             .publish()
             .await
     } else {
@@ -54,10 +60,15 @@ async fn ship(order: &Order, Out(shipments): Out<impl LapinPublishExt>) -> Handl
 }
 // --8<-- [end:steps]
 
+// --8<-- [start:mount]
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(ship).out(DefaultSlot, Publish::default()).build();
+        // Every shipment leaves at priority 3 unless the handler says otherwise.
+        b.include(ship)
+            .out(DefaultSlot, Publish::default().priority(3))
+            .build();
     })
 }
+// --8<-- [end:mount]

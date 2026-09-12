@@ -2,17 +2,17 @@
 
 RPC over RabbitMQ [direct reply-to](https://www.rabbitmq.com/docs/direct-reply-to) is how one
 service asks another a question through the broker it already has, instead of growing an HTTP
-sidechannel: an order service checks stock in the inventory service, a gateway fetches a price,
-a saga step confirms a reservation. The two halves are two ordinary services; the runnable pair
+sidechannel: an order service checks stock in the inventory service before it accepts an order.
+The two halves are two ordinary services; the runnable pair
 is [`lapin_rpc_server`](https://github.com/powersemmi/ruststream-lapin/blob/main/crates/ruststream-lapin/examples/lapin_rpc_server.rs)
 and [`lapin_rpc_client`](https://github.com/powersemmi/ruststream-lapin/blob/main/crates/ruststream-lapin/examples/lapin_rpc_client.rs).
 
 ## The requester
 
-`LapinRequest` is the requester's policy; paired with the connection it produces a
-`LapinRequester`, which implements the `RequestReply` capability: every request goes out with
-`reply-to` set to the direct reply-to pseudo-queue and a generated `correlation-id`, and the
-matching reply resolves the call. Wrap the raw capability in a small typed call:
+`LapinRequest` is the policy that constructs the requester `LapinRequester`, which implements the
+`RequestReply` capability. Every request goes out with `reply-to` set to the direct reply-to
+pseudo-queue and a generated `correlation-id`, and the matching reply resolves the call. Wrap the
+capability in a small typed call:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_client.rs:client"
@@ -20,10 +20,9 @@ matching reply resolves the call. Wrap the raw capability in a small typed call:
 
 Bind the policy to the handler's slot at the mount site
 (`b.include(handler).out(DefaultSlot, Request::default()).build()`)
-and the live requester arrives in the handler as an `Out` parameter, so a handler calls the
-other service in the middle of its own message flow. The RPC timeout is the failure boundary,
-and it maps straight onto settlement: a business answer settles the order, an unreachable
-service asks for redelivery:
+and the handler takes the live requester as an `Out` parameter, so it calls the other service in
+the middle of its own message flow. The RPC timeout is the failure boundary: a business answer
+settles the message, an unreachable service asks for redelivery:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_client.rs:handler"
@@ -31,33 +30,39 @@ service asks for redelivery:
 
 ## The responder
 
-The responder is an ordinary `#[subscriber(.., publish(..))]` handler: decode the request,
-return the reply. `Err` settles without replying, and the requester's timeout is the recovery
-mechanism:
+The responder is an ordinary publishing handler: decode the request, return the reply. `Err`
+settles without replying, and the requester's timeout is the recovery mechanism.
+
+An RPC reply goes wherever the request asked, so its type must declare no destination of its own -
+`DirectReplyTo` names the destination per delivery, and the mount site refuses it over a reply type
+that has already declared one. The `publish("..")` clause names the address for a request that
+arrives without a reply-to header, and it is what the generated AsyncAPI document reports:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:handler"
 ```
 
-What makes it an RPC responder is the reply destination. `DirectReplyTo` is a ready-made publish
-transform that sends each reply back to the address the requester asked for and echoes its
-correlation id; compose it onto the reply publisher at mount time:
+What makes it an RPC responder is the transform. `DirectReplyTo` sends each reply back to the
+address the requester asked for and echoes its correlation id; compose it onto the reply publisher
+at mount time:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_rpc_server.rs:mount"
 ```
 
-The handler stays a pure request-to-reply function, testable in-process like any other.
+The handler stays a pure request-to-reply function, testable in-process like any other. So is the
+pair: `LapinRequest` pairs against [`LapinTestBroker`](testing.md) as well, which gives every
+request a private reply address and a correlation id there too, so an RPC client handler and its
+responder run against each other under `TestApp` with the mount sites they ship with. What the
+in-process transport cannot stand in for is the at-most-once nature below.
 
 ## Semantics
 
 - **At-most-once.** Direct reply-to keeps reply state in the requester's channel on one broker
-  node; nothing is queued durably. A dropped requester channel loses in-flight replies, and the
-  per-request timeout is the recovery mechanism. An unanswered request fails with a timeout
-  error.
-- **Transient by default.** Requests are published with delivery mode 1: a request nobody is
-  waiting for after the timeout gains nothing from surviving a broker restart. Opt into
-  persistence with `.persistent(true)` on the policy.
-- **No infrastructure.** The pseudo-queue is never declared; the only real entity involved is
-  the request queue the responder consumes. Responders on other stacks interoperate as long as
-  they publish the reply to the received `reply-to` and echo `correlation-id`.
+  node, and nothing is queued durably. A dropped channel loses the replies in flight, and an
+  unanswered request returns a timeout error.
+- **Transient by default.** Requests are published with delivery mode 1, while an ordinary
+  publish is persistent. You can mark them persistent with `.persistent(true)` on the policy.
+- **No infrastructure.** The pseudo-queue is never declared, so the only real entity involved is
+  the request queue the responder consumes. A responder on another stack interoperates as long as
+  it publishes the reply to the received `reply-to` and echoes the `correlation-id`.

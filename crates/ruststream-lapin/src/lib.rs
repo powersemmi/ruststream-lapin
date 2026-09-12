@@ -74,7 +74,9 @@ pub use error::AmqpError;
 pub use exchange::RabbitExchange;
 pub use message::{LapinMessage, PARTITION_KEY_HEADER};
 pub use publish_policy::{ConfirmsPublish, LapinPublish, LapinPublishPolicy, ServerTxPublish};
-pub use publish_step::{EXPIRATION_HEADER, LapinPublishExt, PRIORITY_HEADER, WithProperties};
+pub use publish_step::{
+    EXPIRATION_HEADER, LapinPublishOptions, LapinPublishSteps, PRIORITY_HEADER,
+};
 pub use publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
 pub use queue::{QueueType, RabbitQueue};
 pub use reply::DirectReplyTo;

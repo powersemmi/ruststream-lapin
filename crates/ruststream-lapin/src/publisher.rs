@@ -17,24 +17,28 @@ use crate::broker::{AmqpConnection, ConnectedLapinBroker};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::publish_policy::PublishOptions;
+use crate::publish_step::LapinPublishOptions;
 
 /// One buffered publish: everything the flush needs to rebuild the frame the caller asked for.
 ///
-/// The per-message properties ride in the headers (see [`publish_step`](crate::publish_step)), so
-/// a buffered message carries them with no field of its own.
+/// The per-message settings are kept as the call site left them, not resolved against the policy
+/// yet: the flush builds the frame, and resolving twice would let a policy change between the
+/// buffering and the commit go unnoticed.
 #[derive(Debug, Clone)]
 pub(crate) struct Buffered {
     pub(crate) routing_key: String,
     pub(crate) payload: Bytes,
     pub(crate) headers: HeaderMap,
+    pub(crate) options: LapinPublishOptions,
 }
 
 impl Buffered {
-    pub(crate) fn new(msg: &OutgoingMessage<'_>) -> Self {
+    pub(crate) fn new(msg: &OutgoingMessage<'_>, options: Option<&LapinPublishOptions>) -> Self {
         Self {
             routing_key: msg.name().to_owned(),
             payload: Bytes::copy_from_slice(msg.payload()),
             headers: msg.headers().clone(),
+            options: options.copied().unwrap_or_default(),
         }
     }
 }
@@ -81,8 +85,12 @@ impl LapinPublisher {
 
 impl Publisher for LapinPublisher {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
     /// Publishes `msg` without waiting for a broker confirm.
+    ///
+    /// The AMQP basic properties are `options` resolved over the policy's defaults; a call that
+    /// adjusted nothing publishes with the policy's own settings.
     ///
     /// # Errors
     ///
@@ -92,9 +100,14 @@ impl Publisher for LapinPublisher {
     /// # Cancel safety
     ///
     /// Not cancel safe: dropping the future may leave the message published or not.
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let channel = self.conn.live_publish_channel(msg.name())?;
-        let properties = convert::properties_for_publish(msg.headers(), self.options.persistent)?;
+        let properties =
+            convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
         // Without confirm_select on the channel the returned confirm resolves to NotRequested;
         // dropping it does not lose anything.
         let _confirm = do_publish(
@@ -186,8 +199,10 @@ impl ConfirmsPublisher {
 
         let mut confirms = Vec::with_capacity(buffered.len());
         for entry in buffered {
-            let properties =
-                convert::properties_for_publish(&entry.headers, self.options.persistent)?;
+            let properties = convert::properties_for_publish(
+                &entry.headers,
+                &self.options.resolve(Some(&entry.options)),
+            )?;
             let confirm = do_publish(
                 channel,
                 &self.options.exchange,
@@ -210,10 +225,11 @@ impl ConfirmsPublisher {
         routing_key: &str,
         payload: &[u8],
         headers: &HeaderMap,
+        options: Option<&LapinPublishOptions>,
     ) -> Result<(), AmqpError> {
         self.conn.ensure_live(routing_key)?;
         let channel = self.channel(routing_key).await?;
-        let properties = convert::properties_for_publish(headers, self.options.persistent)?;
+        let properties = convert::properties_for_publish(headers, &self.options.resolve(options))?;
         let confirm = do_publish(
             channel,
             &self.options.exchange,
@@ -239,8 +255,12 @@ fn confirmation_ok(confirmation: &Confirmation, routing_key: &str) -> Result<(),
 
 impl Publisher for ConfirmsPublisher {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
     /// Publishes `msg`, awaiting the broker confirm (or buffering inside a transaction).
+    ///
+    /// The AMQP basic properties are `options` resolved over the policy's defaults. Inside a
+    /// transaction they are buffered with the message and resolved at the commit.
     ///
     /// # Errors
     ///
@@ -252,15 +272,19 @@ impl Publisher for ConfirmsPublisher {
     /// Not cancel safe outside a transaction: dropping the future may leave the message
     /// published but unconfirmed. Inside a transaction buffering is synchronous and dropping the
     /// future is harmless.
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push(Buffered::new(&msg));
+                buffer.push(Buffered::new(&msg, options));
                 return Ok(());
             }
         }
-        self.publish_confirmed(msg.name(), msg.payload(), msg.headers())
+        self.publish_confirmed(msg.name(), msg.payload(), msg.headers(), options)
             .await
     }
 }
@@ -319,8 +343,10 @@ impl TransactionalPublisher for ConfirmsPublisher {
         let channel = self.channel(target).await?;
         let mut confirms = Vec::with_capacity(buffered.len());
         for entry in &buffered {
-            let properties =
-                convert::properties_for_publish(&entry.headers, self.options.persistent)?;
+            let properties = convert::properties_for_publish(
+                &entry.headers,
+                &self.options.resolve(Some(&entry.options)),
+            )?;
             let confirm = do_publish(
                 channel,
                 &self.options.exchange,
@@ -423,8 +449,11 @@ impl ServerTxPublisher {
 
 impl Publisher for ServerTxPublisher {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
     /// Publishes `msg`: into the open server transaction, or plainly when none is open.
+    ///
+    /// The AMQP basic properties are `options` resolved over the policy's defaults, either way.
     ///
     /// # Errors
     ///
@@ -435,8 +464,13 @@ impl Publisher for ServerTxPublisher {
     ///
     /// Not cancel safe: dropping the future may leave the message queued in the transaction or
     /// not.
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        let properties = convert::properties_for_publish(msg.headers(), self.options.persistent)?;
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
+        let properties =
+            convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
         let channel = if self.is_open() {
             self.conn.ensure_live(msg.name())?;
             self.tx_channel(msg.name()).await?

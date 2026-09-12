@@ -23,13 +23,14 @@ struct CheckStock {
     quantity: u32,
 }
 
-#[derive(Debug, Serialize)]
+// --8<-- [start:handler]
+// An RPC reply goes wherever the request asked, so the type declares no destination.
+#[derive(Debug, Serialize, Outgoing)]
 struct Stock {
     sku: String,
     available: bool,
 }
 
-// --8<-- [start:handler]
 // A plain publishing handler: decode the request, return the reply. `Err` settles without
 // replying, and the requester's timeout is the recovery mechanism.
 #[subscriber("inventory.check", publish("inventory.check.unrouted"))]

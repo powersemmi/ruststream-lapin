@@ -20,8 +20,12 @@ use ruststream::{
 };
 use ruststream_lapin::{LapinBroker, LapinPublish, RabbitQueue};
 
+mod live;
+
+/// The plugin stand's address, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing
+/// address fails the suite instead of skipping it.
 fn plugins_url() -> Option<String> {
-    std::env::var("AMQP_PLUGINS_TEST_URL").ok()
+    live::url("AMQP_PLUGINS_TEST_URL")
 }
 
 fn unique(base: &str) -> String {
@@ -91,7 +95,10 @@ async fn consistent_hash_exchange_distributes_across_shards() {
     let total = 40u32;
     for i in 0..total {
         publisher
-            .publish(OutgoingMessage::new(&format!("key-{i}"), &i.to_be_bytes()))
+            .publish(
+                OutgoingMessage::new(&format!("key-{i}"), &i.to_be_bytes()),
+                None,
+            )
             .await
             .expect("publish");
     }
@@ -139,7 +146,7 @@ async fn delayed_message_exchange_holds_then_redelivers() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"later"))
+        .publish(OutgoingMessage::new(&queue, b"later"), None)
         .await
         .expect("publish");
 

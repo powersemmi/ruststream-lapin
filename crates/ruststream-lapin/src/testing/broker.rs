@@ -1,20 +1,23 @@
 //! The in-process ladder: [`LapinTestBroker`] -> [`ConnectedLapinTestBroker`].
 
 use std::future::{Future, ready};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
     Broker, ConnectedBroker, DefaultPublish, DescribeServer, OutgoingMessage, RawMessage,
-    ServerSpec, Subscribe,
+    RedeliveryAddress, ServerSpec, Subscribe,
 };
 
-use super::publisher::{LapinTestPublish, LapinTestPublisher};
+use super::publisher::LapinTestPublishPolicy;
+use super::requester::LapinTestRequester;
 use super::router::KeyRouter;
 use super::subscriber::LapinTestSubscriber;
 use crate::error::AmqpError;
+use crate::publish_policy::LapinPublish;
+use crate::requester::LapinRequest;
 
 /// Shared state owned by every handle on a single test broker instance.
 ///
@@ -27,6 +30,10 @@ pub(crate) struct TestBrokerState {
     /// must report an error rather than route into a dead router.
     closed: AtomicBool,
     coordinator: OnceLock<Coordinator>,
+    /// Numbers the private reply addresses of request/reply. The transport owns the sequence,
+    /// like the server that rewrites the direct reply-to address, so two requesters on one broker
+    /// cannot be handed the same address.
+    inbox_seq: AtomicU64,
 }
 
 impl TestBrokerState {
@@ -38,6 +45,10 @@ impl TestBrokerState {
 
     pub(crate) fn coordinator(&self) -> Option<Coordinator> {
         self.coordinator.get().cloned()
+    }
+
+    pub(crate) fn next_inbox(&self) -> u64 {
+        self.inbox_seq.fetch_add(1, Ordering::Relaxed)
     }
 
     /// `Ok` while the transport is live, [`AmqpError::Closed`] once it has shut down.
@@ -55,6 +66,7 @@ impl Default for TestBrokerState {
             router: KeyRouter::default(),
             closed: AtomicBool::new(false),
             coordinator: OnceLock::new(),
+            inbox_seq: AtomicU64::new(0),
         }
     }
 }
@@ -77,14 +89,15 @@ impl std::fmt::Debug for TestBrokerState {
 ///
 /// ```
 /// use ruststream::{Broker, OutgoingMessage, Publisher, Subscriber};
-/// use ruststream_lapin::testing::{LapinTestBroker, LapinTestPublish};
+/// use ruststream_lapin::LapinPublish;
+/// use ruststream_lapin::testing::LapinTestBroker;
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() -> Result<(), ruststream_lapin::AmqpError> {
 /// let broker = LapinTestBroker::new().connect().await?;
 /// let mut subscriber = broker.subscribe("orders").await?;
 /// broker
-///     .publisher(LapinTestPublish)
-///     .publish(OutgoingMessage::new("orders", b"{}"))
+///     .publisher(LapinPublish::default())
+///     .publish(OutgoingMessage::new("orders", b"{}"), None)
 ///     .await?;
 /// # Ok(())
 /// # }
@@ -119,11 +132,11 @@ impl DescribeServer for LapinTestBroker {
 
 /// The connected form of [`LapinTestBroker`].
 ///
-/// Routes published messages to subscribers by exact queue name (the default-exchange model) and
-/// implements [`TestableBroker`], so it drives both the
-/// [`TestApp`](ruststream::testing::TestApp) harness and the framework's conformance suite in
-/// process. Clones share one router, so a publisher and a subscriber taken from the same broker
-/// see each other.
+/// Routes published messages by exact queue name (the default-exchange model), hands each
+/// delivery to exactly one consumer of that queue as a work queue does, and implements
+/// [`TestableBroker`], so it drives both the [`TestApp`](ruststream::testing::TestApp) harness
+/// and the framework's conformance suite in process. Clones share one router, so a publisher and
+/// a subscriber taken from the same broker see each other.
 #[derive(Debug, Clone)]
 pub struct ConnectedLapinTestBroker {
     state: Arc<TestBrokerState>,
@@ -160,10 +173,23 @@ impl ConnectedLapinTestBroker {
     }
 
     /// A live publisher into this broker's router, mirroring
-    /// [`ConnectedLapinBroker::publisher`](crate::ConnectedLapinBroker::publisher). The
-    /// in-process transport routes by queue name only, so it has a single policy.
+    /// [`ConnectedLapinBroker::publisher`](crate::ConnectedLapinBroker::publisher).
+    ///
+    /// It takes the crate's production policies, and each of them pairs into the stand-in for the
+    /// publisher it produces on a server, carrying the same capabilities: a routes file written
+    /// for `RabbitMQ` mounts here unchanged, and a mount a server would reject does not compile
+    /// here either.
     #[must_use]
-    pub fn publisher(&self, policy: LapinTestPublish) -> LapinTestPublisher {
+    pub fn publisher<P: LapinTestPublishPolicy>(&self, policy: P) -> P::Live {
+        policy.bind(self)
+    }
+
+    /// A live request/reply client over the transport's own reply addressing.
+    ///
+    /// The requester half of [`LapinRequest`]; [`publisher`](Self::publisher) accepts the same
+    /// policy, this accessor only names the result.
+    #[must_use]
+    pub fn requester(&self, policy: LapinRequest) -> LapinTestRequester {
         policy.bind(self)
     }
 }
@@ -188,10 +214,20 @@ impl Subscribe for ConnectedLapinTestBroker {
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         ConnectedLapinTestBroker::subscribe(self, name).await
     }
+
+    /// The queue name, the answer the real broker gives.
+    ///
+    /// Staying silent here would let an app that wires `retry_via` over `#[subscriber("orders")]`
+    /// refuse to start in a test and start on a server, or the reverse once the answer changed.
+    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
+        Some(RedeliveryAddress::new(name.to_owned()))
+    }
 }
 
+/// The same default the real broker carries, so a `publish(..)` handler mounted without an
+/// explicit publisher replies through the same policy in both places.
 impl DefaultPublish for ConnectedLapinTestBroker {
-    type Policy = LapinTestPublish;
+    type Policy = LapinPublish;
 }
 
 // --8<-- [start:testable]

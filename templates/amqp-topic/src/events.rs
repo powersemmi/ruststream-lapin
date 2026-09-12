@@ -17,19 +17,22 @@ pub struct OrderEvent {
 }
 
 /// The reply published back to the `events` exchange under the `order.recorded` routing key.
-#[derive(Debug, Serialize, JsonSchema)]
+///
+/// `Outgoing` declares the destination, which on this exchange is the reply's routing key.
+#[derive(Debug, Serialize, JsonSchema, Outgoing)]
+#[outgoing(name = "order.recorded")]
 pub struct Recorded {
     pub id: u64,
 }
 
 /// Records every `order.*` event and replies with a `Recorded` acknowledgement.
 ///
-/// The queue is bound to the `events` topic exchange under `order.*`; the `publish("order.recorded")`
-/// clause makes the runtime encode the return value and publish it (the router wires a publisher
-/// targeting the `events` exchange).
+/// The queue is bound to the `events` topic exchange under `order.*`; the `publish` clause makes
+/// the runtime encode the return value and publish it at the destination `Recorded` declares (the
+/// router wires a publisher targeting the `events` exchange).
 #[subscriber(
     RabbitQueue::new("order-events").bind(RabbitExchange::topic("events"), "order.*"),
-    publish("order.recorded")
+    publish
 )]
 pub async fn record(event: &OrderEvent) -> Recorded {
     println!("recording order {} ({})", event.id, event.kind);

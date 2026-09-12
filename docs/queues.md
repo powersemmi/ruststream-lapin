@@ -2,7 +2,7 @@
 
 A `RabbitQueue` descriptor names the queue a handler consumes and describes what that queue is
 expected to look like: durability, queue type, exchange bindings, prefetch, and raw `x-*`
-arguments. A descriptor sits directly in the `#[subscriber(...)]` decorator:
+arguments. A descriptor sits directly in the `#[subscriber(..)]` attribute:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:descriptor"
@@ -13,9 +13,9 @@ a durable, shared, non-auto-delete queue consumed as-is.
 
 ## Declaration is an opt-in
 
-Descriptors describe the EXPECTED topology. By default nothing is created on the broker: a
-missing queue is a subscribe error, because managing infrastructure is the user's job, not the
-framework's. A service that owns its queues opts in per broker:
+A descriptor states the topology a subscription expects. Nothing is created on the broker by
+default, and a missing queue is a subscribe error: the infrastructure is yours to manage. A
+service that owns its queues opts in per broker:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:app"
@@ -23,8 +23,8 @@ framework's. A service that owns its queues opts in per broker:
 
 With declaration enabled, subscribing declares the bound exchanges (except the built-in `amq.*`
 ones and the default exchange), the queue, and the bindings, in that order. Declaration is
-idempotent as long as the descriptor matches what exists; AMQP refuses to redeclare an entity
-with different properties (`PRECONDITION_FAILED`).
+idempotent as long as the descriptor matches what exists; the broker rejects a redeclare with
+different properties (`PRECONDITION_FAILED`).
 
 ## Queue types
 
@@ -32,8 +32,8 @@ RabbitMQ picks the queue implementation at declaration time via `x-queue-type`, 
 an existing queue can never change. The descriptor exposes it as a typed option:
 
 - `.queue_type(QueueType::Classic)` - the classic single-node implementation.
-- `.queue_type(QueueType::Quorum)` - Raft-replicated; must stay durable (the crate rejects a
-  quorum descriptor marked non-durable instead of letting the broker fail the declare).
+- `.queue_type(QueueType::Quorum)` - Raft-replicated; must stay durable. The crate refuses to
+  declare a non-durable quorum queue rather than letting the broker fail the declare.
 
 A broker-wide `.default_queue_type(..)` applies to descriptors that do not pick a type; with
 neither set, no `x-queue-type` is sent and the server default applies.
@@ -44,14 +44,13 @@ default unless the queue is `.exclusive(true)`.
 ## Prefetch
 
 `.prefetch(n)` on the broker sets the per-subscription `basic.qos` window: at most `n`
-deliveries in flight unacknowledged. This is the back-pressure valve for the subscriber stream -
-consuming slower slows the broker's pushes instead of buffering without bound. A descriptor
-overrides it per queue with `.prefetch(n)`. Without either, the server imposes no limit.
+deliveries in flight unacknowledged. That is how back-pressure reaches the broker, since a slower
+consumer slows the pushes instead of letting them buffer without bound. A descriptor overrides it
+per queue with `.prefetch(n)`. Without either, the server imposes no limit.
 
-The count is a `NonZeroU16`: AMQP reads `basic.qos(0)` as "no limit" rather than as a cap of
-zero, so the zero sentinel cannot be written at all - leaving the prefetch unset is how
-"unlimited" is expressed. Write the literal with the framework's `nonzero!` macro, which rejects
-zero at compile time, as the descriptor above does.
+The count is a `NonZeroU16`. AMQP reads `basic.qos(0)` as "no limit" rather than as a cap of
+zero, so leaving the prefetch unset is how you ask for unlimited. Write the literal with the
+framework's `nonzero!` macro, which rejects zero at compile time, as the descriptor above does.
 
 ## Batches
 
@@ -66,33 +65,34 @@ A handler taking a slice consumes a whole batch, and the mount site names how bi
 ```
 
 AMQP has no wire-level batch - the broker pushes one `basic.deliver` at a time - so the batch is
-assembled here, on the client: deliveries collect until the batch holds the size the mount asked
-for or `.batch_wait(..)` elapses since the first of them, whichever comes first. Nothing at the
-mount site says so, which is the point; the size is the one word a batch registration owes the
-broker, whichever broker it is, and everything about how the batch forms is the descriptor's.
+assembled on the client: deliveries collect until the batch holds the size the mount asked for or
+`.batch_wait(..)` elapses since the first of them, whichever comes first. Nothing at the mount
+site says so: the size is all a batch registration names, and how the batch forms belongs to the
+descriptor.
 
-`.batch_wait(..)` defaults to 50 ms: long enough for the broker to push the rest of a prefetch
-window across the connection, short enough to bound how long the tail of a backlog sits
-unhandled. Raise it on a slow link or a sparse queue where fuller batches are worth the wait;
-lower it where a batch arriving late costs more than a batch arriving short.
+`.batch_wait(..)` defaults to 50 ms. Raise it on a slow link or a sparse queue where fuller
+batches are worth the wait, and lower it where a batch arriving late costs more than a batch
+arriving short.
 
-Two consequences are worth knowing. A batch may be shorter than the size, because a partial batch
-goes to the handler rather than waiting for traffic that may never come. And a batch can only hold
-what the broker has already pushed, so a [prefetch](#prefetch) window narrower than the batch size
-caps every batch at the window: pair `.batch(n)` with a prefetch of at least `n`.
+A batch may be shorter than the size, because a partial batch goes to the handler rather than
+waiting for traffic that may never come. And a batch holds only what the broker has already
+pushed, so a [prefetch](#prefetch) window narrower than the batch size caps every batch at the
+window: pair `.batch(n)` with a prefetch of at least `n`.
 
 ## Delivery metadata
 
-`AmqpContext` carries the AMQP delivery metadata that is not part of the payload or the
-headers: the exchange, the routing key, the redelivered flag, and the channel-local delivery
-tag. Each field has a zero-sized key in `context::keys`, readable two ways: as an extractor
-parameter (`Ctx(routing_key): Ctx<RoutingKey>` - the key names its context, so no ctx
-parameter is needed), or through a declared `ctx: &mut Context<'_, AmqpContext>` parameter
-with `ctx.context(KEY)`:
+`AmqpContext` carries the AMQP delivery metadata that is neither payload nor headers: the
+exchange, the routing key, the redelivered flag, and the channel-local delivery tag. Each field
+has a zero-sized key in `context::keys`, and a handler names the fields it needs as extractor
+parameters, one key each:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_keyed_lanes.rs:metadata"
 ```
+
+A handler that declares `ctx: &mut Context<'_, AmqpContext>` reads the same fields with
+`ctx.context(KEY)`. The prelude carries the keys but not the context type, so import that from
+`ruststream_lapin::context`.
 
 ## Keyed worker lanes
 
@@ -103,25 +103,26 @@ deliveries that share a key on the same lane (ordered per key, parallel across k
 --8<-- "crates/ruststream-lapin/examples/lapin_keyed_lanes.rs:consumer"
 ```
 
-The key comes from the `PARTITION_KEY_HEADER` (`amqp-partition-key`): the producer sets it on the
-outgoing message's headers, and the crate reads it back through the `Partitioned` capability.
-AMQP itself does not interpret the header, so it is a pure client-side convention - unrelated to
-server-side hash routing (see the consistent-hash exchange below).
+The producer sets the key in the `PARTITION_KEY_HEADER` (`amqp-partition-key`) and the crate
+reads it back through the `Partitioned` capability. AMQP itself does not interpret the header, so
+this is a client-side convention, unrelated to the server-side hash routing below.
 
 ## Dead-letter
 
 `.dead_letter_exchange("dlx")` (plus optionally `.dead_letter_routing_key(..)`) sets the queue's
 native dead-letter target. A handler that drops a message settles with
-`basic.reject(requeue = false)`, which routes it there; no extra machinery is involved.
+`basic.reject(requeue = false)`, which routes it there.
 
 ## Delayed retry
 
 A handler that returns `HandlerOutcome::retry_after(delay)` asks for redelivery no sooner than
-`delay` - the not-ready-yet case, where an immediate requeue would spin. By default the
-runtime handles this with its broker-agnostic fallback (the delayed copy waits in the service
-process, at-most-once over the window). `.delay(..)` makes it native instead: the message parks
-in a broker waiting queue with a per-message TTL and dead-letters back to the origin queue when
-the TTL fires, so the delayed copy lives on the broker.
+`delay`, the not-ready-yet case where an immediate requeue would spin. By default the runtime
+handles this with its broker-agnostic fallback, and the delayed copy waits in the service process,
+at-most-once over the window; it is published back under the queue's own name, which is what
+addresses the queue on the default exchange. `.delay(..)` makes it native instead: the message
+parks in a broker waiting queue with a per-message TTL and dead-letters back to the origin queue
+when the TTL fires, so the delayed copy lives on the broker and a restart mid-window loses
+nothing.
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"
@@ -151,14 +152,13 @@ broker splits the hash space proportionally:
 --8<-- "crates/ruststream-lapin/examples/lapin_consistent_hash.rs:shards"
 ```
 
-Consistent-hash routing happens on the broker (across queues); it is the server-side counterpart
-to client-side keyed worker lanes (across lanes in one consumer). Enable the plugin on the broker
-before using it; the feature is off by default because the plugin is not part of a stock
-RabbitMQ.
+Consistent-hash routing happens on the broker, across queues, where keyed worker lanes divide one
+consumer's work across lanes. Enable the plugin on the broker before using it; the feature is off
+by default because the plugin is not part of a stock RabbitMQ.
 
 ## Raw arguments
 
-Anything the descriptor does not model rides through verbatim:
+Anything the descriptor does not model is sent verbatim:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:arguments"

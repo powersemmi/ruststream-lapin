@@ -1,11 +1,13 @@
 //! Mapping between core [`HeaderMap`] and AMQP properties plus the header table.
 //!
-//! Well-known header names ride in the matching native AMQP property so external consumers see
-//! them where the protocol puts them; every other header lands in the `headers` field table as a
-//! `LongString` (an arbitrary byte string, so binary values survive the round trip).
+//! The message's identity headers ride in the matching native AMQP property so external consumers
+//! see them where the protocol puts them; every other header lands in the `headers` field table as
+//! a `LongString` (an arbitrary byte string, so binary values survive the round trip).
 //!
-//! The mapping runs both ways, so a delivery reports its native properties back under the same
-//! header names it would have been published with.
+//! The delivery properties a publish does not take from headers - the priority, the expiration,
+//! the delivery mode - come from [`LapinPublishOptions`] instead, resolved from the policy and the
+//! call site. A delivery still reports them back as headers, under [`PRIORITY_HEADER`] and
+//! [`EXPIRATION_HEADER`], so a handler reads them where it reads everything else.
 
 use std::time::Duration;
 
@@ -15,37 +17,14 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::HeaderMap;
 
 use crate::error::AmqpError;
-use crate::publish_step::{EXPIRATION_HEADER, PRIORITY_HEADER};
+use crate::publish_step::{EXPIRATION_HEADER, LapinPublishOptions, PRIORITY_HEADER};
 
 /// Delivery mode 2 marks a message persistent; 1 is transient.
 const PERSISTENT: u8 = 2;
 const TRANSIENT: u8 = 1;
 
 /// Header names that map onto native AMQP properties instead of the header table.
-const PROPERTY_HEADERS: [&str; 6] = [
-    "content-type",
-    "correlation-id",
-    "reply-to",
-    "message-id",
-    PRIORITY_HEADER,
-    EXPIRATION_HEADER,
-];
-
-/// Reads a header whose value is decimal ASCII, the wire form both per-message properties use.
-fn digits<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, AmqpError> {
-    let Some(value) = headers.get(name) else {
-        return Ok(None);
-    };
-    let text = std::str::from_utf8(value)
-        .ok()
-        .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()));
-    text.map(Some).ok_or_else(|| {
-        AmqpError::InvalidOptions(format!(
-            "the {name} header carries whole decimal digits; got {:?}",
-            String::from_utf8_lossy(value)
-        ))
-    })
-}
+const PROPERTY_HEADERS: [&str; 4] = ["content-type", "correlation-id", "reply-to", "message-id"];
 
 pub(crate) fn short(value: &str, what: &str) -> Result<ShortString, AmqpError> {
     ShortString::try_new(value).map_err(|err| {
@@ -53,6 +32,24 @@ pub(crate) fn short(value: &str, what: &str) -> Result<ShortString, AmqpError> {
             "{what} {value:?} is not a valid short string: {err}"
         ))
     })
+}
+
+/// The settings a redelivered copy of `headers` carries: the priority the original delivery
+/// reported, and nothing else.
+///
+/// The one place a header decides a property, and it is the inverse mapping rather than the
+/// publish path: a delayed redelivery re-sends a message whose priority was already on the wire,
+/// and [`headers_from_properties`] is what put it in this map. Dropping it would quietly demote
+/// every delayed copy on a priority queue.
+pub(crate) fn redelivery_options(headers: &HeaderMap) -> LapinPublishOptions {
+    let priority = headers
+        .get(PRIORITY_HEADER)
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|text| text.parse::<u8>().ok());
+    LapinPublishOptions {
+        priority,
+        ..LapinPublishOptions::PERSISTENT
+    }
 }
 
 /// Renders `ttl` as the decimal milliseconds AMQP carries in the `expiration` property.
@@ -67,16 +64,26 @@ pub(crate) fn expiration_millis(ttl: Duration) -> ShortString {
     ShortString::from(millis.to_string())
 }
 
-/// Builds publish properties from `headers`, routing well-known names into native properties.
+/// Builds publish properties from `headers` and the resolved per-message `options`.
+///
+/// `options` is the call site's settings over the policy's, already resolved by the publisher.
 pub(crate) fn properties_for_publish(
     headers: &HeaderMap,
-    persistent: bool,
+    options: &LapinPublishOptions,
 ) -> Result<BasicProperties, AmqpError> {
-    let mut properties = BasicProperties::default().with_delivery_mode(if persistent {
-        PERSISTENT
-    } else {
-        TRANSIENT
-    });
+    let mut properties =
+        BasicProperties::default().with_delivery_mode(if options.persistent.unwrap_or(true) {
+            PERSISTENT
+        } else {
+            TRANSIENT
+        });
+
+    if let Some(priority) = options.priority {
+        properties = properties.with_priority(priority);
+    }
+    if let Some(ttl) = options.expiration {
+        properties = properties.with_expiration(expiration_millis(ttl));
+    }
 
     if let Some(value) = headers.content_type() {
         properties = properties.with_content_type(short(value, "content-type header")?);
@@ -89,17 +96,6 @@ pub(crate) fn properties_for_publish(
     }
     if let Some(value) = headers.message_id() {
         properties = properties.with_message_id(short(value, "message-id header")?);
-    }
-    if let Some(value) = digits(headers, PRIORITY_HEADER)? {
-        let priority = value.parse::<u8>().map_err(|_| {
-            AmqpError::InvalidOptions(format!(
-                "the {PRIORITY_HEADER} header carries an AMQP priority (0..=255); got {value:?}"
-            ))
-        })?;
-        properties = properties.with_priority(priority);
-    }
-    if let Some(value) = digits(headers, EXPIRATION_HEADER)? {
-        properties = properties.with_expiration(short(value, "expiration header")?);
     }
 
     let mut table = FieldTable::default();
@@ -180,6 +176,15 @@ pub(crate) fn headers_from_properties(properties: &BasicProperties) -> HeaderMap
 mod tests {
     use super::*;
 
+    /// The per-message settings a publish carries when nothing adjusted them: the publish
+    /// policies' own defaults.
+    fn persistent_defaults() -> LapinPublishOptions {
+        LapinPublishOptions {
+            persistent: Some(true),
+            ..LapinPublishOptions::default()
+        }
+    }
+
     #[test]
     fn round_trips_well_known_and_custom_headers() {
         let headers: HeaderMap = [
@@ -192,7 +197,8 @@ mod tests {
         .into_iter()
         .collect();
 
-        let properties = properties_for_publish(&headers, true).expect("valid headers");
+        let properties =
+            properties_for_publish(&headers, &persistent_defaults()).expect("valid headers");
         assert_eq!(
             properties.content_type().as_ref().map(ShortString::as_str),
             Some("application/json")
@@ -212,7 +218,14 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-blob", Bytes::from_static(&[0u8, 159, 146, 150]));
 
-        let properties = properties_for_publish(&headers, false).expect("valid headers");
+        let properties = properties_for_publish(
+            &headers,
+            &LapinPublishOptions {
+                persistent: Some(false),
+                ..LapinPublishOptions::default()
+            },
+        )
+        .expect("valid headers");
         let back = headers_from_properties(&properties);
         assert_eq!(back.get("x-blob"), Some([0u8, 159, 146, 150].as_slice()));
         assert_eq!(properties.delivery_mode(), &Some(TRANSIENT));
@@ -223,28 +236,27 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("correlation-id", vec![b'x'; 300]);
 
-        let err = properties_for_publish(&headers, true).expect_err("over 255 bytes");
+        let err =
+            properties_for_publish(&headers, &persistent_defaults()).expect_err("over 255 bytes");
         assert!(matches!(err, AmqpError::InvalidOptions(_)));
     }
 
     #[test]
-    fn the_property_headers_land_on_the_native_fields_and_round_trip() {
-        let mut headers = HeaderMap::new();
-        headers.insert(PRIORITY_HEADER, "7");
-        headers.insert(
-            EXPIRATION_HEADER,
-            expiration_millis(Duration::from_secs(30))
-                .as_str()
-                .to_owned(),
-        );
+    fn the_resolved_settings_land_on_the_native_fields_and_come_back_as_headers() {
+        let options = LapinPublishOptions {
+            priority: Some(7),
+            expiration: Some(Duration::from_secs(30)),
+            persistent: Some(true),
+        };
 
-        let properties = properties_for_publish(&headers, true).expect("valid properties");
+        let properties =
+            properties_for_publish(&HeaderMap::new(), &options).expect("valid properties");
         assert_eq!(properties.priority(), &Some(7));
         assert_eq!(
             properties.expiration().as_ref().map(ShortString::as_str),
             Some("30000")
         );
-        // Consumed into the frame, so they do not also travel in the header table.
+        // They are frame fields, so nothing of them travels in the header table.
         assert!(properties.headers().is_none());
 
         let back = headers_from_properties(&properties);
@@ -253,31 +265,26 @@ mod tests {
     }
 
     #[test]
-    fn a_property_header_that_is_not_decimal_is_an_error_not_a_silent_drop() {
-        let mut headers = HeaderMap::new();
-        headers.insert(PRIORITY_HEADER, "high");
-
-        let err = properties_for_publish(&headers, true).expect_err("not decimal");
-        assert!(matches!(err, AmqpError::InvalidOptions(_)), "got {err}");
-    }
-
-    #[test]
-    fn the_unprefixed_names_stay_in_the_table() {
-        // The quiet failure the publish steps exist for: written under the protocol's own field
-        // names, both travel in the header table, where RabbitMQ reads neither of them.
+    fn a_header_never_sets_a_delivery_property() {
+        // The quiet failure the publish steps exist for: under the protocol's own field names, or
+        // under the names a delivery reports, both values travel in the header table, where
+        // RabbitMQ reads none of them. The property comes from the options and from nowhere else.
         let headers: HeaderMap = [
             ("priority", b"7".as_slice()),
             ("expiration", b"30000".as_slice()),
+            (PRIORITY_HEADER, b"7".as_slice()),
+            (EXPIRATION_HEADER, b"30000".as_slice()),
         ]
         .into_iter()
         .collect();
 
-        let properties = properties_for_publish(&headers, true).expect("valid headers");
+        let properties =
+            properties_for_publish(&headers, &persistent_defaults()).expect("valid headers");
         assert_eq!(properties.priority(), &None);
         assert_eq!(properties.expiration(), &None);
         let table = properties.headers().as_ref().expect("header table");
         assert!(table.inner().contains_key("priority"));
-        assert!(table.inner().contains_key("expiration"));
+        assert!(table.inner().contains_key(PRIORITY_HEADER));
     }
 
     #[test]
