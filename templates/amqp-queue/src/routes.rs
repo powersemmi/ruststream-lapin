@@ -11,7 +11,7 @@ use crate::orders;
 /// Builds the orders router: a publishing handler (replies to the `confirmations` queue) plus a
 /// plain one.
 ///
-/// `confirm` needs a publisher for its reply, bound on the mount site with `out(Reply, ..)`; with
+/// `confirm` needs a publisher for its reply, bound on the mount site with `out_reply(..)`; with
 /// no codec named after it the reply takes the default one, which also decodes the order. The
 /// policy holds no connection, so the router is built long before anything connects and the runtime
 /// pairs it at startup. `build` seals that reply wiring and commits the registration; `on_cancel`
@@ -20,7 +20,7 @@ use crate::orders;
 pub fn orders() -> impl RouterDef<LapinBroker> {
     Router::new()
         .include(orders::confirm)
-        .out(Reply, Publish::default())
+        .out_reply(Publish::default())
         .build()
         .include(orders::on_cancel)
 }

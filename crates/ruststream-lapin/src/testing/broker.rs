@@ -217,7 +217,7 @@ impl Subscribe for ConnectedLapinTestBroker {
 
     /// The queue name, the answer the real broker gives.
     ///
-    /// Staying silent here would let an app that wires `retry_via` over `#[subscriber("orders")]`
+    /// Staying silent here would let an app that binds `out_retry` over `#[subscriber("orders")]`
     /// refuse to start in a test and start on a server, or the reverse once the answer changed.
     fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
         Some(RedeliveryAddress::new(name.to_owned()))

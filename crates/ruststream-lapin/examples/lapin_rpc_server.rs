@@ -54,7 +54,7 @@ fn app() -> impl App {
         // The reply wiring is a declaration: the policy holds no connection, and the runtime
         // pairs it with the broker at startup. `transform` rides the position named before it.
         b.include(check)
-            .out(Reply, Publish::default())
+            .out_reply(Publish::default())
             .transform(DirectReplyTo);
     })
     // --8<-- [end:mount]

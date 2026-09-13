@@ -74,6 +74,18 @@ async fn on_charge(event: &OrderPlaced) -> HandlerOutcome {
 }
 // --8<-- [end:delay]
 
+// --8<-- [start:retry_fallback]
+// Without `.delay(..)` the delayed copy is the runtime's to publish, and it needs a publisher for
+// it. A queue that does not park its delays on the broker therefore names one at the mount site.
+#[subscriber(RabbitQueue::new("refunds"))]
+async fn on_refund(event: &OrderPlaced) -> HandlerOutcome {
+    if event.id == 0 {
+        return HandlerOutcome::retry_after(Duration::from_secs(30));
+    }
+    HandlerOutcome::ack()
+}
+// --8<-- [end:retry_fallback]
+
 // --8<-- [start:app]
 #[ruststream::app]
 fn app() -> impl App {
@@ -87,6 +99,12 @@ fn app() -> impl App {
         b.include(on_order);
         b.include(on_bounded);
         b.include(on_charge);
+        // --8<-- [start:retry_mount]
+        // The publisher the deferred copy leaves through, named once per registration. The copy
+        // goes back to the queue's own name, which is what the source reports as its redelivery
+        // address.
+        b.include(on_refund).out_retry(Publish::default());
+        // --8<-- [end:retry_mount]
         // --8<-- [start:batches_mount]
         // The batch size is the mount site's word, and a batch handler does not mount without it.
         b.include(on_settlement.batch(nonzero!(32)));
