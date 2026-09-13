@@ -24,9 +24,10 @@
 ## Features
 
 - **Native settlement.** AMQP has per-message acknowledgement built in:
-  `ack` is `basic.ack`, retry is `basic.nack(requeue = true)`, drop is
+  `ack` is `basic.ack`, retry is `basic.reject(requeue = true)`, drop is
   `basic.reject(requeue = false)` - straight into the queue's dead-letter exchange when one is
-  configured.
+  configured. A rejection is the frame RabbitMQ counts as a spent delivery, so a handler's retry
+  runs down a quorum queue's own limit.
 - **Descriptors for real topology.** `RabbitQueue` carries durability, queue type
   (`Classic` / `Quorum`), exchange bindings, prefetch, dead-letter and raw `x-*` arguments; the
   bare-string `#[subscriber("orders")]` form consumes the queue with that name.

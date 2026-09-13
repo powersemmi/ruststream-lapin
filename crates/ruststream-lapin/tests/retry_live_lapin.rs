@@ -4,10 +4,10 @@
 //! and the dead-letter route are queue arguments the broker acts on, and the count comes off the
 //! wire. Every test is a no-op unless `AMQP_TEST_URL` points at a broker (see `just test-brokers`).
 //!
-//! What a quorum queue counts is a delivery that failed - one whose consumer went away without
-//! settling it - so that is how the tests below spend a message's attempts. A consumer asking for
-//! the message back with `basic.nack(requeue = true)` is not that, and `RabbitMQ` 4.3 does not count
-//! it (4.2 did), which is why the runtime's own cap is what ends a handler-driven retry loop.
+//! A quorum queue counts two things as a spent delivery: one whose consumer went away without
+//! settling it, and one a consumer rejected. That is why this crate settles a handler's retry with
+//! `basic.reject` rather than `basic.nack`, which `RabbitMQ` 4.3 does not count, and it is what the
+//! tests below spend a message's attempts with.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -256,6 +256,45 @@ async fn a_quorum_delivery_reports_how_often_it_has_come_back() {
     let mut stream = Box::pin(subscriber.stream());
     let second = next(&mut stream).await;
     assert_eq!(second.redelivery_count(), Some(2));
+    second.ack().await.expect("ack");
+
+    drop(stream);
+    drop(subscriber);
+    connected.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[&queue]).await;
+}
+
+// A handler asking for its message back is a failed attempt, and the queue has to see it as one:
+// the rejection this crate sends raises the queue's own counter, so `x-delivery-limit` ends a
+// retry loop even where no service is counting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_handlers_retry_spends_a_delivery_the_queue_counts() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("requeued");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let mut subscriber = connected
+        .subscribe(RabbitQueue::new(&queue).queue_type(QueueType::Quorum))
+        .await
+        .expect("subscribe");
+    publish(&connected, &queue, b"requeued").await;
+
+    let mut stream = Box::pin(subscriber.stream());
+    let first = next(&mut stream).await;
+    assert_eq!(first.redelivery_count(), None);
+    // What a handler's `retry()` settles with, and what the queue must count.
+    first.nack(true).await.expect("requeue");
+
+    let second = next(&mut stream).await;
+    assert_eq!(
+        second.redelivery_count(),
+        Some(2),
+        "the queue counts a rejected delivery, so the redelivery is the second"
+    );
     second.ack().await.expect("ack");
 
     drop(stream);

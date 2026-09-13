@@ -39,8 +39,9 @@ serde = { version = "1", features = ["derive"] }
   AMQP 没有协议级的批次，所以 crate 在客户端攒批次，见[批次](queues.md#batches)。
 - 发布一侧，消息的名字就是路由键，交换机属于发布策略：不点名别的就走默认交换机。见
   [发布](publishing.md)。
-- 结算是原生的：`ack` 发出 `basic.ack`，重试发出 `basic.nack(requeue = true)`，丢弃发出
-  `basic.reject(requeue = false)`；队列配了死信交换机时，丢弃就把消息送进死信。
+- 结算是原生的：`ack` 发出 `basic.ack`，重试发出 `basic.reject(requeue = true)`，丢弃发出
+  `basic.reject(requeue = false)`；队列配了死信交换机时，丢弃就把消息送进死信。RabbitMQ 把拒绝
+  算作一次用掉的投递，所以处理器的重试会消耗仲裁队列自己的上限。
 - 除非你用 `.declare_topology(true)` 显式开启，否则 Broker 上什么都不声明：拓扑由你自己管理。
 
 ## 能力 { #capabilities }

@@ -23,9 +23,13 @@
 //! Settlement uses the protocol natively, without client-side republishing:
 //!
 //! - ack sends `basic.ack`
-//! - retry (`nack(true)`) sends `basic.nack` with requeue
+//! - retry (`nack(true)`) sends `basic.reject` with requeue
 //! - drop (`nack(false)`) sends `basic.reject` without requeue, dead-lettering when the queue
 //!   has a dead-letter exchange
+//!
+//! A rejection is what a failed attempt is: `RabbitMQ` 4.3 counts one against a quorum queue's
+//! `x-delivery-limit` and counts a `basic.nack` not at all, so a handler that keeps asking for
+//! its message back runs the queue's own limit down.
 //!
 //! # The lifecycle ladder
 //!

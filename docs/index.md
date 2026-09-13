@@ -45,9 +45,10 @@ framework's prelude with it. It adds the family's uniform mount-site names: `Pub
   on the client, since AMQP has no wire batch; see [Batches](queues.md#batches).
 - On the publish side the message name is the routing key, and the exchange belongs to the
   publish policy: the default exchange unless you name another. See [Publishing](publishing.md).
-- Settlement is native: `ack` sends `basic.ack`, retry sends `basic.nack(requeue = true)`, drop
+- Settlement is native: `ack` sends `basic.ack`, retry sends `basic.reject(requeue = true)`, drop
   sends `basic.reject(requeue = false)`, which dead-letters the message when the queue has a
-  dead-letter exchange.
+  dead-letter exchange. A rejection is the frame RabbitMQ counts as a spent delivery, so a
+  handler's retry runs down a quorum queue's own limit.
 - Nothing is declared on the broker unless you opt in with `.declare_topology(true)`: the
   topology is yours to manage.
 

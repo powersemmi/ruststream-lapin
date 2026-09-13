@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use lapin::message::Delivery;
-use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
+use lapin::options::{BasicAckOptions, BasicRejectOptions};
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use lapin::{Acker, BasicProperties};
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
@@ -43,10 +43,16 @@ const REJECTED: &[u8] = b"rejected";
 /// Settlement mapping:
 ///
 /// - [`ack`](IncomingMessage::ack) sends `basic.ack`.
-/// - [`nack(true)`](IncomingMessage::nack) sends `basic.nack` with `requeue = true`; the broker
+/// - [`nack(true)`](IncomingMessage::nack) sends `basic.reject` with `requeue = true`; the broker
 ///   redelivers the message (typically to the same queue, `redelivered` set).
 /// - [`nack(false)`](IncomingMessage::nack) sends `basic.reject` with `requeue = false`; the
 ///   broker drops the message, or dead-letters it when the queue has a dead-letter exchange.
+///
+/// Both settle with `basic.reject` rather than `basic.nack`. The two frames are the same
+/// operation on a single delivery, and they differ in one thing that matters: `RabbitMQ` 4.3
+/// counts a rejection as a delivery a message has spent and does not count a nack. A handler
+/// asking for its message back is a failed attempt, so it is counted, and a quorum queue's
+/// `x-delivery-limit` can then end a poison loop on the server.
 /// - [`nack_after(delay)`](IncomingMessage::nack_after) is native only when the subscription set
 ///   [`RabbitQueue::delay`](crate::RabbitQueue::delay); otherwise the default reports the delay
 ///   unsupported and the runtime uses its broker-agnostic fallback.
@@ -162,7 +168,14 @@ impl IncomingMessage for LapinMessage {
         .await
     }
 
-    /// Settles negatively: `basic.nack(requeue = true)` or `basic.reject(requeue = false)`.
+    /// Settles negatively with `basic.reject`: back to the queue under `requeue = true`, away
+    /// from it under `requeue = false`.
+    ///
+    /// The frame is a rejection in both cases, never `basic.nack`. On one delivery the two are
+    /// the same operation - `basic.nack` only adds the `multiple` flag this crate never sets -
+    /// but a quorum queue counts a rejected delivery and does not count a nacked one, so a
+    /// handler's `retry()` spends an attempt the server can see and its `x-delivery-limit` ends
+    /// the loop.
     ///
     /// # Errors
     ///
@@ -174,26 +187,11 @@ impl IncomingMessage for LapinMessage {
     /// Not cancel safe: dropping the future after the frame was queued may still settle the
     /// message on the broker.
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
-        if requeue {
-            self.settle(
-                |acker| async move {
-                    acker
-                        .nack(BasicNackOptions {
-                            multiple: false,
-                            requeue: true,
-                        })
-                        .await
-                },
-                "basic.nack",
-            )
-            .await
-        } else {
-            self.settle(
-                |acker| async move { acker.reject(BasicRejectOptions { requeue: false }).await },
-                "basic.reject",
-            )
-            .await
-        }
+        self.settle(
+            |acker| async move { acker.reject(BasicRejectOptions { requeue }).await },
+            "basic.reject",
+        )
+        .await
     }
 
     /// The partition key from the [`PARTITION_KEY_HEADER`], if set. Overridden so keyed worker
