@@ -66,6 +66,30 @@ fn document() -> Value {
     serde_json::from_str(&json).expect("valid JSON")
 }
 
+/// Asserts that every leaf of `excerpt` stands at the same path in `document`.
+fn carries(document: &Value, excerpt: &Value, path: &str) {
+    match excerpt {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                carries(&document[key], value, &format!("{path}/{key}"));
+            }
+        }
+        leaf => assert_eq!(
+            document, leaf,
+            "the document differs from the excerpt at {path}"
+        ),
+    }
+}
+
+// The excerpt the documentation shows is this document, so a page cannot promise a field the
+// crate stopped writing.
+#[test]
+fn the_documented_excerpt_is_what_the_crate_emits() {
+    let excerpt: Value = serde_json::from_str(include_str!("snapshots/asyncapi-amqp.json"))
+        .expect("the excerpt is valid JSON");
+    carries(&document(), &excerpt, "");
+}
+
 #[test]
 fn the_server_names_the_wire_version_behind_the_protocol() {
     let value = document();

@@ -111,34 +111,69 @@ this is a client-side convention, unrelated to the server-side hash routing belo
 
 `.dead_letter_exchange("dlx")` (plus optionally `.dead_letter_routing_key(..)`) sets the queue's
 native dead-letter target. A handler that drops a message settles with
-`basic.reject(requeue = false)`, which routes it there.
+`basic.reject(requeue = false)`, which routes it there. This is the queue's own topology, and it
+applies to every rejection, whoever caused it.
+
+## Capping the retries
+
+A handler that keeps asking for another delivery circulates its message until an operator steps
+in. Two steps after `include` end that:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:declaration"
+```
+
+`max_attempts(n)` is how many deliveries one message gets, counting the first; `dead_letter(name)`
+is where it goes once they run out, republished as it arrived. A destination is a routing key on
+the default exchange here, so the name is the queue the spent delivery lands in.
+
+On a quorum queue this service declares, the pair becomes topology: the queue is declared with
+`x-delivery-limit` and a dead-letter route to that name, and the server carries a spent delivery
+away on its own, with no service running. The argument is one less than the cap, because the
+server counts the returns a message survives where the cap counts the deliveries it gets. A
+classic queue has no delivery limit of its own, so the runtime applies the declaration on the
+retry path instead: the same promise, with the count kept in the service.
+
+The count itself is the queue's where the queue keeps one. A quorum queue stamps every redelivery
+with `x-delivery-count`, and that is what the cap reads; a classic queue counts nothing, and the
+framework's own retry-count header carries the attempt forward instead.
 
 ## Delayed retry
 
 A handler that returns `HandlerOutcome::retry_after(delay)` asks for redelivery no sooner than
 `delay`, the not-ready-yet case where an immediate requeue would spin. AMQP has no per-message
-delay of its own, so the delayed copy is the runtime's to publish, and the mount site names the
-publisher it leaves through:
+delay of its own, so the delayed copy is the runtime's to publish:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_fallback"
 ```
 
+The copy waits in the service process, at-most-once over the window. It goes back under the
+queue's own name, which is what addresses the queue on the default exchange, and it leaves
+through a publisher every registration already has: the broker's default publish policy. Name
+another one where that one will not do:
+
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_mount"
 ```
 
-The copy waits in the service process, at-most-once over the window. It goes back under the
-queue's own name, which is what addresses the queue on the default exchange. A registration that
-names no publisher there turns a `retry_after` into an immediate requeue and logs a warning.
+The position takes the slot steps: `.codec(..)` and `.transform(..)` after it, and `.to(name)`
+where the copy belongs somewhere other than the queue it came from. A transform there reads the
+delivery being retried, the way a reply's transform reads the request.
 
 `.delay(..)` puts the delay on the broker instead: the message parks in a waiting queue with a
 per-message TTL and dead-letters back to the origin queue when the TTL fires, so a restart
-mid-window loses nothing. A queue that opts in needs no publisher at the mount site.
+mid-window loses nothing. The service publishes no copy of its own there.
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"
 ```
+
+A cap does not reach that path. The waiting queue republishes the message rather than returning
+it, so the queue's own count starts again on every delayed copy and no attempt is carried forward:
+a handler that keeps answering `retry_after` on a queue with `.delay(..)` circulates until it
+stops. Leave the delay to the runtime where the cap has to hold, since the copy it publishes
+carries the count in a header.
 
 The waiting queue (`<queue>.retry` by default, or `Delay::dlx_ttl_named(..)`) is infrastructure:
 it is declared only under `declare_topology(true)`, otherwise provision it yourself. Because a

@@ -56,7 +56,7 @@ serde = { version = "1", features = ["derive"] }
 | `RequestReply` | 是 | `LapinRequest` 构造出一个基于 direct reply-to 的请求方，按 correlation-id 多路复用。见[请求与回复](request-reply.md)。 |
 | `Partitioned` | 是 | 生产方把键写进 `amqp-partition-key` 消息头，运行时的工作分区读它；AMQP 本身不解释该消息头。见[按键的工作分区](queues.md#keyed-worker-lanes)。 |
 | `Seekable` + `Positioned` | 否 | 队列不保留历史，无处可回。 |
-| `DescribeServer` | 是 | 报告连接的主机，AsyncAPI 文档记录的就是它。 |
+| `DescribeServer` | 是 | 报告连接的主机以及它背后的 AMQP 版本，AsyncAPI 文档记录的就是它。参见 [AsyncAPI 文档](documenting.md)。 |
 
 ## 生成服务骨架 { #scaffold-a-service }
 
@@ -73,4 +73,5 @@ cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/am
 - [队列与拓扑](queues.md) - 描述符、队列类型、绑定、预取、死信、按需声明。
 - [发布](publishing.md) - 路由模型、持久化、发布者确认和服务端事务。
 - [请求与回复](request-reply.md) - 基于 RabbitMQ direct reply-to 的 RPC。
+- [AsyncAPI 文档](documenting.md) - 服务对自己报告的 AMQP 绑定。
 - [测试](testing.md) - `TestApp` 测试套件下的进程内测试 Broker。

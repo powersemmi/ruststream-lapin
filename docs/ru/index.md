@@ -65,7 +65,7 @@ serde = { version = "1", features = ["derive"] }
 | `RequestReply` | да | `LapinRequest` конструирует запросчика поверх direct reply-to с мультиплексированием по `correlation-id`. Смотрите [Запрос-ответ](request-reply.md). |
 | `Partitioned` | да | Производитель кладёт ключ в заголовок `amqp-partition-key`, и партиции воркеров рантайма читают его; сам AMQP этот заголовок не интерпретирует. Смотрите [Партиции воркеров по ключу](queues.md#keyed-worker-lanes). |
 | `Seekable` + `Positioned` | нет | Очередь не хранит историю, в которую можно было бы вернуться. |
-| `DescribeServer` | да | Сообщает хост подключения, и именно его записывает документ AsyncAPI. |
+| `DescribeServer` | да | Сообщает хост подключения и версию AMQP за ним, и именно это записывает документ AsyncAPI. См. [Документ AsyncAPI](documenting.md). |
 
 ## Каркас сервиса {#scaffold-a-service}
 
@@ -85,4 +85,5 @@ cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/am
 - [Публикация](publishing.md) - модель маршрутизации, сохраняемость, подтверждения издателя и
   серверные транзакции.
 - [Запрос-ответ](request-reply.md) - RPC поверх RabbitMQ direct reply-to.
+- [Документ AsyncAPI](documenting.md) - привязки AMQP, которые сервис сообщает о себе.
 - [Тестирование](testing.md) - внутрипроцессный тестовый брокер под обвязкой `TestApp`.

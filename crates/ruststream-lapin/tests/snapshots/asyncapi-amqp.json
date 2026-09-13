@@ -1,0 +1,63 @@
+{
+  "servers": {
+    "rabbit": {
+      "host": "rabbit:5672",
+      "protocol": "amqp",
+      "protocolVersion": "0.9.1"
+    }
+  },
+  "channels": {
+    "inventory.check": {
+      "address": "inventory.check",
+      "bindings": {
+        "amqp": {
+          "is": "queue",
+          "queue": {
+            "name": "inventory.check",
+            "durable": false,
+            "exclusive": true,
+            "autoDelete": true
+          },
+          "bindingVersion": "0.3.0"
+        }
+      }
+    },
+    "inventory.unrouted": {
+      "address": null,
+      "bindings": {
+        "amqp": {
+          "is": "routingKey",
+          "exchange": {
+            "name": "answers"
+          },
+          "bindingVersion": "0.3.0"
+        }
+      }
+    }
+  },
+  "operations": {
+    "receive_inventory_check": {
+      "action": "receive",
+      "bindings": {
+        "amqp": {
+          "ack": true,
+          "bindingVersion": "0.3.0"
+        }
+      },
+      "reply": {
+        "address": {
+          "location": "$message.header#/reply-to"
+        }
+      }
+    },
+    "send_inventory_check_inventory_dead": {
+      "action": "send",
+      "bindings": {
+        "amqp": {
+          "deliveryMode": 2,
+          "bindingVersion": "0.3.0"
+        }
+      }
+    }
+  }
+}

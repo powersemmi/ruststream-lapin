@@ -64,7 +64,7 @@ Which of the framework's optional capability traits this broker implements nativ
 | `RequestReply` | yes | `LapinRequest` pairs into a requester over direct reply-to with correlation-id multiplexing. See [Request/reply](request-reply.md). |
 | `Partitioned` | yes | The producer sets the key in the `amqp-partition-key` header and the runtime's worker lanes read it; AMQP itself does not interpret it. See [Keyed worker lanes](queues.md#keyed-worker-lanes). |
 | `Seekable` + `Positioned` | no | A queue keeps no history to reposition into. |
-| `DescribeServer` | yes | Reports the connection host, which is what the AsyncAPI document records. |
+| `DescribeServer` | yes | Reports the connection host and the AMQP version behind it, which is what the AsyncAPI document records. See [The AsyncAPI document](documenting.md). |
 
 ## Scaffold a service
 
@@ -83,4 +83,5 @@ cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/am
 - [Publishing](publishing.md) - the routing model, persistence, publisher confirms, and server
   transactions.
 - [Request/reply](request-reply.md) - RPC over RabbitMQ direct reply-to.
+- [The AsyncAPI document](documenting.md) - the AMQP bindings a service reports about itself.
 - [Testing](testing.md) - the in-process test broker under the `TestApp` harness.

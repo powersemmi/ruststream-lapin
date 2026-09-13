@@ -75,8 +75,8 @@ async fn on_charge(event: &OrderPlaced) -> HandlerOutcome {
 // --8<-- [end:delay]
 
 // --8<-- [start:retry_fallback]
-// Without `.delay(..)` the delayed copy is the runtime's to publish, and it needs a publisher for
-// it. A queue that does not park its delays on the broker therefore names one at the mount site.
+// Without `.delay(..)` the delayed copy is the runtime's to publish, and it goes back under this
+// queue's own name: on the default exchange a routing key addresses the queue that carries it.
 #[subscriber(RabbitQueue::new("refunds"))]
 async fn on_refund(event: &OrderPlaced) -> HandlerOutcome {
     if event.id == 0 {
@@ -85,6 +85,19 @@ async fn on_refund(event: &OrderPlaced) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 // --8<-- [end:retry_fallback]
+
+// --8<-- [start:capped]
+// A message that is never ready circulates until an operator steps in. On a quorum queue this
+// service declares, the cap below becomes the queue's own delivery limit and the destination its
+// dead-letter route, so a spent delivery leaves even while no service is running.
+#[subscriber(RabbitQueue::new("payouts").queue_type(QueueType::Quorum))]
+async fn on_payout(event: &OrderPlaced) -> HandlerOutcome {
+    if event.id == 0 {
+        return HandlerOutcome::retry_after(Duration::from_secs(30));
+    }
+    HandlerOutcome::ack()
+}
+// --8<-- [end:capped]
 
 // --8<-- [start:app]
 #[ruststream::app]
@@ -100,11 +113,19 @@ fn app() -> impl App {
         b.include(on_bounded);
         b.include(on_charge);
         // --8<-- [start:retry_mount]
-        // The publisher the deferred copy leaves through, named once per registration. The copy
-        // goes back to the queue's own name, which is what the source reports as its redelivery
-        // address.
-        b.include(on_refund).out_retry(Publish::default());
+        // Every registration already has a publisher for its copies, taken from the broker's
+        // default policy. Naming one replaces it: the confirms publisher waits for the broker to
+        // own the copy, so a retry is not lost by a fire-and-forget publish.
+        b.include(on_refund)
+            .out_retry(TransactionalPublish::default());
         // --8<-- [end:retry_mount]
+        // --8<-- [start:declaration]
+        // How many deliveries one message gets, counting the first, and where it goes once they
+        // run out. Both steps follow `include` and read the same on every broker.
+        b.include(on_payout)
+            .max_attempts(nonzero!(5u32))
+            .dead_letter("payouts.dead");
+        // --8<-- [end:declaration]
         // --8<-- [start:batches_mount]
         // The batch size is the mount site's word, and a batch handler does not mount without it.
         b.include(on_settlement.batch(nonzero!(32)));

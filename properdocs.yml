@@ -118,6 +118,7 @@ nav:
       - queues.md
       - publishing.md
       - request-reply.md
+      - documenting.md
       - testing.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-lapin

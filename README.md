@@ -42,6 +42,16 @@
   `Delay::dlx_ttl()` routes through a TTL waiting queue that dead-letters back to the origin, and
   `Delay::plugin_dme()` (behind `plugin-dme`) through the delayed-message exchange, where mixed
   delays do not block each other.
+- **A cap the queue can enforce itself.** `.max_attempts(n).dead_letter(name)` after `include`
+  says how many deliveries one message gets and where it goes once they run out. On a quorum queue
+  this service declares, the pair becomes the queue's own `x-delivery-limit` and dead-letter route,
+  so a spent delivery leaves with no service running; on a classic queue the runtime applies it on
+  the retry path. The count is the queue's own `x-delivery-count` where the queue keeps one.
+- **A document that knows AMQP.** Behind the `asyncapi` feature every subscription and every
+  publish policy fills the specification's `amqp` binding: the queue's settings on the channel,
+  the manual acknowledgement on the receive operation, the exchange and the message properties on
+  a send, and the reply-to header a client reads an answer's address from. The server reports
+  `protocolVersion` `0.9.1`, which is what tells AMQP 0.9.1 from AMQP 1.0.
 - **Three publishers, chosen on the policy.** `LapinPublish::default()` is fire-and-forget;
   `.confirms()` awaits every broker confirm and buffers a transaction client-side (durable, fast,
   recommended, and the policy the family's `TransactionalPublish` name points at); `.server_tx()`
@@ -83,6 +93,9 @@ serde = { version = "1", features = ["derive"] }
 [dev-dependencies]
 ruststream-lapin = { version = "0.7", features = ["testing"] }
 ```
+
+Add the `asyncapi` feature to fill the AMQP bindings of the generated document; without it the
+document is generated all the same, with nothing RabbitMQ-specific in it.
 
 TLS (`amqps://`) is feature-gated, mapped onto `lapin`'s backends: `tls-rustls`,
 `tls-rustls-ring`, `tls-native-tls`. Two features need a plugin enabled on the broker and are off
