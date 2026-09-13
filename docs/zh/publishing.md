@@ -50,8 +50,8 @@
 会发布的处理器返回回复值，由运行时把它发布出去。回复类型用 `#[outgoing(name = "..")]` 声明它发往
 哪里。什么都不声明的类型，按 `publish("..")` 子句给的名字发布。
 
-两种名字都是路由键，交换机由挂载点的策略点名：`.out(Reply, Publish::default())` 在默认交换机上
-回复，`.out(Reply, Publish::default().exchange("events"))` 在主题交换机上回复。其后的步骤把回复
+两种名字都是路由键，交换机由挂载点的策略点名：`.out_reply(Publish::default())` 在默认交换机上
+回复，`.out_reply(Publish::default().exchange("events"))` 在主题交换机上回复。其后的步骤把回复
 接线的其余部分补齐：`.codec(..)` 指定回复的编解码器，`.transform(..)` 在发布前改动每一条回复。
 
 完整的回复表面写在[核心的发布指南](https://powersemmi.github.io/ruststream/)里。

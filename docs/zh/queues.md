@@ -103,11 +103,23 @@ prelude 导出这些键，但不导出上下文类型，后者从 `ruststream_la
 ## 延迟重试 { #delayed-retry }
 
 返回 `HandlerOutcome::retry_after(delay)` 的处理器，要求不早于 `delay` 再重新投递，也就是「还没
-就绪」这一种情形，此时立刻重新入队只会空转。默认情况下运行时用它与 Broker 无关的兜底路径处理
-这件事：延迟的副本在服务进程里等待，整个窗口内是至多一次；它按队列自己的名字发布回去，因为在
-默认交换机上正是它寻址到该队列。`.delay(..)` 改用原生方式：消息停在 Broker 的等待队列里，
-带着自己的 TTL，TTL 到期就以死信的方式回到原队列，于是延迟的副本存在 Broker 上，窗口中途重启也
-不丢东西。
+就绪」这一种情形，此时立刻重新入队只会空转。AMQP 没有自己的按消息延迟，延迟的副本因此由运行时
+发布，而它经由哪个发布者离开，则由挂载点点名：
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_fallback"
+```
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_mount"
+```
+
+副本在服务进程里等待，整个窗口内是至多一次。它按队列自己的名字发回去，因为在默认交换机上正是
+它寻址到该队列。在那里没有点名发布者的注册，会把 `retry_after` 变成立刻重新入队，并记一条
+警告。
+
+`.delay(..)` 把延迟挪到 Broker 上：消息停在等待队列里，带着自己的 TTL，TTL 到期就以死信的方式
+回到原队列，于是窗口中途重启也不丢东西。选用它的队列，不需要在挂载点点名发布者。
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"

@@ -132,10 +132,11 @@ fn app() -> impl App {
 }
 ```
 
-`.out(marker, policy)` is the one mount verb: `DefaultSlot` names the handler's single unnamed
-`Out` slot, `Reply` the publisher a `#[subscriber(.., publish("dest"))]` handler's return value
-leaves through. The message name is the routing key, sent to the policy's exchange, and on the
-default exchange it addresses the queue with that name - which is why this service needs no
+`.out(marker, policy)` names the publisher an `Out` slot leaves through, and `DefaultSlot` is the
+handler's single unnamed slot. The reply of a `#[subscriber(.., publish("dest"))]` handler is
+bound with `out_reply(policy)`, and the deferred copy of a `retry_after` with
+`out_retry(policy)`. The message name is the routing key, sent to the policy's exchange, and on
+the default exchange it addresses the queue with that name - which is why this service needs no
 topology. `#[ruststream::app]` generates `main`, so the binary understands `run` and
 `asyncapi gen` with no boilerplate.
 

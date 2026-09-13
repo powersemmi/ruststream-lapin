@@ -59,8 +59,8 @@ declares where it goes with `#[outgoing(name = "..")]`. A type that declares non
 under the name the `publish("..")` clause gives.
 
 Either name is a routing key, and the policy at the mount site names the exchange:
-`.out(Reply, Publish::default())` replies on the default exchange, and
-`.out(Reply, Publish::default().exchange("events"))` on a topic exchange. The steps after it fill
+`.out_reply(Publish::default())` replies on the default exchange, and
+`.out_reply(Publish::default().exchange("events"))` on a topic exchange. The steps after it fill
 the rest of the reply wiring: `.codec(..)` sets the reply codec, `.transform(..)` changes each
 reply before it is published.
 

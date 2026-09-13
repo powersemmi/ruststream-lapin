@@ -116,13 +116,25 @@ native dead-letter target. A handler that drops a message settles with
 ## Delayed retry
 
 A handler that returns `HandlerOutcome::retry_after(delay)` asks for redelivery no sooner than
-`delay`, the not-ready-yet case where an immediate requeue would spin. By default the runtime
-handles this with its broker-agnostic fallback, and the delayed copy waits in the service process,
-at-most-once over the window; it is published back under the queue's own name, which is what
-addresses the queue on the default exchange. `.delay(..)` makes it native instead: the message
-parks in a broker waiting queue with a per-message TTL and dead-letters back to the origin queue
-when the TTL fires, so the delayed copy lives on the broker and a restart mid-window loses
-nothing.
+`delay`, the not-ready-yet case where an immediate requeue would spin. AMQP has no per-message
+delay of its own, so the delayed copy is the runtime's to publish, and the mount site names the
+publisher it leaves through:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_fallback"
+```
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_mount"
+```
+
+The copy waits in the service process, at-most-once over the window. It goes back under the
+queue's own name, which is what addresses the queue on the default exchange. A registration that
+names no publisher there turns a `retry_after` into an immediate requeue and logs a warning.
+
+`.delay(..)` puts the delay on the broker instead: the message parks in a waiting queue with a
+per-message TTL and dead-letters back to the origin queue when the TTL fires, so a restart
+mid-window loses nothing. A queue that opts in needs no publisher at the mount site.
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"
