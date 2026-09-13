@@ -10,12 +10,14 @@
 
 #![cfg(feature = "testing")]
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
+use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::TestApp;
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    Broker, ConnectedBroker, FromRef, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
     SubscriptionSource,
 };
 use ruststream_lapin::prelude::*;
@@ -63,7 +65,7 @@ async fn never_ready_on_a_waiting_queue(order: &Order) -> HandlerOutcome {
 }
 
 /// Runs one registration down to its cap: the first delivery, then one more per elapsed delay.
-async fn exhaust(tb: &TestApp<()>, queue: &str, order: &Order) {
+async fn exhaust<S: Send + Sync + 'static>(tb: &TestApp<S>, queue: &str, order: &Order) {
     tb.broker::<LapinTestBroker>()
         .publish(queue, order)
         .await
@@ -197,4 +199,81 @@ async fn no_delivery_carries_a_count() {
     assert_eq!(next(&mut subscriber).await.redelivery_count(), None);
 
     connected.shutdown().await.expect("shutdown");
+}
+
+/// What each delivery of the counted queue reported as its retry count, in order.
+type Counts = Arc<Mutex<Vec<Option<String>>>>;
+
+#[derive(Clone, Default, FromRef)]
+struct Seen {
+    counts: Counts,
+}
+
+/// Never ready, and it writes down what the delivery said about its own attempts.
+#[subscriber(RabbitQueue::new("orders.counted").delay(Delay::dlx_ttl()))]
+async fn record_the_count(
+    order: &Order,
+    ctx: &mut Context<'_>,
+    State(counts): State<Counts>,
+) -> HandlerOutcome {
+    let _ = order.id;
+    counts
+        .lock()
+        .expect("counts mutex poisoned")
+        .push(ctx.headers().get_str(RETRY_COUNT_HEADER).map(str::to_owned));
+    HandlerOutcome::retry_after(RETRY_DELAY)
+}
+
+// The waiting queue releases a new message, so the only record of the round is the framework's
+// count, and the copy carries it one higher every time.
+#[tokio::test(start_paused = true)]
+async fn every_copy_the_waiting_queue_releases_counts_one_more_attempt() {
+    let seen = Seen::default();
+    let recorded = Arc::clone(&seen.counts);
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .on_startup(move |()| {
+            let seen = seen;
+            async move { Ok::<_, std::convert::Infallible>(seen) }
+        })
+        .with_broker(LapinTestBroker::new(), |b| {
+            b.include(record_the_count);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    exhaust(&tb, "orders.counted", &Order { id: 5 }).await;
+
+    assert_eq!(
+        *recorded.lock().expect("counts mutex poisoned"),
+        vec![None, Some("1".to_owned()), Some("2".to_owned())],
+    );
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// The cap over a waiting queue, which the copy's count is what makes countable. The core reads
+// that count on the native delayed path from the release after 0.7.0-rc.5; until this crate's
+// floor names it, the delivery keeps coming back and the assertions below cannot hold.
+#[ignore = "needs the core after 0.7.0-rc.5, which reads the retry count on the delayed path"]
+#[tokio::test(start_paused = true)]
+async fn a_declared_cap_ends_a_delayed_retry_loop() {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(never_ready_on_a_waiting_queue)
+                .max_attempts(nonzero!(ATTEMPTS))
+                .dead_letter(DEAD);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    exhaust(&tb, "orders.waiting", &Order { id: 6 }).await;
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("orders.waiting")
+        .assert_called(ATTEMPTS as usize);
+    tb.broker::<LapinTestBroker>()
+        .published::<Order>(DEAD)
+        .assert_called_once()
+        .decoded_as::<Order>()
+        .with(&Order { id: 6 });
+
+    tb.shutdown().await.expect("shutdown");
 }

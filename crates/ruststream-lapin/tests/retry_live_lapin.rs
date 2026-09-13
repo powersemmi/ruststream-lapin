@@ -15,12 +15,13 @@ use std::time::Duration;
 use futures::{Stream, StreamExt};
 use lapin::options::{QueueDeclareOptions, QueueDeleteOptions};
 use lapin::types::{AMQPValue, FieldTable, ShortString};
+use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
     Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, RetryDeclaration,
     Subscriber, SubscriptionSource, nonzero,
 };
 use ruststream_lapin::{
-    AmqpError, ConnectedLapinBroker, LapinBroker, LapinMessage, LapinPublish, QueueType,
+    AmqpError, ConnectedLapinBroker, Delay, LapinBroker, LapinMessage, LapinPublish, QueueType,
     RabbitQueue,
 };
 
@@ -342,4 +343,49 @@ async fn a_dead_lettered_delivery_reports_the_round_it_has_been_through() {
     drop(graveyard);
     connected.shutdown().await.expect("shutdown");
     delete_queues(&url, &[&queue, &dead]).await;
+}
+
+// A waiting queue releases a new message, and the server counts a new message from zero, so the
+// framework's retry count is the only record of the round; the copy carries it one higher each
+// time it comes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_the_waiting_queue_releases_carries_the_count() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("counted-copies");
+    let waiting = format!("{queue}.retry");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let mut subscriber = connected
+        .subscribe(RabbitQueue::new(&queue).delay(Delay::dlx_ttl()))
+        .await
+        .expect("subscribe");
+    publish(&connected, &queue, b"counted").await;
+
+    let mut stream = Box::pin(subscriber.stream());
+    for round in 0..=2u64 {
+        let delivery = next(&mut stream).await;
+        let carried = delivery.headers().get_str(RETRY_COUNT_HEADER);
+        if round == 0 {
+            assert_eq!(carried, None, "the first delivery has spent no attempt");
+        } else {
+            assert_eq!(carried, Some(round.to_string().as_str()), "round {round}");
+        }
+        if round == 2 {
+            delivery.ack().await.expect("ack");
+        } else {
+            delivery
+                .nack_after(Duration::from_millis(150))
+                .await
+                .expect("the waiting queue takes the copy");
+        }
+    }
+
+    drop(stream);
+    drop(subscriber);
+    connected.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[&queue, &waiting]).await;
 }

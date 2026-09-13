@@ -174,12 +174,13 @@ mid-window loses nothing. The service publishes no copy of its own there.
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"
 ```
 
-A cap does not reach that path, and the reason is the republish. A copy is a new message to the
-server: the waiting queue writes its `x-death` entry afresh on every round, overwriting a count a
-client tries to carry, and the framework's own header is not incremented where the broker holds
-the message. Neither counter grows, so a handler that keeps answering `retry_after` on a queue
-with `.delay(..)` circulates until it stops. Leave the delay to the runtime where the cap has to
-hold: the copy it publishes carries the count in a header.
+A copy is a new message to the server, which counts it from zero: the waiting queue writes its
+`x-death` entry afresh on every round, and a quorum queue's own counter starts again. So the copy
+carries the framework's count instead - the same `x-ruststream-retry-count` the runtime writes on
+the copies it publishes itself, one higher every time it comes back. The cap holds on a delayed
+queue once the core reads that count on this path, which it does from the release after
+0.7.0-rc.5; until this crate's floor names that release, a handler that keeps answering
+`retry_after` on a queue with `.delay(..)` circulates until it stops.
 
 The waiting queue (`<queue>.retry` by default, or `Delay::dlx_ttl_named(..)`) is infrastructure:
 it is declared only under `declare_topology(true)`, otherwise provision it yourself. Because a

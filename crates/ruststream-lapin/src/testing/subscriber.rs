@@ -5,7 +5,9 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures::Stream;
+use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::Coordinator;
 use ruststream::{
     AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, Partitioned,
@@ -294,9 +296,9 @@ impl IncomingMessage for LapinTestMessage {
     /// Redelivers the message after `delay` through the transport's stand-in for the waiting
     /// queue: the original is settled now and a copy of it comes back when the delay is over.
     ///
-    /// The copy is a fresh publish, as it is on a server: it is not marked redelivered and the
-    /// delivery count starts again, because the waiting queue's dead-letter route re-publishes
-    /// the message rather than returning it.
+    /// The copy is a fresh publish, as it is on a server: it is not marked redelivered, and it
+    /// carries the framework's retry count raised by one, because that header is the only record
+    /// of the round that survives a republish.
     ///
     /// # Errors
     ///
@@ -308,6 +310,15 @@ impl IncomingMessage for LapinTestMessage {
         }
         let mut delivery = self.take();
         delivery.redelivered = false;
+        let spent = delivery
+            .headers
+            .get_str(RETRY_COUNT_HEADER)
+            .and_then(|count| count.parse::<u64>().ok())
+            .unwrap_or(0);
+        delivery.headers.insert(
+            RETRY_COUNT_HEADER,
+            Bytes::from(spent.saturating_add(1).to_string()),
+        );
         let state = Arc::clone(&self.state);
         let queue = self.queue.clone();
         let coordinator = self.coordinator.clone();
