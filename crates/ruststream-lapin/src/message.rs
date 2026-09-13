@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use lapin::Acker;
 use lapin::message::Delivery;
 use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
+use lapin::types::ShortString;
+use lapin::{Acker, BasicProperties};
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
 
 use crate::convert;
@@ -17,6 +18,12 @@ use crate::delay::DelayContext;
 /// worker lane under [`workers(n, by_key)`](https://docs.rs/ruststream). It rides in the AMQP
 /// header table like any other header; nothing else in the broker interprets it.
 pub const PARTITION_KEY_HEADER: &str = "amqp-partition-key";
+
+/// The header a quorum queue stamps with how often it has returned this message to the queue.
+///
+/// Classic queues keep no such counter, and a quorum queue omits the header until the message has
+/// been returned at least once, so its absence says "no count", not "one delivery".
+const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
 
 /// One AMQP delivery, settled with the protocol's native acknowledgement frames.
 ///
@@ -41,6 +48,7 @@ pub struct LapinMessage {
     routing_key: String,
     redelivered: bool,
     delivery_tag: u64,
+    returns: Option<u64>,
     acker: Option<Acker>,
     delay: Option<DelayContext>,
 }
@@ -55,6 +63,7 @@ impl LapinMessage {
             routing_key: delivery.routing_key.to_string(),
             redelivered: delivery.redelivered,
             delivery_tag: delivery.delivery_tag,
+            returns: returns_of(&delivery.properties),
             acker: Some(delivery.acker),
             delay,
         }
@@ -180,6 +189,19 @@ impl IncomingMessage for LapinMessage {
         self.headers.get(PARTITION_KEY_HEADER)
     }
 
+    /// How many times this message has been delivered, counting this delivery, on a queue that
+    /// counts: a quorum queue reports its returns in `x-delivery-count`, and this is one more
+    /// than that.
+    ///
+    /// `None` on a classic queue and on the first delivery from a quorum queue, which is what
+    /// leaves the framework's own retry-count header in charge of a registration's cap. A copy
+    /// published back to the queue - the runtime's deferred retry, or a delayed redelivery
+    /// through a waiting queue - is a new message to the server, so its count starts again and
+    /// the header is what carries the attempt forward.
+    fn redelivery_count(&self) -> Option<u64> {
+        self.returns.map(|returns| returns.saturating_add(1))
+    }
+
     /// Whether this delivery can honor a native delayed redelivery.
     ///
     /// `true` only when the subscription set [`RabbitQueue::delay`](crate::RabbitQueue::delay);
@@ -222,6 +244,15 @@ impl IncomingMessage for LapinMessage {
         )
         .await
     }
+}
+
+/// The `x-delivery-count` a quorum queue stamps, or `None` where nothing counted.
+fn returns_of(properties: &BasicProperties) -> Option<u64> {
+    properties
+        .headers()
+        .as_ref()
+        .and_then(|table| table.inner().get(&ShortString::from(DELIVERY_COUNT_HEADER)))
+        .and_then(convert::counter)
 }
 
 impl Partitioned for LapinMessage {

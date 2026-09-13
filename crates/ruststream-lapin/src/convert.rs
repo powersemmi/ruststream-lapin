@@ -26,6 +26,23 @@ const TRANSIENT: u8 = 1;
 /// Header names that map onto native AMQP properties instead of the header table.
 const PROPERTY_HEADERS: [&str; 4] = ["content-type", "correlation-id", "reply-to", "message-id"];
 
+/// Reads a header-table value that carries a count, whatever integer width the server chose.
+///
+/// `RabbitMQ` picks the narrowest type that fits, so a counter the crate reads back has no single
+/// wire type to match on; a value that is not an integer at all is not a count and answers `None`.
+pub(crate) fn counter(value: &AMQPValue) -> Option<u64> {
+    match value {
+        AMQPValue::ShortShortInt(value) => u64::try_from(*value).ok(),
+        AMQPValue::ShortShortUInt(value) => Some(u64::from(*value)),
+        AMQPValue::ShortInt(value) => u64::try_from(*value).ok(),
+        AMQPValue::ShortUInt(value) => Some(u64::from(*value)),
+        AMQPValue::LongInt(value) => u64::try_from(*value).ok(),
+        AMQPValue::LongUInt(value) => Some(u64::from(*value)),
+        AMQPValue::LongLongInt(value) => u64::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
 pub(crate) fn short(value: &str, what: &str) -> Result<ShortString, AmqpError> {
     ShortString::try_new(value).map_err(|err| {
         AmqpError::InvalidOptions(format!(
