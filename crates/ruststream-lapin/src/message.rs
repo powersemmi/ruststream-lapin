@@ -193,11 +193,16 @@ impl IncomingMessage for LapinMessage {
     /// counts: a quorum queue reports its returns in `x-delivery-count`, and this is one more
     /// than that.
     ///
+    /// What the queue counts is a delivery that failed - one whose consumer went away without
+    /// settling it. A `basic.nack` with requeue asks for the message back instead, and `RabbitMQ`
+    /// 4.3 does not count that where 4.2 did, so a handler-driven retry loop is bounded by the
+    /// framework's own retry-count header rather than by this.
+    ///
     /// `None` on a classic queue and on the first delivery from a quorum queue, which is what
-    /// leaves the framework's own retry-count header in charge of a registration's cap. A copy
-    /// published back to the queue - the runtime's deferred retry, or a delayed redelivery
-    /// through a waiting queue - is a new message to the server, so its count starts again and
-    /// the header is what carries the attempt forward.
+    /// leaves that header in charge of a registration's cap. A copy published back to the queue -
+    /// the runtime's deferred retry, or a delayed redelivery through a waiting queue - is a new
+    /// message to the server, so its count starts again and the header is what carries the
+    /// attempt forward.
     fn redelivery_count(&self) -> Option<u64> {
         self.returns.map(|returns| returns.saturating_add(1))
     }

@@ -128,15 +128,18 @@ is where it goes once they run out, republished as it arrived. A destination is 
 the default exchange here, so the name is the queue the spent delivery lands in.
 
 On a quorum queue this service declares, the pair becomes topology: the queue is declared with
-`x-delivery-limit` and a dead-letter route to that name, and the server carries a spent delivery
-away on its own, with no service running. The argument is one less than the cap, because the
-server counts the returns a message survives where the cap counts the deliveries it gets. A
-classic queue has no delivery limit of its own, so the runtime applies the declaration on the
-retry path instead: the same promise, with the count kept in the service.
+`x-delivery-limit` and a dead-letter route to that name, so a message whose consumer keeps dying
+leaves the queue with no service running to count it. The argument is one less than the cap,
+because the server counts the returns a message survives where the cap counts the deliveries it
+gets. A classic queue has no delivery limit of its own, so the runtime applies the declaration on
+the retry path instead: the same promise, with the count kept in the service.
 
-The count itself is the queue's where the queue keeps one. A quorum queue stamps every redelivery
-with `x-delivery-count`, and that is what the cap reads; a classic queue counts nothing, and the
-framework's own retry-count header carries the attempt forward instead.
+What the queue counts is a delivery that failed - one whose consumer went away without settling it
+- and a quorum queue stamps that count on every redelivery as `x-delivery-count`. That is what the
+cap reads where it is there. A handler asking for its message back does not spend an attempt that
+way: RabbitMQ 4.3 does not count a requeue where 4.2 did, so a handler-driven retry loop is ended
+by the framework's own retry-count header, which the runtime increments on every copy it
+publishes. A classic queue counts nothing at all, and the header is the whole count there.
 
 ## Delayed retry
 

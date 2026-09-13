@@ -5,8 +5,8 @@
 //! spent one. The same two steps read the same on a descriptor and on a bare queue name.
 //!
 //! The transport's own half is here too: a descriptor that names a waiting queue makes the delay
-//! the broker's, and a quorum queue counts how often it has returned a message. Both answers are
-//! what the same descriptor gets from a server, so a registration behaves here as it does there.
+//! the broker's, and no delivery carries a count, because a server counts a delivery whose
+//! consumer went away and nothing under the harness can do that.
 
 #![cfg(feature = "testing")]
 
@@ -180,11 +180,12 @@ async fn next(subscriber: &mut LapinTestSubscriber) -> LapinTestMessage {
         .expect("a delivery")
 }
 
-// A quorum queue counts how often it has returned a message, and the transport answers with the
-// count the `x-delivery-count` header carries on a server: nothing on the first delivery, two on
-// the one that follows a requeue.
+// The transport counts no deliveries, whatever queue type the descriptor names: on a server the
+// count rises when a delivery's consumer goes away without settling it, and a handler under the
+// harness always settles. A count invented here would take the runtime down the broker's requeue
+// path where a server sends it down the copy path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_quorum_queue_counts_its_redeliveries() {
+async fn no_delivery_carries_a_count() {
     let connected = LapinTestBroker::new().connect().await.expect("connect");
     let def = RabbitQueue::new("orders.counted").queue_type(QueueType::Quorum);
 
@@ -192,25 +193,6 @@ async fn a_quorum_queue_counts_its_redeliveries() {
     let first = next(&mut subscriber).await;
     assert_eq!(first.redelivery_count(), None);
     first.nack(true).await.expect("requeue");
-
-    assert_eq!(next(&mut subscriber).await.redelivery_count(), Some(2));
-
-    connected.shutdown().await.expect("shutdown");
-}
-
-// A classic queue counts nothing, which is what leaves a registration's cap counting with the
-// framework's own header.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_classic_queue_counts_nothing() {
-    let connected = LapinTestBroker::new().connect().await.expect("connect");
-    let def = RabbitQueue::new("orders.uncounted");
-
-    let mut subscriber = subscribe_and_publish(&connected, def).await;
-    next(&mut subscriber)
-        .await
-        .nack(true)
-        .await
-        .expect("requeue");
 
     assert_eq!(next(&mut subscriber).await.redelivery_count(), None);
 

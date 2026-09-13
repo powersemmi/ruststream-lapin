@@ -104,6 +104,10 @@ crate's integration tests instead.
   and nothing about atomicity or about what a lost connection does to a transaction in flight.
 - **Direct reply-to's at-most-once nature.** Reply addresses are subscriptions here, not channel
   state on one broker node, so replies cannot be lost with a connection.
+- **The delivery count.** A quorum queue counts a delivery whose consumer went away without
+  settling it, and nothing under the harness can do that: a handler always settles. Every delivery
+  here therefore reports no count, as a classic queue's does, and a registration's cap counts with
+  the framework's retry-count header.
 
 Exercise all of it against a real RabbitMQ. The crate's own integration tests run that way, gated
 on `AMQP_TEST_URL`:

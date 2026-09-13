@@ -23,7 +23,9 @@
 //! transactions, and request/reply correlation. What the transport cannot reproduce is stated on
 //! the type that would otherwise imply it, and collected in the crate's testing guide: the
 //! server-side halves of exchanges and bindings, dead-lettering, prefetch, publisher confirms,
-//! AMQP server transactions, and the at-most-once nature of direct reply-to. Exercise those
+//! AMQP server transactions, the at-most-once nature of direct reply-to, and a quorum queue's
+//! delivery count, which rises on a delivery whose consumer went away - something no handler
+//! under the harness does. Exercise those
 //! against a real server (see the crate's integration tests and `AMQP_TEST_URL`).
 
 mod broker;

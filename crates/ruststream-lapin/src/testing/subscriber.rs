@@ -18,15 +18,12 @@ use crate::error::AmqpError;
 
 /// What the in-process transport honours of a descriptor beyond its queue name.
 ///
-/// Both answers are the descriptor's word rather than the transport's: the in-process router has
-/// no queue types and no waiting queues, so a subscription reports what the same descriptor would
-/// get from a server. A subscription opened by bare name gets neither, which is what the server
-/// default (a classic queue, no delay infrastructure) gives.
+/// The answer is the descriptor's word rather than the transport's: the in-process router has no
+/// waiting queues, so a subscription behaves the way the same descriptor behaves on a server. A
+/// subscription opened by bare name gets none of it, which is what a queue with no delay
+/// infrastructure gives.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct QueueBehaviour {
-    /// A quorum queue counts how often it has returned a message and reports the count on every
-    /// redelivery; a classic queue counts nothing.
-    pub(crate) counts_deliveries: bool,
     /// The descriptor named a waiting queue, so a delayed redelivery is the broker's rather than
     /// the runtime's deferred copy.
     pub(crate) delays: bool,
@@ -158,7 +155,6 @@ impl Subscriber for TestDeliveries {
                     *next_tag += 1;
                     Ok(LapinTestMessage {
                         redelivered: delivery.redelivered,
-                        delivery_count: delivery.delivery_count,
                         delivery: Some(delivery),
                         queue: queue.clone(),
                         delivery_tag,
@@ -183,7 +179,6 @@ pub struct LapinTestMessage {
     queue: String,
     delivery_tag: u64,
     redelivered: bool,
-    delivery_count: u64,
     state: Arc<TestBrokerState>,
     coordinator: Option<Coordinator>,
     behaviour: QueueBehaviour,
@@ -204,7 +199,6 @@ impl LapinTestMessage {
     ) -> Self {
         Self {
             redelivered: delivery.redelivered,
-            delivery_count: delivery.delivery_count,
             delivery: Some(delivery),
             queue,
             delivery_tag,
@@ -291,17 +285,6 @@ impl IncomingMessage for LapinTestMessage {
         self.headers().get(crate::PARTITION_KEY_HEADER)
     }
 
-    /// How often this message has been delivered, counting this delivery, on a subscription whose
-    /// descriptor named a quorum queue; `None` otherwise.
-    ///
-    /// The real transport reads the count off the `x-delivery-count` header a quorum queue
-    /// stamps, which appears once the message has been returned at least once, so a first
-    /// delivery answers `None` here as it does there.
-    fn redelivery_count(&self) -> Option<u64> {
-        (self.behaviour.counts_deliveries && self.delivery_count > 0)
-            .then_some(self.delivery_count + 1)
-    }
-
     /// Whether this delivery can honour a native delayed redelivery: only on a subscription whose
     /// descriptor named a waiting queue, exactly as on a server.
     fn supports_nack_after(&self) -> bool {
@@ -325,7 +308,6 @@ impl IncomingMessage for LapinTestMessage {
         }
         let mut delivery = self.take();
         delivery.redelivered = false;
-        delivery.delivery_count = 0;
         let state = Arc::clone(&self.state);
         let queue = self.queue.clone();
         let coordinator = self.coordinator.clone();
@@ -367,9 +349,6 @@ impl IncomingMessage for LapinTestMessage {
         // The copy that goes back carries the redelivered flag, as a broker would set it.
         delivery.redelivered = requeue;
         if requeue {
-            // A return is what a quorum queue counts, so the copy carries one more than it
-            // arrived with.
-            delivery.delivery_count += 1;
             self.state
                 .router
                 .deliver(&self.queue, delivery, self.coordinator.as_ref());

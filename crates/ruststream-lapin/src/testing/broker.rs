@@ -17,7 +17,7 @@ use super::router::KeyRouter;
 use super::subscriber::{LapinTestSubscriber, QueueBehaviour};
 use crate::error::AmqpError;
 use crate::publish_policy::LapinPublish;
-use crate::queue::{QueueType, RabbitQueue};
+use crate::queue::RabbitQueue;
 use crate::requester::LapinRequest;
 
 /// Shared state owned by every handle on a single test broker instance.
@@ -167,15 +167,16 @@ impl ConnectedLapinTestBroker {
     }
 
     /// Subscribes for `def`, carrying what the transport can honour of it beyond the queue name:
-    /// whether the queue counts its deliveries, and whether a delayed redelivery is the broker's.
+    /// whether a delayed redelivery is the broker's.
     ///
-    /// The rest of the descriptor is topology, and the in-process transport has none.
+    /// The rest of the descriptor is topology, and the in-process transport has none. It reports
+    /// no delivery count of its own either: a server counts a delivery whose consumer went away,
+    /// which is not something a handler under the harness can do.
     pub(crate) fn subscribe_to(
         &self,
         def: &RabbitQueue,
     ) -> impl Future<Output = Result<LapinTestSubscriber, AmqpError>> {
         let behaviour = QueueBehaviour {
-            counts_deliveries: def.queue_type_or(None) == Some(QueueType::Quorum),
             delays: def.delay_config().is_some(),
         };
         self.open(def.name().to_owned(), behaviour)

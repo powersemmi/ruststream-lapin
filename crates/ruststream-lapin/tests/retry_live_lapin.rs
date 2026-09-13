@@ -3,6 +3,11 @@
 //! Both are the server's own mechanisms, so neither can be proved in process: the delivery limit
 //! and the dead-letter route are queue arguments the broker acts on, and the count comes off the
 //! wire. Every test is a no-op unless `AMQP_TEST_URL` points at a broker (see `just test-brokers`).
+//!
+//! What a quorum queue counts is a delivery that failed - one whose consumer went away without
+//! settling it - so that is how the tests below spend a message's attempts. A consumer asking for
+//! the message back with `basic.nack(requeue = true)` is not that, and `RabbitMQ` 4.3 does not count
+//! it (4.2 did), which is why the runtime's own cap is what ends a handler-driven retry loop.
 
 use std::time::Duration;
 
@@ -25,9 +30,6 @@ const SILENCE: Duration = Duration::from_millis(500);
 
 /// The cap the declaration carries, and the number of deliveries the queue must then allow.
 const ATTEMPTS: u32 = 3;
-
-/// Stops the counting loop at a number no correct delivery limit reaches.
-const NEVER: usize = 10;
 
 fn amqp_url() -> Option<String> {
     live::url("AMQP_TEST_URL")
@@ -151,8 +153,9 @@ async fn a_declaration_becomes_the_queues_own_arguments() {
     delete_queues(&url, &[&queue]).await;
 }
 
-// The queue itself ends the loop: a delivery that keeps coming back is handed out `max_attempts`
-// times and then leaves for the dead-letter queue, without the service publishing anything.
+// The queue itself ends the loop: a message whose consumer keeps dying is handed out
+// `max_attempts` times and then leaves for the dead-letter queue, without the service publishing
+// anything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_spent_delivery_leaves_for_the_dead_letter_queue() {
     let Some(url) = amqp_url() else { return };
@@ -175,16 +178,28 @@ async fn a_spent_delivery_leaves_for_the_dead_letter_queue() {
 
     publish(&connected, &queue, b"poison").await;
 
-    let mut deliveries = 0;
-    let mut stream = Box::pin(subscriber.stream());
-    // Every delivery goes straight back to the queue, which is what a handler asking for an
-    // immediate retry does; the queue is what stops the loop.
-    while let Ok(Some(Ok(delivery))) = tokio::time::timeout(SILENCE, stream.next()).await {
-        deliveries += 1;
-        assert!(deliveries <= NEVER, "the delivery limit never took effect");
-        delivery.nack(true).await.expect("requeue");
+    for attempt in 1..=ATTEMPTS {
+        let mut stream = Box::pin(subscriber.stream());
+        let delivery = next(&mut stream).await;
+        assert_eq!(delivery.payload(), b"poison", "attempt {attempt}");
+        // Dropping the delivery and its subscriber closes the channel with the message unsettled,
+        // which is the consumer going away: the queue takes the message back and counts the
+        // attempt.
+        drop(delivery);
+        drop(stream);
+        drop(subscriber);
+        subscriber = connected
+            .subscribe(declared(&queue, &dead))
+            .await
+            .expect("resubscribe");
     }
-    assert_eq!(deliveries, ATTEMPTS as usize);
+
+    let mut stream = Box::pin(subscriber.stream());
+    assert!(
+        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        "the attempts are spent, so the queue must not hand the message out again",
+    );
+    drop(stream);
 
     let mut dead_stream = Box::pin(graveyard.stream());
     let carried = next(&mut dead_stream).await;
@@ -192,7 +207,6 @@ async fn a_spent_delivery_leaves_for_the_dead_letter_queue() {
     carried.ack().await.expect("ack");
 
     drop(dead_stream);
-    drop(stream);
     drop(subscriber);
     drop(graveyard);
     connected.shutdown().await.expect("shutdown");
@@ -211,17 +225,20 @@ async fn a_quorum_delivery_reports_how_often_it_has_come_back() {
         .await
         .expect("connect");
 
-    let mut subscriber = connected
-        .subscribe(RabbitQueue::new(&queue).queue_type(QueueType::Quorum))
-        .await
-        .expect("subscribe");
+    let counted = || RabbitQueue::new(&queue).queue_type(QueueType::Quorum);
+    let mut subscriber = connected.subscribe(counted()).await.expect("subscribe");
     publish(&connected, &queue, b"counted").await;
 
     let mut stream = Box::pin(subscriber.stream());
     let first = next(&mut stream).await;
     assert_eq!(first.redelivery_count(), None);
-    first.nack(true).await.expect("requeue");
+    // The consumer goes away with the delivery unsettled, which is the failure the queue counts.
+    drop(first);
+    drop(stream);
+    drop(subscriber);
 
+    let mut subscriber = connected.subscribe(counted()).await.expect("resubscribe");
+    let mut stream = Box::pin(subscriber.stream());
     let second = next(&mut stream).await;
     assert_eq!(second.redelivery_count(), Some(2));
     second.ack().await.expect("ack");
@@ -244,22 +261,26 @@ async fn a_classic_delivery_reports_no_count() {
         .await
         .expect("connect");
 
-    let mut subscriber = connected
-        .subscribe(RabbitQueue::new(&queue).durable(false).exclusive(true))
-        .await
-        .expect("subscribe");
+    let uncounted = || RabbitQueue::new(&queue).durable(true);
+    let mut subscriber = connected.subscribe(uncounted()).await.expect("subscribe");
     publish(&connected, &queue, b"uncounted").await;
 
     let mut stream = Box::pin(subscriber.stream());
     let first = next(&mut stream).await;
     assert_eq!(first.redelivery_count(), None);
-    first.nack(true).await.expect("requeue");
+    drop(first);
+    drop(stream);
+    drop(subscriber);
 
+    let mut subscriber = connected.subscribe(uncounted()).await.expect("resubscribe");
+    let mut stream = Box::pin(subscriber.stream());
     let second = next(&mut stream).await;
+    // The same failure on a classic queue: it keeps no counter, so there is nothing to report.
     assert_eq!(second.redelivery_count(), None);
     second.ack().await.expect("ack");
 
     drop(stream);
     drop(subscriber);
     connected.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[&queue]).await;
 }
