@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::runtime::IntoSource;
-use ruststream::{RedeliveryAddress, SubscriptionSource};
+use ruststream::{
+    AddressedCopies, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
+};
 
 use crate::broker::ConnectedLapinBroker;
 use crate::delay::Delay;
@@ -21,6 +23,15 @@ use crate::subscriber::LapinSubscriber;
 /// push the rest of a prefetch window across the connection (many round trips on any healthy
 /// link), short enough to bound how long the tail of a backlog sits unhandled.
 const DEFAULT_BATCH_WAIT: Duration = Duration::from_millis(50);
+
+/// The exchange a rejected or spent delivery is re-published to.
+pub(crate) const DEAD_LETTER_EXCHANGE: &str = "x-dead-letter-exchange";
+
+/// The routing key it carries there, instead of the one it arrived with.
+pub(crate) const DEAD_LETTER_ROUTING_KEY: &str = "x-dead-letter-routing-key";
+
+/// How many times a quorum queue delivers a message before it dead-letters it.
+pub(crate) const DELIVERY_LIMIT: &str = "x-delivery-limit";
 
 /// The queue implementation selected at declaration time.
 ///
@@ -73,6 +84,7 @@ pub struct RabbitQueue {
     prefetch: Option<NonZeroU16>,
     batch_wait: Duration,
     delay: Option<Delay>,
+    retry: RetryDeclaration,
 }
 
 impl RabbitQueue {
@@ -90,6 +102,7 @@ impl RabbitQueue {
             prefetch: None,
             batch_wait: DEFAULT_BATCH_WAIT,
             delay: None,
+            retry: RetryDeclaration::new(),
         }
     }
 
@@ -141,7 +154,7 @@ impl RabbitQueue {
     #[must_use]
     pub fn dead_letter_exchange(mut self, exchange: impl Into<String>) -> Self {
         self.arguments.insert(
-            ShortString::from("x-dead-letter-exchange"),
+            ShortString::from(DEAD_LETTER_EXCHANGE),
             AMQPValue::LongString(exchange.into().into()),
         );
         self
@@ -151,7 +164,7 @@ impl RabbitQueue {
     #[must_use]
     pub fn dead_letter_routing_key(mut self, routing_key: impl Into<String>) -> Self {
         self.arguments.insert(
-            ShortString::from("x-dead-letter-routing-key"),
+            ShortString::from(DEAD_LETTER_ROUTING_KEY),
             AMQPValue::LongString(routing_key.into().into()),
         );
         self
@@ -274,6 +287,12 @@ impl RabbitQueue {
     pub(crate) fn delay_config(&self) -> Option<&Delay> {
         self.delay.as_ref()
     }
+
+    /// What the mount site declared about this registration's retries, taken in by
+    /// [`SubscriptionSource::declare_retry`] and applied when the queue is declared.
+    pub(crate) const fn retry(&self) -> &RetryDeclaration {
+        &self.retry
+    }
 }
 
 /// The descriptor is its own source, so the manual path's `subscriber(source, body)` takes a
@@ -289,6 +308,15 @@ impl IntoSource for RabbitQueue {
 impl SubscriptionSource<ConnectedLapinBroker> for RabbitQueue {
     type Subscriber = LapinSubscriber;
 
+    /// The service publishes the copies of a delayed redelivery, and the queue name is where they
+    /// go: on the default exchange a routing key addresses the queue that carries it.
+    ///
+    /// A quorum queue can move a spent delivery on its own, but that is a property of the value
+    /// (the queue type, and a declaration complete enough to act on) rather than of the type, so
+    /// the copy path stays open and `out_retry(policy)` keeps naming the publisher those copies
+    /// leave through.
+    type Copies = AddressedCopies;
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -300,25 +328,45 @@ impl SubscriptionSource<ConnectedLapinBroker> for RabbitQueue {
         connected.subscribe(self).await
     }
 
-    /// The queue name: on the default exchange a routing key addresses the queue that carries it,
-    /// so that is where the runtime's deferred `retry_after` copy reaches this subscription again.
+    /// Takes the registration's cap and dead-letter destination into the descriptor, so a queue
+    /// this broker declares carries them as topology.
     ///
-    /// The answer holds for a retry publisher on the default exchange, which is what
-    /// [`LapinPublish`](crate::LapinPublish) is unless configured otherwise. A publisher aimed at
-    /// a topic or direct exchange reaches the queue only through a binding under this name, so
-    /// bind it there or leave the retry publisher on the default exchange.
+    /// They reach the server only on a quorum queue whose declaration names both, and only where
+    /// the broker opted into [`declare_topology`](crate::LapinBroker::declare_topology): the
+    /// delivery limit and the dead-letter route are queue arguments, so there is nowhere to put
+    /// them on a queue this service does not declare. On a classic queue the runtime applies the
+    /// declaration on the retry path instead, which is the same promise with the count kept in
+    /// the service.
+    fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
+        self.retry = declaration.clone();
+        self
+    }
+}
+
+/// The queue name: on the default exchange a routing key addresses the queue that carries it, so
+/// that is where the runtime's deferred `retry_after` copy reaches this subscription again.
+///
+/// The answer holds for a retry publisher on the default exchange, which is what
+/// [`LapinPublish`](crate::LapinPublish) is unless configured otherwise. A publisher aimed at a
+/// topic or direct exchange reaches the queue only through a binding under this name, so bind it
+/// there or leave the retry publisher on the default exchange.
+impl RedeliveryAddressed<ConnectedLapinBroker> for RabbitQueue {
     fn redelivery_address(
         &self,
         _connected: &ConnectedLapinBroker,
-    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, AmqpError>> {
+    ) -> impl Future<Output = Result<RedeliveryAddress, AmqpError>> + Send {
         // The name is on the descriptor, so nothing has to be asked of the broker.
-        ready(Ok(Some(RedeliveryAddress::new(self.name.clone()))))
+        ready(Ok(RedeliveryAddress::new(self.name.clone())))
     }
 }
 
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedLapinTestBroker> for RabbitQueue {
     type Subscriber = crate::testing::LapinTestSubscriber;
+
+    /// The copy path the live broker takes, so a registration that compiles against one compiles
+    /// against the other.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         &self.name
@@ -328,16 +376,26 @@ impl SubscriptionSource<crate::testing::ConnectedLapinTestBroker> for RabbitQueu
         self,
         connected: &crate::testing::ConnectedLapinTestBroker,
     ) -> Result<Self::Subscriber, AmqpError> {
-        connected.subscribe(self.name).await
+        connected.subscribe_to(&self).await
     }
 
-    /// The queue name, the same answer the live broker gives: the in-process transport routes by
-    /// exact queue name on the default-exchange model, so a retry publisher reaches the
-    /// subscription in a test exactly where it reaches it on a server.
+    /// Recorded as the live descriptor records it. The in-process transport declares no topology,
+    /// so the cap is the runtime's here, as it is on a classic queue.
+    fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
+        self.retry = declaration.clone();
+        self
+    }
+}
+
+/// The queue name, the same answer the live broker gives: the in-process transport routes by
+/// exact queue name on the default-exchange model, so a retry publisher reaches the subscription
+/// in a test exactly where it reaches it on a server.
+#[cfg(feature = "testing")]
+impl RedeliveryAddressed<crate::testing::ConnectedLapinTestBroker> for RabbitQueue {
     fn redelivery_address(
         &self,
         _connected: &crate::testing::ConnectedLapinTestBroker,
-    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, AmqpError>> {
-        ready(Ok(Some(RedeliveryAddress::new(self.name.clone()))))
+    ) -> impl Future<Output = Result<RedeliveryAddress, AmqpError>> + Send {
+        ready(Ok(RedeliveryAddress::new(self.name.clone())))
     }
 }

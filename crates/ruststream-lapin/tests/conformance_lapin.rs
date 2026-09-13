@@ -3,8 +3,9 @@
 //! [`TestableBroker`](ruststream::testing::TestableBroker) impl; `lifecycle` proves the ladder
 //! (synchronous construction, consuming `connect`, subscribe through the crate's own descriptor,
 //! publish, ack, consuming `shutdown`, and a pre-shutdown publisher erroring afterwards) through
-//! the real `LapinBroker`; the capability suites prove the optional trait implementations, both
-//! transaction kinds and client-side batching included.
+//! the real `LapinBroker`; `redelivery_address` holds both subscription forms to the address they
+//! report, since a queue addresses its own redeliveries; the capability suites prove the optional
+//! trait implementations, both transaction kinds and client-side batching included.
 //!
 //! The capability suites run twice, once against each transport. The in-process pass is what
 //! keeps the test broker honest: it claims a capability only where the real publisher has one,
@@ -58,8 +59,7 @@ async fn test_broker_passes_lifecycle() {
 }
 
 // The same ladder over the bare-string form, which resolves through `Subscribe` rather than
-// through the crate's descriptor: `#[subscriber("orders")]` has a redelivery address of its own to
-// answer, and it is answered by a different method.
+// through the crate's descriptor.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_broker_passes_lifecycle_by_name() {
@@ -77,6 +77,33 @@ async fn passes_lifecycle_by_name() {
     let Some(url) = amqp_url() else { return };
     harness::lifecycle(
         || LapinBroker::new(url.clone()).declare_topology(true),
+        |name| Name::new(name.to_owned()),
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+// A publish to the address the descriptor reports must reach the subscription that reported it:
+// that address is where the runtime's deferred retry copy goes, so an answer that routes nowhere
+// would lose every delayed redelivery.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_reports_a_redelivery_address_that_arrives() {
+    harness::redelivery_address(
+        LapinTestBroker::new,
+        |name| RabbitQueue::new(name),
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+// The bare-name form answers through the broker rather than through the descriptor, so it is a
+// second answer to hold to the same promise.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_broker_reports_a_redelivery_address_that_arrives_by_name() {
+    harness::redelivery_address(
+        LapinTestBroker::new,
         |name| Name::new(name.to_owned()),
         |connected| connected.publisher(LapinPublish::default()),
     )
@@ -153,6 +180,32 @@ async fn passes_lifecycle() {
     harness::lifecycle(
         || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+// The address on a server, where the routing is the default exchange's rather than the test
+// transport's exact-name table.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reports_a_redelivery_address_that_arrives() {
+    let Some(url) = amqp_url() else { return };
+    harness::redelivery_address(
+        || LapinBroker::new(url.clone()).declare_topology(true),
+        conformance_queue,
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reports_a_redelivery_address_that_arrives_by_name() {
+    let Some(url) = amqp_url() else { return };
+    harness::redelivery_address(
+        || LapinBroker::new(url.clone()).declare_topology(true),
+        |name| Name::new(name.to_owned()),
         |connected| connected.publisher(LapinPublish::default()),
     )
     .await;

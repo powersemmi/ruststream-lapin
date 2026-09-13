@@ -7,16 +7,17 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
-    Broker, ConnectedBroker, DefaultPublish, DescribeServer, OutgoingMessage, RawMessage,
-    RedeliveryAddress, ServerSpec, Subscribe,
+    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, OutgoingMessage,
+    RawMessage, ServerSpec, Subscribe,
 };
 
 use super::publisher::LapinTestPublishPolicy;
 use super::requester::LapinTestRequester;
 use super::router::KeyRouter;
-use super::subscriber::LapinTestSubscriber;
+use super::subscriber::{LapinTestSubscriber, QueueBehaviour};
 use crate::error::AmqpError;
 use crate::publish_policy::LapinPublish;
+use crate::queue::{QueueType, RabbitQueue};
 use crate::requester::LapinRequest;
 
 /// Shared state owned by every handle on a single test broker instance.
@@ -159,7 +160,29 @@ impl ConnectedLapinTestBroker {
         &self,
         queue: impl Into<String>,
     ) -> impl Future<Output = Result<LapinTestSubscriber, AmqpError>> {
-        let queue = queue.into();
+        self.open(queue.into(), QueueBehaviour::default())
+    }
+
+    /// Subscribes for `def`, carrying what the transport can honour of it beyond the queue name:
+    /// whether the queue counts its deliveries, and whether a delayed redelivery is the broker's.
+    ///
+    /// The rest of the descriptor is topology, and the in-process transport has none.
+    pub(crate) fn subscribe_to(
+        &self,
+        def: &RabbitQueue,
+    ) -> impl Future<Output = Result<LapinTestSubscriber, AmqpError>> {
+        let behaviour = QueueBehaviour {
+            counts_deliveries: def.queue_type_or(None) == Some(QueueType::Quorum),
+            delays: def.delay_config().is_some(),
+        };
+        self.open(def.name().to_owned(), behaviour)
+    }
+
+    fn open(
+        &self,
+        queue: String,
+        behaviour: QueueBehaviour,
+    ) -> impl Future<Output = Result<LapinTestSubscriber, AmqpError>> {
         if queue.is_empty() {
             return ready(Err(AmqpError::InvalidOptions(
                 "queue name must not be empty; subscribe with the queue the handler consumes"
@@ -169,7 +192,7 @@ impl ConnectedLapinTestBroker {
         if let Err(err) = self.state.ensure_live(&queue) {
             return ready(Err(err));
         }
-        ready(Ok(LapinTestSubscriber::open(&self.state, queue)))
+        ready(Ok(LapinTestSubscriber::open(&self.state, queue, behaviour)))
     }
 
     /// A live publisher into this broker's router, mirroring
@@ -211,16 +234,13 @@ impl ConnectedBroker for ConnectedLapinTestBroker {
 impl Subscribe for ConnectedLapinTestBroker {
     type Subscriber = LapinTestSubscriber;
 
+    /// The copy path the real broker takes: a queue name is where a publish reaches the
+    /// subscription opened under it. Declaring anything else here would let an app that binds
+    /// `out_retry` over `#[subscriber("orders")]` compile in a test and not on a server.
+    type Copies = AddressedCopies;
+
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         ConnectedLapinTestBroker::subscribe(self, name).await
-    }
-
-    /// The queue name, the answer the real broker gives.
-    ///
-    /// Staying silent here would let an app that binds `out_retry` over `#[subscriber("orders")]`
-    /// refuse to start in a test and start on a server, or the reverse once the answer changed.
-    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
-        Some(RedeliveryAddress::new(name.to_owned()))
     }
 }
 

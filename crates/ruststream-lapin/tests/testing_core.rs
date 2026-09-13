@@ -16,15 +16,15 @@ use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use ruststream::runtime::{
-    AppInfo, Ctx, ForSlot, HandlerOutcome, Outgoing, PublishTransform, RETRY_COUNT_HEADER, Reads,
-    Reply, Retry, RustStream, SlotContext, State, SubscriberSettings,
+    AppInfo, Ctx, ForReply, HandlerOutcome, Outgoing, PublishContext, PublishTransform,
+    RETRY_COUNT_HEADER, Reads, Reply, RustStream, State, SubscriberSettings,
 };
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
     BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap, IncomingMessage,
-    OutSlot, Outgoing, OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher,
-    nonzero, testing::expect_published,
+    Outgoing, OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
+    testing::expect_published,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::testing::{ConnectedLapinTestBroker, LapinTestBroker, LapinTestMessage};
@@ -623,17 +623,22 @@ async fn test_app_requeue_stays_balanced() {
 /// Long enough that nothing comes back until the test advances the clock itself.
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 
-/// Stamps every message leaving the slot it is mounted on with that slot's name. The deferred
-/// retry is an ordinary `Out` slot, so its transforms read a `SlotContext` like any other's.
+/// Stamps every deferred copy with the name of the delivery it answers. The retry position reads
+/// the delivery being retried, so its transforms take a `PublishContext` like a reply's.
 #[derive(Debug, Clone, Copy)]
 struct StampDeferred;
 
-impl<Options> PublishTransform<ForSlot, Options> for StampDeferred {
+impl<C, Options> PublishTransform<ForReply<C>, Options> for StampDeferred {
     type Destination = Reads;
 
-    fn apply(&self, out: &mut Outgoing<'_>, _options: &mut Option<Options>, cx: &SlotContext<'_>) {
+    fn apply(
+        &self,
+        out: &mut Outgoing<'_>,
+        _options: &mut Option<Options>,
+        cx: &PublishContext<'_, C>,
+    ) {
         out.headers_mut()
-            .insert("x-left-through", cx.slot().to_owned());
+            .insert("x-retried-from", cx.name().to_owned());
     }
 }
 
@@ -685,7 +690,7 @@ async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
     tb.broker::<LapinTestBroker>()
         .published::<Order>("orders.deferred")
         .assert_called(2)
-        .with_header("x-left-through", Retry::NAME);
+        .with_header("x-retried-from", "orders.deferred");
 
     tb.shutdown().await.expect("shutdown");
 }

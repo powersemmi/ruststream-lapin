@@ -12,8 +12,7 @@ use lapin::options::{BasicConsumeOptions, BasicQosOptions};
 use lapin::types::{FieldTable, ShortString};
 use lapin::{Channel, Connection, ConnectionProperties};
 use ruststream::{
-    Broker, ConnectedBroker, DefaultPublish, DescribeServer, RedeliveryAddress, ServerSpec,
-    Subscribe,
+    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
 };
 
 use crate::convert;
@@ -358,20 +357,20 @@ impl ConnectedBroker for ConnectedLapinBroker {
 impl Subscribe for ConnectedLapinBroker {
     type Subscriber = LapinSubscriber;
 
+    /// A queue name is an address as well as a subscription: on the default exchange a routing key
+    /// addresses the queue that carries it, so the service publishes a delayed redelivery back
+    /// under the name it subscribed to.
+    ///
+    /// The copy reaches the queue as long as the retry publisher sends on the default exchange,
+    /// which is what [`LapinPublish`] does unless [`exchange`](LapinPublish::exchange) says
+    /// otherwise; pointing that publisher at a topic exchange with no binding under the queue name
+    /// would send the copy nowhere, so bind it there or leave the retry publisher on the default
+    /// exchange.
+    type Copies = AddressedCopies;
+
     /// Subscribes to the queue `name` with descriptor defaults (durable, shared).
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         ConnectedLapinBroker::subscribe(self, RabbitQueue::new(name)).await
-    }
-
-    /// The queue name, which is what a publisher on the default exchange routes by.
-    ///
-    /// This is where the runtime's deferred `retry_after` fallback publishes its copy. It reaches
-    /// the queue as long as the retry publisher sends on the default exchange, which is what
-    /// [`LapinPublish`] does unless [`exchange`](LapinPublish::exchange) says otherwise; pointing
-    /// that publisher at a topic exchange with no binding under the queue name would send the
-    /// copy nowhere, so bind it or leave the retry publisher on the default exchange.
-    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
-        Some(RedeliveryAddress::new(name.to_owned()))
     }
 }
 

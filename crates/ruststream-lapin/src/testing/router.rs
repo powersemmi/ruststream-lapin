@@ -20,6 +20,9 @@ pub(crate) struct TestDelivery {
     /// Set on the copy a `nack(requeue = true)` puts back, mirroring the flag the broker sets on
     /// a redelivered AMQP delivery.
     pub(crate) redelivered: bool,
+    /// How many times this message has been returned to the queue, mirroring the counter a
+    /// quorum queue keeps and reports as `x-delivery-count`. A fresh publish starts at zero.
+    pub(crate) delivery_count: u64,
 }
 
 pub(crate) type DeliverySender = mpsc::UnboundedSender<TestDelivery>;
@@ -130,6 +133,7 @@ impl KeyRouter {
                 payload: payload.clone(),
                 headers: headers.clone(),
                 redelivered: false,
+                delivery_count: 0,
             },
             coordinator,
         );

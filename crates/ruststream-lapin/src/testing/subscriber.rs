@@ -3,6 +3,7 @@
 use std::future::{Future, ready};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::Stream;
 use ruststream::testing::Coordinator;
@@ -15,6 +16,22 @@ use super::broker::TestBrokerState;
 use super::router::{DeliveryReceiver, SubscriptionId, TestDelivery};
 use crate::error::AmqpError;
 
+/// What the in-process transport honours of a descriptor beyond its queue name.
+///
+/// Both answers are the descriptor's word rather than the transport's: the in-process router has
+/// no queue types and no waiting queues, so a subscription reports what the same descriptor would
+/// get from a server. A subscription opened by bare name gets neither, which is what the server
+/// default (a classic queue, no delay infrastructure) gives.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct QueueBehaviour {
+    /// A quorum queue counts how often it has returned a message and reports the count on every
+    /// redelivery; a classic queue counts nothing.
+    pub(crate) counts_deliveries: bool,
+    /// The descriptor named a waiting queue, so a delayed redelivery is the broker's rather than
+    /// the runtime's deferred copy.
+    pub(crate) delays: bool,
+}
+
 /// In-process subscriber on one queue name.
 ///
 /// Yielded messages settle like the real transport: ack finalizes, `nack(true)` re-enqueues to
@@ -26,7 +43,11 @@ pub struct LapinTestSubscriber {
 }
 
 impl LapinTestSubscriber {
-    pub(crate) fn open(state: &Arc<TestBrokerState>, queue: String) -> Self {
+    pub(crate) fn open(
+        state: &Arc<TestBrokerState>,
+        queue: String,
+        behaviour: QueueBehaviour,
+    ) -> Self {
         let (id, sender, receiver) = state.router.subscribe(queue.clone());
         // The router keeps its own clone; holding a second one here would keep the delivery
         // channel open past a shutdown that cleared the subscription table.
@@ -39,6 +60,7 @@ impl LapinTestSubscriber {
             receiver,
             coordinator,
             next_tag: 1,
+            behaviour,
         };
         Self {
             // The framework's own short deadline, not the descriptor's `batch_wait`: that one is
@@ -105,6 +127,7 @@ struct TestDeliveries {
     /// The next channel-local delivery tag. AMQP numbers deliveries per channel from 1, and a
     /// requeued message is handed out under a new tag.
     next_tag: u64,
+    behaviour: QueueBehaviour,
 }
 
 impl Drop for TestDeliveries {
@@ -124,8 +147,10 @@ impl Subscriber for TestDeliveries {
             coordinator,
             queue,
             next_tag,
+            behaviour,
             ..
         } = self;
+        let behaviour = *behaviour;
         futures::stream::poll_fn(move |cx| {
             receiver.poll_recv(cx).map(|delivery| {
                 delivery.map(|delivery| {
@@ -133,11 +158,13 @@ impl Subscriber for TestDeliveries {
                     *next_tag += 1;
                     Ok(LapinTestMessage {
                         redelivered: delivery.redelivered,
+                        delivery_count: delivery.delivery_count,
                         delivery: Some(delivery),
                         queue: queue.clone(),
                         delivery_tag,
                         state: Arc::clone(state),
                         coordinator: coordinator.clone(),
+                        behaviour,
                     })
                 })
             })
@@ -156,8 +183,10 @@ pub struct LapinTestMessage {
     queue: String,
     delivery_tag: u64,
     redelivered: bool,
+    delivery_count: u64,
     state: Arc<TestBrokerState>,
     coordinator: Option<Coordinator>,
+    behaviour: QueueBehaviour,
 }
 
 impl LapinTestMessage {
@@ -175,11 +204,13 @@ impl LapinTestMessage {
     ) -> Self {
         Self {
             redelivered: delivery.redelivered,
+            delivery_count: delivery.delivery_count,
             delivery: Some(delivery),
             queue,
             delivery_tag,
             state: Arc::clone(state),
             coordinator: state.coordinator(),
+            behaviour: QueueBehaviour::default(),
         }
     }
 
@@ -260,6 +291,59 @@ impl IncomingMessage for LapinTestMessage {
         self.headers().get(crate::PARTITION_KEY_HEADER)
     }
 
+    /// How often this message has been delivered, counting this delivery, on a subscription whose
+    /// descriptor named a quorum queue; `None` otherwise.
+    ///
+    /// The real transport reads the count off the `x-delivery-count` header a quorum queue
+    /// stamps, which appears once the message has been returned at least once, so a first
+    /// delivery answers `None` here as it does there.
+    fn redelivery_count(&self) -> Option<u64> {
+        (self.behaviour.counts_deliveries && self.delivery_count > 0)
+            .then_some(self.delivery_count + 1)
+    }
+
+    /// Whether this delivery can honour a native delayed redelivery: only on a subscription whose
+    /// descriptor named a waiting queue, exactly as on a server.
+    fn supports_nack_after(&self) -> bool {
+        self.behaviour.delays
+    }
+
+    /// Redelivers the message after `delay` through the transport's stand-in for the waiting
+    /// queue: the original is settled now and a copy of it comes back when the delay is over.
+    ///
+    /// The copy is a fresh publish, as it is on a server: it is not marked redelivered and the
+    /// delivery count starts again, because the waiting queue's dead-letter route re-publishes
+    /// the message rather than returning it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AckError::Unsupported`] when the descriptor named no waiting queue, which is
+    /// what tells the runtime to publish the deferred copy itself.
+    fn nack_after(mut self, delay: Duration) -> impl Future<Output = Result<(), AckError>> {
+        if !self.behaviour.delays {
+            return ready(Err(AckError::Unsupported));
+        }
+        let mut delivery = self.take();
+        delivery.redelivered = false;
+        delivery.delivery_count = 0;
+        let state = Arc::clone(&self.state);
+        let queue = self.queue.clone();
+        let coordinator = self.coordinator.clone();
+        let redeliver = move || state.router.deliver(&queue, delivery, coordinator.as_ref());
+        match self.coordinator.as_ref() {
+            // Under the harness the timer belongs to the coordinator, so `TestApp::advance` fires
+            // it deterministically instead of the test waiting on a wall clock.
+            Some(coordinator) => coordinator.schedule_redelivery(delay, redeliver),
+            None => {
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    redeliver();
+                });
+            }
+        }
+        ready(Ok(()))
+    }
+
     /// Finalizes the delivery.
     ///
     /// # Errors
@@ -283,6 +367,9 @@ impl IncomingMessage for LapinTestMessage {
         // The copy that goes back carries the redelivered flag, as a broker would set it.
         delivery.redelivered = requeue;
         if requeue {
+            // A return is what a quorum queue counts, so the copy carries one more than it
+            // arrived with.
+            delivery.delivery_count += 1;
             self.state
                 .router
                 .deliver(&self.queue, delivery, self.coordinator.as_ref());
