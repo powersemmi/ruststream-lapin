@@ -16,14 +16,15 @@ use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use ruststream::runtime::{
-    AppInfo, Ctx, HandlerOutcome, Reply, RustStream, State, SubscriberSettings,
+    AppInfo, Ctx, ForSlot, HandlerOutcome, Outgoing, PublishTransform, RETRY_COUNT_HEADER, Reads,
+    Reply, Retry, RustStream, SlotContext, State, SubscriberSettings,
 };
 use ruststream::subscriber;
 use ruststream::testing::TestApp;
 use ruststream::{
     BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap, IncomingMessage,
-    Outgoing, OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
-    testing::expect_published,
+    OutSlot, Outgoing, OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher,
+    nonzero, testing::expect_published,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::testing::{ConnectedLapinTestBroker, LapinTestBroker, LapinTestMessage};
@@ -615,6 +616,76 @@ async fn test_app_requeue_stays_balanced() {
         .subscriber("retry")
         .assert_called(2)
         .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+/// Long enough that nothing comes back until the test advances the clock itself.
+const RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// Stamps every message leaving the slot it is mounted on with that slot's name. The deferred
+/// retry is an ordinary `Out` slot, so its transforms read a `SlotContext` like any other's.
+#[derive(Debug, Clone, Copy)]
+struct StampDeferred;
+
+impl<Options> PublishTransform<ForSlot, Options> for StampDeferred {
+    type Destination = Reads;
+
+    fn apply(&self, out: &mut Outgoing<'_>, _options: &mut Option<Options>, cx: &SlotContext<'_>) {
+        out.headers_mut()
+            .insert("x-left-through", cx.slot().to_owned());
+    }
+}
+
+/// Asks for a delayed redelivery on the first delivery and acks the copy that comes back.
+#[subscriber(RabbitQueue::new("orders.deferred"))]
+async fn defer_then_ack(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order;
+    let attempt = ctx
+        .headers()
+        .get_str(RETRY_COUNT_HEADER)
+        .and_then(|count| count.parse::<u64>().ok())
+        .unwrap_or(0);
+    if attempt == 0 {
+        HandlerOutcome::retry_after(RETRY_DELAY)
+    } else {
+        HandlerOutcome::ack()
+    }
+}
+
+// A queue without `.delay(..)` has no delay of its own, so a `retry_after` takes the runtime's
+// deferred copy: it leaves through the publisher the mount site bound with `out_retry`, and the
+// transforms on that position run on it. What the transform stamps is on the message that reaches
+// the handler again.
+#[tokio::test(start_paused = true)]
+async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
+    let app =
+        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(defer_then_ack)
+                .out_retry(LapinPublish::default())
+                .transform(StampDeferred);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<LapinTestBroker>()
+        .publish("orders.deferred", &Order { id: 11 })
+        .await
+        .expect("publish must drive the deferred settlement to quiescence");
+    tb.broker::<LapinTestBroker>()
+        .subscriber("orders.deferred")
+        .assert_called_once()
+        .settled(HandlerOutcome::retry_after(RETRY_DELAY));
+
+    tb.advance(RETRY_DELAY).await.expect("the deferred copy");
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("orders.deferred")
+        .assert_called(2)
+        .settled(HandlerOutcome::ack());
+    tb.broker::<LapinTestBroker>()
+        .published::<Order>("orders.deferred")
+        .assert_called(2)
+        .with_header("x-left-through", Retry::NAME);
 
     tb.shutdown().await.expect("shutdown");
 }
