@@ -16,6 +16,8 @@ use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::{
     HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher,
     Transaction, TransactionalPublisher,
@@ -26,7 +28,9 @@ use super::broker::{ConnectedLapinTestBroker, TestBrokerState};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::publish_policy::sealed::Sealed;
-use crate::publish_policy::{ConfirmsPublish, LapinPublish, PublishOptions, ServerTxPublish};
+use crate::publish_policy::{
+    ConfirmsPublish, LapinPublish, PublishOptions, ServerTxPublish, publish_policy_bindings,
+};
 use crate::publish_step::{EXPIRATION_HEADER, LapinPublishOptions, PRIORITY_HEADER};
 use crate::publisher::Buffered;
 
@@ -311,6 +315,8 @@ impl PublishPolicy<ConnectedLapinTestBroker> for LapinPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(LapinTestPublishPolicy::bind(self, connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinTestPublishPolicy for LapinPublish {
@@ -445,6 +451,8 @@ impl PublishPolicy<ConnectedLapinTestBroker> for ConfirmsPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(LapinTestPublishPolicy::bind(self, connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinTestPublishPolicy for ConfirmsPublish {
@@ -671,6 +679,8 @@ impl PublishPolicy<ConnectedLapinTestBroker> for ServerTxPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(LapinTestPublishPolicy::bind(self, connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinTestPublishPolicy for ServerTxPublish {

@@ -11,6 +11,11 @@
 use std::time::Duration;
 
 use ruststream::prelude::*;
+// The payload schemas the generated document reports: the manual path asks its message types for
+// them at the mount, where the attribute path captures them on its own. The derive is the core's
+// own re-export, so this test needs no schemars of its own to keep in step with it.
+#[cfg(feature = "asyncapi")]
+use ruststream::schemars::JsonSchema;
 use ruststream::testing::{TestApp, expect_published};
 use ruststream::{Broker, ConnectedBroker, Outgoing};
 use ruststream_lapin::context::AmqpContext;
@@ -19,11 +24,15 @@ use ruststream_lapin::testing::LapinTestBroker;
 use ruststream_lapin::{LapinPublish, RabbitQueue};
 use serde::{Deserialize, Serialize};
 
+#[cfg_attr(feature = "asyncapi", derive(JsonSchema))]
+#[cfg_attr(feature = "asyncapi", schemars(crate = "ruststream::schemars"))]
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 struct Order {
     id: u64,
 }
 
+#[cfg_attr(feature = "asyncapi", derive(JsonSchema))]
+#[cfg_attr(feature = "asyncapi", schemars(crate = "ruststream::schemars"))]
 #[derive(Debug, Outgoing, Serialize)]
 #[outgoing(name = "orders.audit")]
 struct Audited {

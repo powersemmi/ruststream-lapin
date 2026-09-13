@@ -24,6 +24,14 @@ use crate::requester::{LapinRequest, LapinRequester};
 use crate::subscriber::LapinSubscriber;
 use crate::topology;
 
+/// The protocol name the `AsyncAPI` document reports for this crate.
+pub(crate) const PROTOCOL: &str = "amqp";
+
+/// The wire version behind that name. `RabbitMQ` speaks AMQP 0.9.1, and AMQP 1.0 is a different
+/// protocol with a binding key of its own, so the version is what tells a reader which one a
+/// client has to speak here.
+pub(crate) const PROTOCOL_VERSION: &str = "0.9.1";
+
 /// The live connection plus the shared fire-and-forget publish channel.
 ///
 /// Held behind an [`Arc`] by the connected broker and by every publisher, requester, and
@@ -204,7 +212,7 @@ impl Broker for LapinBroker {
 /// `ServerSpec::from_url` drops them, along with the scheme and the vhost path.
 impl DescribeServer for LapinBroker {
     fn describe_server(&self) -> ServerSpec {
-        ServerSpec::from_url(&self.uri, "amqp")
+        ServerSpec::from_url(&self.uri, PROTOCOL).protocol_version(PROTOCOL_VERSION)
     }
 }
 
@@ -231,7 +239,7 @@ impl ConnectedLapinBroker {
     /// The `AsyncAPI` server description of the connection this broker dialled.
     #[must_use]
     pub fn server_spec(&self) -> ServerSpec {
-        ServerSpec::from_url(&self.uri, "amqp")
+        ServerSpec::from_url(&self.uri, PROTOCOL).protocol_version(PROTOCOL_VERSION)
     }
 
     /// Opens a subscription for `def`, declaring its topology first when the broker opted in.

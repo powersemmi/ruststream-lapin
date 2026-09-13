@@ -10,6 +10,10 @@ check:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo check --workspace --all-targets --all-features
     cargo check --workspace --no-default-features
+    # The build a service that only generates its document makes: `asyncapi` without `testing`.
+    # Neither of the two legs above has that combination, and a binding hook reaching an accessor
+    # the other feature gates compiles in both of them.
+    cargo check --workspace --no-default-features --features asyncapi
 
 test:
     cargo test --workspace --all-features

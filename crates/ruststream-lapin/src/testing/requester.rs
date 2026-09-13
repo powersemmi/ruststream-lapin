@@ -4,6 +4,8 @@ use std::future::{Future, ready};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
 use tokio::time::{Instant, timeout_at};
 use tracing::debug;
@@ -13,6 +15,7 @@ use super::publisher::{LapinTestPublishPolicy, Routed};
 use super::router::{DeliveryReceiver, SubscriptionId};
 use super::subscriber::LapinTestMessage;
 use crate::error::AmqpError;
+use crate::publish_policy::publish_policy_bindings;
 use crate::publish_step::LapinPublishOptions;
 use crate::requester::{LapinRequest, REPLY_TO};
 
@@ -228,6 +231,8 @@ impl PublishPolicy<ConnectedLapinTestBroker> for LapinRequest {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(LapinTestPublishPolicy::bind(self, connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinTestPublishPolicy for LapinRequest {

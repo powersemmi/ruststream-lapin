@@ -125,9 +125,12 @@ impl Broker for LapinTestBroker {
     }
 }
 
+/// The same protocol and version the real broker reports, so a document generated in a test is
+/// the document the service publishes.
 impl DescribeServer for LapinTestBroker {
     fn describe_server(&self) -> ServerSpec {
-        ServerSpec::in_process("amqp")
+        ServerSpec::in_process(crate::broker::PROTOCOL)
+            .protocol_version(crate::broker::PROTOCOL_VERSION)
     }
 }
 

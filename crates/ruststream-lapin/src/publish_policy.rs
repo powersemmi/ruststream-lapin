@@ -10,6 +10,8 @@
 use std::future::{Future, ready};
 use std::time::Duration;
 
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::{PairError, PublishPolicy};
 
 use crate::broker::ConnectedLapinBroker;
@@ -69,8 +71,8 @@ macro_rules! publish_policy_settings {
             /// What this policy hands the publisher it pairs into.
             ///
             /// The live publishers take the value by move at `bind`; this borrow is for the
-            /// in-process stand-ins, which clone it.
-            #[cfg(feature = "testing")]
+            /// in-process stand-ins, which clone it, and for the document, which reads it.
+            #[cfg(any(feature = "testing", feature = "asyncapi"))]
             pub(crate) const fn publish_options(&self) -> &PublishOptions {
                 &self.0
             }
@@ -114,6 +116,33 @@ macro_rules! publish_policy_settings {
         }
     };
 }
+
+/// Writes the three document methods every publish policy of this crate answers the same way.
+///
+/// A policy describes the channel it publishes to, the properties its messages carry, and where a
+/// client reads the address of an answer: this crate routes a reply by the `reply-to` header
+/// whichever publisher carries it. The bodies are the same for every policy and for its
+/// in-process stand-in, and the core copies nothing between them, so they are written once here.
+macro_rules! publish_policy_bindings {
+    () => {
+        #[cfg(feature = "asyncapi")]
+        fn channel_bindings(&self) -> Bindings {
+            crate::bindings::publish_channel(self.publish_options())
+        }
+
+        #[cfg(feature = "asyncapi")]
+        fn operation_bindings(&self) -> Bindings {
+            crate::bindings::publish_operation(self.publish_options())
+        }
+
+        #[cfg(feature = "asyncapi")]
+        fn reply_address_location(&self) -> Option<&'static str> {
+            Some(crate::bindings::REPLY_ADDRESS_LOCATION)
+        }
+    };
+}
+
+pub(crate) use publish_policy_bindings;
 
 /// A publish policy that pairs with a connected `RabbitMQ` broker without opening a channel.
 ///
@@ -187,6 +216,8 @@ impl PublishPolicy<ConnectedLapinBroker> for LapinPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(self.bind(connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinPublishPolicy for LapinPublish {
@@ -223,6 +254,8 @@ impl PublishPolicy<ConnectedLapinBroker> for ConfirmsPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(self.bind(connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinPublishPolicy for ConfirmsPublish {
@@ -259,6 +292,8 @@ impl PublishPolicy<ConnectedLapinBroker> for ServerTxPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(self.bind(connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinPublishPolicy for ServerTxPublish {

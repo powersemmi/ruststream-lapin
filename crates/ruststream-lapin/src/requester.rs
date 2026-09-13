@@ -10,6 +10,8 @@ use futures::StreamExt;
 use lapin::Channel;
 use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
 use lapin::types::{FieldTable, ShortString};
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
 use tokio::sync::{OnceCell, oneshot};
 
@@ -17,7 +19,7 @@ use crate::broker::{AmqpConnection, ConnectedLapinBroker};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::message::LapinMessage;
-use crate::publish_policy::{LapinPublishPolicy, PublishOptions};
+use crate::publish_policy::{LapinPublishPolicy, PublishOptions, publish_policy_bindings};
 use crate::publish_step::LapinPublishOptions;
 
 /// The pseudo-queue `RabbitMQ` rewrites per-request for direct reply-to.
@@ -60,8 +62,8 @@ impl LapinRequest {
     /// What this policy hands the requester it pairs into.
     ///
     /// The live requester takes the value by move at `bind`; this borrow is for the in-process
-    /// stand-in, which clones it.
-    #[cfg(feature = "testing")]
+    /// stand-in, which clones it, and for the document, which reads it.
+    #[cfg(any(feature = "testing", feature = "asyncapi"))]
     pub(crate) const fn publish_options(&self) -> &PublishOptions {
         &self.0
     }
@@ -113,6 +115,8 @@ impl PublishPolicy<ConnectedLapinBroker> for LapinRequest {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(self.bind(connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinPublishPolicy for LapinRequest {

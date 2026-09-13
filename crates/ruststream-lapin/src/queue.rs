@@ -5,6 +5,8 @@ use std::num::NonZeroU16;
 use std::time::Duration;
 
 use lapin::types::{AMQPValue, FieldTable, ShortString};
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::runtime::IntoSource;
 use ruststream::{
     AddressedCopies, RedeliveryAddress, RedeliveryAddressed, RetryDeclaration, SubscriptionSource,
@@ -341,6 +343,18 @@ impl SubscriptionSource<ConnectedLapinBroker> for RabbitQueue {
         self.retry = declaration.clone();
         self
     }
+
+    /// The queue this subscription consumes, as the `amqp` binding names its settings.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        crate::bindings::queue_channel(self)
+    }
+
+    /// The consumer's own half: this crate acknowledges by hand on every subscription.
+    #[cfg(feature = "asyncapi")]
+    fn operation_bindings(&self) -> Bindings {
+        crate::bindings::consumer_operation()
+    }
 }
 
 /// The queue name: on the default exchange a routing key addresses the queue that carries it, so
@@ -384,6 +398,18 @@ impl SubscriptionSource<crate::testing::ConnectedLapinTestBroker> for RabbitQueu
     fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
         self.retry = declaration.clone();
         self
+    }
+
+    /// The queue this subscription consumes, as the `amqp` binding names its settings.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        crate::bindings::queue_channel(self)
+    }
+
+    /// The consumer's own half: this crate acknowledges by hand on every subscription.
+    #[cfg(feature = "asyncapi")]
+    fn operation_bindings(&self) -> Bindings {
+        crate::bindings::consumer_operation()
     }
 }
 
