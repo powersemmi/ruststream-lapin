@@ -19,7 +19,7 @@ use crate::convert;
 use crate::delay::DelayContext;
 use crate::error::AmqpError;
 use crate::publish_policy::{LapinPublish, LapinPublishPolicy};
-use crate::queue::{QueueType, RabbitQueue};
+use crate::queue::{QueueDescriptor, RabbitQueue, declared_arguments};
 use crate::requester::{LapinRequest, LapinRequester};
 use crate::subscriber::LapinSubscriber;
 use crate::topology;
@@ -101,11 +101,11 @@ impl std::fmt::Debug for AmqpConnection {
 ///
 /// ```no_run
 /// use ruststream::nonzero;
-/// use ruststream_lapin::{LapinBroker, QueueType};
+/// use ruststream_lapin::LapinBroker;
 ///
 /// let broker = LapinBroker::new("amqp://localhost:5672")
 ///     .prefetch(nonzero!(64))
-///     .default_queue_type(QueueType::Quorum);
+///     .declare_topology(true);
 /// # let _ = broker;
 /// ```
 #[derive(Debug, Clone)]
@@ -115,7 +115,6 @@ pub struct LapinBroker {
     connection_name: Option<String>,
     prefetch: Option<NonZeroU16>,
     declare: bool,
-    default_queue_type: Option<QueueType>,
 }
 
 impl LapinBroker {
@@ -129,7 +128,6 @@ impl LapinBroker {
             connection_name: None,
             prefetch: None,
             declare: false,
-            default_queue_type: None,
         }
     }
 
@@ -161,16 +159,6 @@ impl LapinBroker {
         self.declare = declare;
         self
     }
-
-    /// The queue type declared for descriptors that do not set one.
-    ///
-    /// Only consulted when [`declare_topology`](Self::declare_topology) is enabled. Without a
-    /// broker default or a per-queue type, no `x-queue-type` argument is sent and the server
-    /// default applies.
-    pub fn default_queue_type(mut self, queue_type: QueueType) -> Self {
-        self.default_queue_type = Some(queue_type);
-        self
-    }
 }
 
 impl Broker for LapinBroker {
@@ -200,7 +188,6 @@ impl Broker for LapinBroker {
             uri: self.uri,
             prefetch: self.prefetch,
             declare: self.declare,
-            default_queue_type: self.default_queue_type,
         })
     }
 }
@@ -228,7 +215,6 @@ pub struct ConnectedLapinBroker {
     uri: String,
     prefetch: Option<NonZeroU16>,
     declare: bool,
-    default_queue_type: Option<QueueType>,
 }
 
 impl ConnectedLapinBroker {
@@ -244,36 +230,47 @@ impl ConnectedLapinBroker {
 
     /// Opens a subscription for `def`, declaring its topology first when the broker opted in.
     ///
+    /// Takes either queue descriptor: [`RabbitQueue`] or
+    /// [`RabbitQuorumQueue`](crate::RabbitQuorumQueue).
+    ///
     /// # Errors
     ///
     /// Returns [`AmqpError::Closed`] after shutdown, [`AmqpError::Declare`] when opted-in
-    /// declaration fails, [`AmqpError::InvalidOptions`] for contradictory descriptor options,
-    /// and [`AmqpError::Subscribe`] when the channel or consumer cannot be opened (for example
-    /// the queue does not exist and declaration was not opted into).
-    pub async fn subscribe(&self, def: RabbitQueue) -> Result<LapinSubscriber, AmqpError> {
+    /// declaration fails, [`AmqpError::InvalidOptions`] for contradictory descriptor options and
+    /// for a retry declaration this queue cannot carry, and [`AmqpError::Subscribe`] when the
+    /// channel or consumer cannot be opened (for example the queue does not exist and declaration
+    /// was not opted into).
+    pub async fn subscribe(&self, def: impl QueueDescriptor) -> Result<LapinSubscriber, AmqpError> {
+        let spec = def.spec();
+        // Before the channel: a declaration the queue cannot carry is the registration's mistake,
+        // and the service should not reach a live consumer with it.
+        def.check_retry(self.declare)?;
+
         let channel = self
             .conn
-            .live_connection(def.name())?
+            .live_connection(&spec.name)?
             .create_channel()
             .await
             .map_err(AmqpError::subscribe)?;
 
         if self.declare {
-            topology::declare(&channel, &def, self.default_queue_type).await?;
+            let arguments = declared_arguments(spec, def.declared_retry());
+            topology::declare(&channel, spec, arguments).await?;
         }
-        if let Some(prefetch) = def.prefetch_or(self.prefetch) {
+        if let Some(prefetch) = spec.prefetch_or(self.prefetch) {
             channel
                 .basic_qos(prefetch.get(), BasicQosOptions::default())
                 .await
                 .map_err(AmqpError::subscribe)?;
         }
 
-        let queue = def.name().to_owned();
+        let queue = spec.name.clone();
         // A native delay backend re-publishes the delayed copy on the same channel the delivery is
         // acked on, so no extra channel is created and the publish orders naturally before the
         // ack (duplicate-not-loss).
-        let delay = def
-            .delay_config()
+        let delay = spec
+            .delay
+            .as_ref()
             .map(|delay| DelayContext::new(channel.clone(), delay.target_for(&queue)));
 
         let consumer = channel
@@ -290,7 +287,7 @@ impl ConnectedLapinBroker {
             channel,
             consumer,
             queue,
-            def.batch_wait_of(),
+            spec.batch_wait,
             delay,
         ))
     }

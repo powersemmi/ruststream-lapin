@@ -1,12 +1,14 @@
 //! What a registration declares about its retries, driven in process.
 //!
-//! A queue addresses its own redeliveries, so the copies are the service's and the declaration is
-//! the runtime's to apply: the cap counts the deliveries and the dead-letter destination takes the
-//! spent one. The same two steps read the same on a descriptor and on a bare queue name.
+//! The two queue descriptors answer it differently, and both are here. A classic queue counts
+//! nothing, so the copies are the service's and the declaration is the runtime's to apply: the cap
+//! counts the deliveries and the dead-letter destination takes the spent one, the same on a
+//! descriptor as on a bare queue name. A quorum queue counts the deliveries itself, so the same
+//! two steps become its own arguments and the queue carries a spent delivery away with nothing
+//! published by the service.
 //!
 //! The transport's own half is here too: a descriptor that names a waiting queue makes the delay
-//! the broker's, and no delivery carries a count, because a server counts a delivery whose
-//! consumer went away and nothing under the harness can do that.
+//! the broker's, and the copy it releases is a new message counted from zero.
 
 #![cfg(feature = "testing")]
 
@@ -14,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
+use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::TestApp;
 use ruststream::{
@@ -54,6 +57,14 @@ async fn never_ready(order: &Order) -> HandlerOutcome {
 async fn never_ready_by_name(order: &Order) -> HandlerOutcome {
     let _ = order.id;
     HandlerOutcome::retry_after(RETRY_DELAY)
+}
+
+/// The same handler over a quorum queue, retried immediately: the queue counts the deliveries and
+/// carries the spent one away itself, so the runtime publishes no copy.
+#[subscriber(RabbitQuorumQueue::new("orders.quorum"))]
+async fn never_ready_on_a_quorum_queue(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::retry()
 }
 
 /// The same handler over a descriptor that names a waiting queue: the delay is the broker's
@@ -155,11 +166,111 @@ async fn a_waiting_queue_keeps_the_delayed_copy_off_the_service() {
     tb.shutdown().await.expect("shutdown");
 }
 
+// A quorum queue ends its own retry loop: the cap and the destination the mount site declared are
+// the queue's arguments, so the deliveries run out and the message leaves for the dead-letter
+// queue with nothing published by the service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quorum_queue_ends_the_loop_itself() {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(never_ready_on_a_quorum_queue)
+                .max_attempts(nonzero!(ATTEMPTS))
+                .dead_letter(DEAD);
+        });
+    let tb = TestApp::start(app).await.expect("start");
+
+    tb.broker::<LapinTestBroker>()
+        .publish("orders.quorum", &Order { id: 7 })
+        .await
+        .expect("publish drives the loop to quiescence");
+
+    tb.broker::<LapinTestBroker>()
+        .subscriber("orders.quorum")
+        .assert_called(ATTEMPTS as usize);
+    tb.broker::<LapinTestBroker>()
+        .published::<Order>(DEAD)
+        .assert_called_once()
+        .decoded_as::<Order>()
+        .with(&Order { id: 7 });
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// What the mount site declared reaches a quorum queue as topology: the queue is asked for a
+// delivery limit one short of the cap, and for a dead-letter route to the destination on the
+// default exchange.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declaration_becomes_the_quorum_queues_arguments() {
+    // A clone of the broker shares its transport, so the test reads what the app declared on it.
+    let stand = LapinTestBroker::new();
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(stand.clone(), |b| {
+        b.include(never_ready_on_a_quorum_queue)
+            .max_attempts(nonzero!(ATTEMPTS))
+            .dead_letter(DEAD);
+    });
+    let tb = TestApp::start(app).await.expect("start");
+
+    let arguments = stand
+        .declared_arguments("orders.quorum")
+        .expect("the subscription declared its queue");
+    assert_eq!(
+        argument(&arguments, "x-queue-type").as_deref(),
+        Some("quorum")
+    );
+    assert_eq!(
+        arguments
+            .inner()
+            .get(&ShortString::from("x-delivery-limit")),
+        Some(&AMQPValue::LongLongInt(i64::from(ATTEMPTS) - 1))
+    );
+    assert_eq!(
+        argument(&arguments, "x-dead-letter-exchange").as_deref(),
+        Some("")
+    );
+    assert_eq!(
+        argument(&arguments, "x-dead-letter-routing-key").as_deref(),
+        Some(DEAD)
+    );
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+// Half a declaration is refused before the subscription opens: a quorum queue carries a spent
+// delivery away only when it knows both when and where, and a limit with no destination drops the
+// message instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn half_a_declaration_refuses_to_start() {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+            b.include(never_ready_on_a_quorum_queue)
+                .max_attempts(nonzero!(ATTEMPTS));
+        });
+
+    let err = TestApp::start(app)
+        .await
+        .expect_err("a half declaration cannot open the subscription");
+    let message = err.to_string();
+    assert!(message.contains("orders.quorum"), "{message}");
+    assert!(message.contains("dead_letter"), "{message}");
+}
+
+/// One text argument of the declaration.
+fn argument(arguments: &FieldTable, name: &str) -> Option<String> {
+    match arguments.inner().get(&ShortString::from(name))? {
+        AMQPValue::LongString(value) => Some(value.to_string()),
+        AMQPValue::ShortString(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
 /// Subscribes to `def` and publishes one message to it.
-async fn subscribe_and_publish(
+async fn subscribe_and_publish<S>(
     connected: &ConnectedLapinTestBroker,
-    def: RabbitQueue,
-) -> LapinTestSubscriber {
+    def: S,
+) -> LapinTestSubscriber
+where
+    S: SubscriptionSource<ConnectedLapinTestBroker, Subscriber = LapinTestSubscriber>,
+{
     let queue = def.name().to_owned();
     let subscriber = def
         .subscribe(connected)
@@ -182,21 +293,40 @@ async fn next(subscriber: &mut LapinTestSubscriber) -> LapinTestMessage {
         .expect("a delivery")
 }
 
-// The transport counts no deliveries, whatever queue type the descriptor names: on a server the
-// count rises when a delivery's consumer goes away without settling it, and a handler under the
-// harness always settles. A count invented here would take the runtime down the broker's requeue
-// path where a server sends it down the copy path.
+// A classic queue keeps no counter, so a delivery off one says nothing about how far the message
+// has come, and the framework's own header is the whole count there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn no_delivery_carries_a_count() {
+async fn a_classic_delivery_carries_no_count() {
     let connected = LapinTestBroker::new().connect().await.expect("connect");
-    let def = RabbitQueue::new("orders.counted").queue_type(QueueType::Quorum);
 
-    let mut subscriber = subscribe_and_publish(&connected, def).await;
+    let mut subscriber =
+        subscribe_and_publish(&connected, RabbitQueue::new("orders.uncounted")).await;
     let first = next(&mut subscriber).await;
     assert_eq!(first.redelivery_count(), None);
     first.nack(true).await.expect("requeue");
 
     assert_eq!(next(&mut subscriber).await.redelivery_count(), None);
+
+    connected.shutdown().await.expect("shutdown");
+}
+
+// A quorum queue counts a rejected delivery, and this crate settles a handler's retry with a
+// rejection, so the redelivery reports the second of the message's deliveries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quorum_delivery_counts_the_deliveries_it_has_spent() {
+    let connected = LapinTestBroker::new().connect().await.expect("connect");
+
+    let mut subscriber =
+        subscribe_and_publish(&connected, RabbitQuorumQueue::new("orders.counted")).await;
+    let first = next(&mut subscriber).await;
+    assert_eq!(first.redelivery_count(), None);
+    first.nack(true).await.expect("requeue");
+
+    let second = next(&mut subscriber).await;
+    assert_eq!(second.redelivery_count(), Some(2));
+    second.nack(true).await.expect("requeue");
+
+    assert_eq!(next(&mut subscriber).await.redelivery_count(), Some(3));
 
     connected.shutdown().await.expect("shutdown");
 }

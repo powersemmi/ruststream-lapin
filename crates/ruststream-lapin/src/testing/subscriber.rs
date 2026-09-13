@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::Stream;
+use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::Coordinator;
 use ruststream::{
@@ -16,19 +17,69 @@ use ruststream::{
 
 use super::broker::TestBrokerState;
 use super::router::{DeliveryReceiver, SubscriptionId, TestDelivery};
+use crate::convert;
 use crate::error::AmqpError;
+use crate::message::DELIVERY_COUNT_HEADER;
+use crate::queue::{
+    DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, DELIVERY_LIMIT, QueueKind, QueueSpec,
+};
 
 /// What the in-process transport honours of a descriptor beyond its queue name.
 ///
 /// The answer is the descriptor's word rather than the transport's: the in-process router has no
-/// waiting queues, so a subscription behaves the way the same descriptor behaves on a server. A
-/// subscription opened by bare name gets none of it, which is what a queue with no delay
-/// infrastructure gives.
-#[derive(Debug, Clone, Copy, Default)]
+/// waiting queues and no queue arguments, so a subscription behaves the way the same descriptor
+/// behaves on a server. A subscription opened by bare name gets none of it, which is what a
+/// classic queue with no delay infrastructure gives.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct QueueBehaviour {
     /// The descriptor named a waiting queue, so a delayed redelivery is the broker's rather than
     /// the runtime's deferred copy.
     pub(crate) delays: bool,
+    /// The queue counts the deliveries a message has spent and stamps the count on it, as a
+    /// quorum queue does and a classic queue never does.
+    pub(crate) counts: bool,
+    /// How often the queue returns a message before it carries it away (`x-delivery-limit`).
+    pub(crate) delivery_limit: Option<u64>,
+    /// Where it carries the spent one, read off the dead-letter route the declaration produced.
+    ///
+    /// Only a route on the default exchange is honoured, because that is the only exchange the
+    /// in-process router models; a queue dead-lettering through an exchange of its own drops the
+    /// message here instead of routing it.
+    pub(crate) dead_letter: Option<String>,
+}
+
+impl QueueBehaviour {
+    /// What a subscription on `spec` behaves like, read off the arguments its declaration
+    /// produced, the way a server reads the same arguments off the queue.
+    pub(crate) fn of(spec: &QueueSpec, arguments: &FieldTable) -> Self {
+        let counts = spec.kind == QueueKind::Quorum;
+        let routed_here =
+            argument(arguments, DEAD_LETTER_EXCHANGE).is_none_or(|exchange| exchange.is_empty());
+        Self {
+            delays: spec.delay.is_some(),
+            counts,
+            delivery_limit: counts
+                .then(|| {
+                    arguments
+                        .inner()
+                        .get(&ShortString::from(DELIVERY_LIMIT))
+                        .and_then(convert::counter)
+                })
+                .flatten(),
+            dead_letter: routed_here
+                .then(|| argument(arguments, DEAD_LETTER_ROUTING_KEY))
+                .flatten(),
+        }
+    }
+}
+
+/// One text argument of a declaration, as the string the transport routes by.
+fn argument(arguments: &FieldTable, name: &str) -> Option<String> {
+    match arguments.inner().get(&ShortString::from(name))? {
+        AMQPValue::LongString(value) => Some(value.to_string()),
+        AMQPValue::ShortString(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 /// In-process subscriber on one queue name.
@@ -149,12 +200,13 @@ impl Subscriber for TestDeliveries {
             behaviour,
             ..
         } = self;
-        let behaviour = *behaviour;
+        let behaviour = behaviour.clone();
         futures::stream::poll_fn(move |cx| {
             receiver.poll_recv(cx).map(|delivery| {
                 delivery.map(|delivery| {
                     let delivery_tag = *next_tag;
                     *next_tag += 1;
+                    let behaviour = behaviour.clone();
                     Ok(LapinTestMessage {
                         redelivered: delivery.redelivered,
                         delivery: Some(delivery),
@@ -208,6 +260,20 @@ impl LapinTestMessage {
             coordinator: state.coordinator(),
             behaviour: QueueBehaviour::default(),
         }
+    }
+
+    /// Sends the delivery where the queue's dead-letter route sends it, or lets it go where the
+    /// queue names no route this transport can follow.
+    fn dead_letter(&self, delivery: &TestDelivery) {
+        let Some(destination) = &self.behaviour.dead_letter else {
+            return;
+        };
+        self.state.router.publish(
+            destination,
+            &delivery.payload,
+            &delivery.headers,
+            self.coordinator.as_ref(),
+        );
     }
 
     fn take(&mut self) -> TestDelivery {
@@ -347,10 +413,27 @@ impl IncomingMessage for LapinTestMessage {
         ready(Ok(()))
     }
 
-    /// Re-enqueues on the same queue (`requeue = true`) or drops (`requeue = false`).
+    /// How often this delivery has been handed out, counting this one, on a queue that counts.
+    ///
+    /// A quorum queue stamps the count it keeps and omits the header until the message has come
+    /// back at least once, so the first delivery reports nothing; a classic queue counts nothing
+    /// at all and every delivery reports nothing.
+    fn redelivery_count(&self) -> Option<u64> {
+        if !self.behaviour.counts {
+            return None;
+        }
+        spent_of(self.headers()).map(|spent| spent.saturating_add(1))
+    }
+
+    /// Re-enqueues on the same queue (`requeue = true`) or settles it away (`requeue = false`).
     ///
     /// A requeued message goes back through the queue rather than to this subscription, so with
     /// competing consumers the redelivery can land on another one, as it does on a server.
+    ///
+    /// On a queue that counts, the rejection this settles with spends one of the message's
+    /// deliveries: the count goes up, and once it passes the queue's delivery limit the message
+    /// leaves for the dead-letter destination instead of coming back. A delivery settled away
+    /// takes that route straight away, as the server's dead-letter route does.
     ///
     /// # Errors
     ///
@@ -359,13 +442,37 @@ impl IncomingMessage for LapinTestMessage {
         let mut delivery = self.take();
         // The copy that goes back carries the redelivered flag, as a broker would set it.
         delivery.redelivered = requeue;
-        if requeue {
-            self.state
-                .router
-                .deliver(&self.queue, delivery, self.coordinator.as_ref());
+        if !requeue {
+            self.dead_letter(&delivery);
+            return ready(Ok(()));
         }
+        if self.behaviour.counts {
+            let spent = spent_of(&delivery.headers).unwrap_or(0).saturating_add(1);
+            if self
+                .behaviour
+                .delivery_limit
+                .is_some_and(|limit| spent > limit)
+            {
+                self.dead_letter(&delivery);
+                return ready(Ok(()));
+            }
+            delivery
+                .headers
+                .insert(DELIVERY_COUNT_HEADER, Bytes::from(spent.to_string()));
+        }
+        self.state
+            .router
+            .deliver(&self.queue, delivery, self.coordinator.as_ref());
         ready(Ok(()))
     }
+}
+
+/// How often the queue has returned this message, from the count it stamps. Absent on a message
+/// that has never come back.
+fn spent_of(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get_str(DELIVERY_COUNT_HEADER)
+        .and_then(|count| count.parse().ok())
 }
 
 impl Partitioned for LapinTestMessage {

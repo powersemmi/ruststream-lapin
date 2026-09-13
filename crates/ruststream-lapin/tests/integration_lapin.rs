@@ -30,7 +30,7 @@ use ruststream::{
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
     Delay, EXPIRATION_HEADER, LapinBroker, LapinMessage, LapinPublish, LapinPublishSteps,
-    PARTITION_KEY_HEADER, PRIORITY_HEADER, QueueType, RabbitExchange, RabbitQueue,
+    PARTITION_KEY_HEADER, PRIORITY_HEADER, RabbitExchange, RabbitQueue, RabbitQuorumQueue,
 };
 
 mod live;
@@ -167,7 +167,7 @@ async fn quorum_queue_declares_and_delivers() {
 
     // Quorum queues must be durable and never auto-delete, so this one needs explicit cleanup.
     let queue = unique("quorum");
-    let def = RabbitQueue::new(&queue).queue_type(QueueType::Quorum);
+    let def = RabbitQuorumQueue::new(&queue);
     let mut subscriber = broker.subscribe(def).await.expect("subscribe");
 
     broker

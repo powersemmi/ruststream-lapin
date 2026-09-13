@@ -38,8 +38,8 @@ pub use ruststream::{OwnedTransactions, RequestReply, Transaction, Transactional
 pub use crate::context::keys::{DeliveryTag, Exchange, Redelivered, RoutingKey};
 pub use crate::{
     AMQPValue, ConfirmsPublish, Delay, DirectReplyTo, FieldTable, LapinBroker, LapinPublish,
-    LapinPublishOptions, LapinPublishSteps, LapinRequest, QueueType, RabbitExchange, RabbitQueue,
-    ServerTxPublish,
+    LapinPublishOptions, LapinPublishSteps, LapinRequest, RabbitExchange, RabbitQueue,
+    RabbitQuorumQueue, ServerTxPublish,
 };
 
 /// The policy names a mount site writes, uniform across the broker family: `Publish` is

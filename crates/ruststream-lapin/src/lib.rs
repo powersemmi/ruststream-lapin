@@ -7,10 +7,16 @@
 //!
 //! # Transport model
 //!
-//! A subscription consumes one queue; [`RabbitQueue`] describes the queue and its bindings, and
-//! the bare-string `#[subscriber("orders")]` form consumes the queue named `orders`. On the
-//! publish side [`OutgoingMessage::name`](ruststream::OutgoingMessage) is the routing key, sent
-//! to the publisher's exchange (the default exchange unless configured, where the routing key
+//! A subscription consumes one queue, and the queue's implementation decides what a retry does,
+//! so there is a descriptor per implementation. [`RabbitQueue`] is the classic queue: it keeps no
+//! counter, so a registration's cap is the runtime's to apply with the copies it publishes back
+//! under the queue name. [`RabbitQuorumQueue`] counts the deliveries a message spends, so the same
+//! cap becomes the queue's own `x-delivery-limit` and dead-letter route, applied by the server
+//! whether or not a service is running. The bare-string `#[subscriber("orders")]` form consumes
+//! the classic queue named `orders`.
+//!
+//! On the publish side [`OutgoingMessage::name`](ruststream::OutgoingMessage) is the routing key,
+//! sent to the publisher's exchange (the default exchange unless configured, where the routing key
 //! addresses the queue with that name).
 //!
 //! AMQP pushes one `basic.deliver` at a time, so a batch handler's size is honoured by assembling
@@ -45,7 +51,10 @@
 //!
 //! Descriptors describe the EXPECTED topology; nothing is created on the broker by default,
 //! because managing infrastructure is the user's job. Declaration is a per-broker opt-in:
-//! [`LapinBroker::declare_topology`].
+//! [`LapinBroker::declare_topology`]. It is also what lets a mount-site
+//! `max_attempts(n).dead_letter(..)` reach a quorum queue, which carries the pair as its own
+//! arguments; a quorum queue declared elsewhere is configured on the broker and mounted without
+//! the pair.
 //!
 //! [`lapin`]: https://docs.rs/lapin
 
@@ -84,7 +93,7 @@ pub use publish_step::{
     EXPIRATION_HEADER, LapinPublishOptions, LapinPublishSteps, PRIORITY_HEADER,
 };
 pub use publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
-pub use queue::{QueueType, RabbitQueue};
+pub use queue::{QueueDescriptor, QueueSpec, RabbitQueue, RabbitQuorumQueue};
 pub use reply::DirectReplyTo;
 pub use requester::{LapinRequest, LapinRequester};
 pub use subscriber::LapinSubscriber;

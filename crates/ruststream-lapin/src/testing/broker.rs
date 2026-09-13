@@ -1,10 +1,12 @@
 //! The in-process ladder: [`LapinTestBroker`] -> [`ConnectedLapinTestBroker`].
 
+use std::collections::HashMap;
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
+use lapin::types::FieldTable;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
     AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, OutgoingMessage,
@@ -17,7 +19,7 @@ use super::router::KeyRouter;
 use super::subscriber::{LapinTestSubscriber, QueueBehaviour};
 use crate::error::AmqpError;
 use crate::publish_policy::LapinPublish;
-use crate::queue::RabbitQueue;
+use crate::queue::{QueueDescriptor, declared_arguments};
 use crate::requester::LapinRequest;
 
 /// Shared state owned by every handle on a single test broker instance.
@@ -35,6 +37,9 @@ pub(crate) struct TestBrokerState {
     /// like the server that rewrites the direct reply-to address, so two requesters on one broker
     /// cannot be handed the same address.
     inbox_seq: AtomicU64,
+    /// The arguments each descriptor's declaration produced, by queue name. The transport
+    /// declares nothing, but a test reads here what a server would have been asked for.
+    declared: Mutex<HashMap<String, FieldTable>>,
 }
 
 impl TestBrokerState {
@@ -50,6 +55,23 @@ impl TestBrokerState {
 
     pub(crate) fn next_inbox(&self) -> u64 {
         self.inbox_seq.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Records what a subscription's declaration asked the queue for.
+    pub(crate) fn declare(&self, queue: &str, arguments: FieldTable) {
+        self.declared
+            .lock()
+            .expect("declared-arguments mutex poisoned")
+            .insert(queue.to_owned(), arguments);
+    }
+
+    /// What the declaration of `queue` asked for, or `None` for a queue nothing subscribed to.
+    pub(crate) fn declared(&self, queue: &str) -> Option<FieldTable> {
+        self.declared
+            .lock()
+            .expect("declared-arguments mutex poisoned")
+            .get(queue)
+            .cloned()
     }
 
     /// `Ok` while the transport is live, [`AmqpError::Closed`] once it has shut down.
@@ -68,6 +90,7 @@ impl Default for TestBrokerState {
             closed: AtomicBool::new(false),
             coordinator: OnceLock::new(),
             inbox_seq: AtomicU64::new(0),
+            declared: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -113,6 +136,22 @@ impl LapinTestBroker {
     /// Creates an isolated in-process broker.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The queue arguments the descriptor mounted on `queue` was declared with, or `None` for a
+    /// queue nothing has subscribed to.
+    ///
+    /// The same answer [`ConnectedLapinTestBroker::declared_arguments`] gives, reachable from a
+    /// clone kept before the app took the broker - which is how a
+    /// [`TestApp`](ruststream::testing::TestApp) test reads what a registration asked its queue
+    /// for.
+    ///
+    /// # Panics
+    ///
+    /// Panics if another thread panicked while recording a declaration.
+    #[must_use]
+    pub fn declared_arguments(&self, queue: &str) -> Option<FieldTable> {
+        self.state.declared(queue)
     }
 }
 
@@ -167,19 +206,40 @@ impl ConnectedLapinTestBroker {
     }
 
     /// Subscribes for `def`, carrying what the transport can honour of it beyond the queue name:
-    /// whether a delayed redelivery is the broker's.
+    /// whether a delayed redelivery is the broker's, and whether the queue counts the deliveries a
+    /// message spends and carries a spent one away itself.
     ///
-    /// The rest of the descriptor is topology, and the in-process transport has none. It reports
-    /// no delivery count of its own either: a server counts a delivery whose consumer went away,
-    /// which is not something a handler under the harness can do.
-    pub(crate) fn subscribe_to(
+    /// The rest of the descriptor is topology the in-process transport has none of, so it records
+    /// the arguments the declaration produced and answers with them from
+    /// [`declared_arguments`](Self::declared_arguments) instead. A declaration the queue cannot
+    /// carry is refused here exactly as a server refuses it.
+    pub(crate) async fn subscribe_to(
         &self,
-        def: &RabbitQueue,
-    ) -> impl Future<Output = Result<LapinTestSubscriber, AmqpError>> {
-        let behaviour = QueueBehaviour {
-            delays: def.delay_config().is_some(),
-        };
-        self.open(def.name().to_owned(), behaviour)
+        def: &(impl QueueDescriptor + Sync),
+    ) -> Result<LapinTestSubscriber, AmqpError> {
+        let spec = def.spec();
+        // The stand declares every queue it opens, which is the case where a declaration reaches
+        // the queue at all.
+        def.check_retry(true)?;
+        let arguments = declared_arguments(spec, def.declared_retry());
+        let behaviour = QueueBehaviour::of(spec, &arguments);
+        self.state.declare(&spec.name, arguments);
+        self.open(spec.name.clone(), behaviour).await
+    }
+
+    /// The queue arguments the descriptor mounted on `queue` was declared with, or `None` for a
+    /// queue nothing has subscribed to.
+    ///
+    /// This is what a server would have been asked for: the queue type, and on a quorum queue the
+    /// delivery limit and dead-letter route the mount site's `max_attempts(..).dead_letter(..)`
+    /// turned into.
+    ///
+    /// # Panics
+    ///
+    /// Panics if another thread panicked while recording a declaration.
+    #[must_use]
+    pub fn declared_arguments(&self, queue: &str) -> Option<FieldTable> {
+        self.state.declared(queue)
     }
 
     fn open(

@@ -25,7 +25,6 @@ struct OrderPlaced {
 // One queue, fed by a topic exchange: every `order.*` event lands here. The queue survives
 // restarts (durable is the default) and dead-letters rejected messages.
 #[subscriber(RabbitQueue::new("orders")
-    .queue_type(QueueType::Quorum)
     .bind(RabbitExchange::topic("events"), "order.*")
     .dead_letter_exchange("dead-letters")
     .prefetch(nonzero!(16)))]
@@ -87,10 +86,11 @@ async fn on_refund(event: &OrderPlaced) -> HandlerOutcome {
 // --8<-- [end:retry_fallback]
 
 // --8<-- [start:capped]
-// A message that is never ready circulates until an operator steps in. On a quorum queue this
-// service declares, the cap below becomes the queue's own delivery limit and the destination its
-// dead-letter route, so a spent delivery leaves even while no service is running.
-#[subscriber(RabbitQueue::new("payouts").queue_type(QueueType::Quorum))]
+// A message that is never ready circulates until an operator steps in. A quorum queue counts the
+// deliveries a message spends, so the cap declared at the mount site becomes the queue's own
+// delivery limit and the destination its dead-letter route: a spent delivery leaves even while no
+// service is running.
+#[subscriber(RabbitQuorumQueue::new("payouts"))]
 async fn on_payout(event: &OrderPlaced) -> HandlerOutcome {
     if event.id == 0 {
         return HandlerOutcome::retry_after(Duration::from_secs(30));
@@ -99,19 +99,33 @@ async fn on_payout(event: &OrderPlaced) -> HandlerOutcome {
 }
 // --8<-- [end:capped]
 
+// --8<-- [start:quorum_own_policy]
+// A quorum queue whose retry policy is the queue's own rather than one registration's: the limit
+// and the route are descriptor settings, and the mount site declares nothing.
+#[subscriber(RabbitQuorumQueue::new("reservations")
+    .delivery_limit(4)
+    .dead_letter_exchange("dead-letters"))]
+async fn on_reservation(event: &OrderPlaced) -> HandlerOutcome {
+    if event.id == 0 {
+        return HandlerOutcome::retry();
+    }
+    HandlerOutcome::ack()
+}
+// --8<-- [end:quorum_own_policy]
+
 // --8<-- [start:app]
 #[ruststream::app]
 fn app() -> impl App {
-    // declare_topology is off by default; this service owns its queues, so it opts in.
-    // default_queue_type applies to descriptors that do not pick a type themselves.
+    // declare_topology is off by default; this service owns its queues, so it opts in. That is
+    // also what lets a mount-site cap reach a quorum queue, which carries it as its own arguments.
     let broker = LapinBroker::new("amqp://localhost:5672")
         .declare_topology(true)
-        .default_queue_type(QueueType::Quorum)
         .prefetch(nonzero!(64));
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(on_order);
         b.include(on_bounded);
         b.include(on_charge);
+        b.include(on_reservation);
         // --8<-- [start:retry_mount]
         // Every registration already has a publisher for its copies, taken from the broker's
         // default policy. Naming one replaces it: the confirms publisher waits for the broker to
@@ -121,7 +135,8 @@ fn app() -> impl App {
         // --8<-- [end:retry_mount]
         // --8<-- [start:declaration]
         // How many deliveries one message gets, counting the first, and where it goes once they
-        // run out. Both steps follow `include` and read the same on every broker.
+        // run out. Both steps follow `include` and read the same on every broker; on a quorum
+        // queue this service declares they become `x-delivery-limit` and the dead-letter route.
         b.include(on_payout)
             .max_attempts(nonzero!(5u32))
             .dead_letter("payouts.dead");

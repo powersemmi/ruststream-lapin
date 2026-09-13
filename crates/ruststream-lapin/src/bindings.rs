@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::broker::PROTOCOL;
 use crate::publish_policy::PublishOptions;
-use crate::queue::RabbitQueue;
+use crate::queue::QueueSpec;
 
 /// The version of the `amqp` binding objects this crate writes.
 const BINDING_VERSION: &str = "0.3.0";
@@ -92,14 +92,14 @@ fn one<T: Serialize>(body: &T) -> Bindings {
 ///
 /// The exchanges the queue is bound to have no place here: the specification's channel object is
 /// either a queue or a routing key, and this channel's address is the queue name.
-pub(crate) fn queue_channel(def: &RabbitQueue) -> Bindings {
+pub(crate) fn queue_channel(spec: &QueueSpec) -> Bindings {
     one(&QueueChannel {
         is: "queue",
         queue: Queue {
-            name: def.name(),
-            durable: def.is_durable(),
-            exclusive: def.is_exclusive(),
-            auto_delete: def.is_auto_delete(),
+            name: &spec.name,
+            durable: spec.durable,
+            exclusive: spec.exclusive,
+            auto_delete: spec.auto_delete,
         },
     })
 }

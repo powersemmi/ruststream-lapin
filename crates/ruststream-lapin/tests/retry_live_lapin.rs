@@ -9,7 +9,9 @@
 //! `basic.reject` rather than `basic.nack`, which `RabbitMQ` 4.3 does not count, and it is what the
 //! tests below spend a message's attempts with.
 
+use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
@@ -17,13 +19,15 @@ use lapin::options::{QueueDeclareOptions, QueueDeleteOptions};
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, RetryDeclaration,
-    Subscriber, SubscriptionSource, nonzero,
+    Broker, ConnectedBroker, FromRef, IncomingMessage, OutgoingMessage, Publisher,
+    RetryDeclaration, Subscriber, SubscriptionSource, nonzero,
 };
+use ruststream_lapin::prelude::*;
 use ruststream_lapin::{
-    AmqpError, ConnectedLapinBroker, Delay, LapinBroker, LapinMessage, LapinPublish, QueueType,
-    RabbitQueue,
+    AmqpError, ConnectedLapinBroker, LapinMessage, LapinPublish, RabbitQuorumQueue,
 };
+use serde::Deserialize;
+use tokio::sync::Notify;
 
 mod live;
 
@@ -84,12 +88,12 @@ async fn delete_queues(url: &str, queues: &[&str]) {
 }
 
 /// A quorum queue carrying the registration's declaration, as the runtime hands it over.
-fn declared(queue: &str, dead: &str) -> RabbitQueue {
+fn declared(queue: &str, dead: &str) -> RabbitQuorumQueue {
     let declaration = RetryDeclaration::new()
         .with_max_attempts(nonzero!(ATTEMPTS))
         .with_dead_letter(dead.to_owned());
     SubscriptionSource::<ConnectedLapinBroker>::declare_retry(
-        RabbitQueue::new(queue).queue_type(QueueType::Quorum),
+        RabbitQuorumQueue::new(queue),
         &declaration,
     )
 }
@@ -188,8 +192,11 @@ async fn a_spent_delivery_leaves_for_the_dead_letter_queue() {
             .connect()
             .await
             .expect("connect");
+        // The worker consumes the queue somebody else declared, so it mounts the descriptor
+        // without the declaration: the arguments are on the queue already, and the count the
+        // queue keeps is what this consumer reads.
         let mut subscriber = worker
-            .subscribe(declared(&queue, &dead))
+            .subscribe(RabbitQuorumQueue::new(&queue))
             .await
             .expect("subscribe");
         let mut stream = Box::pin(subscriber.stream());
@@ -240,7 +247,7 @@ async fn a_quorum_delivery_reports_how_often_it_has_come_back() {
         .await
         .expect("connect");
 
-    let counted = || RabbitQueue::new(&queue).queue_type(QueueType::Quorum);
+    let counted = || RabbitQuorumQueue::new(&queue);
     let mut subscriber = connected.subscribe(counted()).await.expect("subscribe");
     publish(&connected, &queue, b"counted").await;
 
@@ -278,7 +285,7 @@ async fn a_handlers_retry_spends_a_delivery_the_queue_counts() {
         .expect("connect");
 
     let mut subscriber = connected
-        .subscribe(RabbitQueue::new(&queue).queue_type(QueueType::Quorum))
+        .subscribe(RabbitQuorumQueue::new(&queue))
         .await
         .expect("subscribe");
     publish(&connected, &queue, b"requeued").await;
@@ -339,11 +346,11 @@ async fn a_classic_delivery_reports_no_count() {
     delete_queues(&url, &[&queue]).await;
 }
 
-// What the queue carries away it also marks: a rejected delivery reaches the dead-letter queue
-// with an `x-death` entry naming the queue it left and why, and that entry is what tells the next
-// consumer how far the message has come.
+// What the queue carries away it also marks, but the mark is not a count: the `x-death` table on
+// a dead-lettered delivery names the queues the message has left, and the dead-letter queue keeps
+// a counter of its own only if it is a quorum queue.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_dead_lettered_delivery_reports_the_round_it_has_been_through() {
+async fn a_dead_lettered_delivery_reports_no_count_of_its_own() {
     let Some(url) = amqp_url() else { return };
     let queue = unique("rejected");
     let dead = unique("rejected.dead");
@@ -373,7 +380,11 @@ async fn a_dead_lettered_delivery_reports_the_round_it_has_been_through() {
     let mut dead_stream = Box::pin(graveyard.stream());
     let carried = next(&mut dead_stream).await;
     assert_eq!(carried.payload(), b"rejected");
-    assert_eq!(carried.redelivery_count(), Some(2));
+    assert_eq!(
+        carried.redelivery_count(),
+        None,
+        "the dead-letter queue is classic, so nothing counted this delivery"
+    );
     carried.ack().await.expect("ack");
 
     drop(dead_stream);
@@ -382,6 +393,207 @@ async fn a_dead_lettered_delivery_reports_the_round_it_has_been_through() {
     drop(graveyard);
     connected.shutdown().await.expect("shutdown");
     delete_queues(&url, &[&queue, &dead]).await;
+}
+
+// The whole model in one run: a handler that keeps asking for its message back spends the
+// queue's deliveries one rejection at a time, and the queue carries the message away to the
+// dead-letter destination when they run out, with nothing published by the service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retried_delivery_leaves_for_the_dead_letter_queue_at_the_cap() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("retried");
+    let dead = unique("retried.dead");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let mut graveyard = connected
+        .subscribe(RabbitQueue::new(&dead))
+        .await
+        .expect("the dead-letter queue has to exist before a message is sent there");
+    let mut subscriber = connected
+        .subscribe(declared(&queue, &dead))
+        .await
+        .expect("subscribe declares the queue");
+
+    publish(&connected, &queue, b"retried").await;
+
+    let mut stream = Box::pin(subscriber.stream());
+    for attempt in 1..=u64::from(ATTEMPTS) {
+        let delivery = next(&mut stream).await;
+        assert_eq!(delivery.payload(), b"retried", "attempt {attempt}");
+        let counted = delivery.redelivery_count();
+        if attempt == 1 {
+            assert_eq!(counted, None, "the first delivery has spent nothing");
+        } else {
+            assert_eq!(counted, Some(attempt), "attempt {attempt}");
+        }
+        delivery.nack(true).await.expect("the handler asks again");
+    }
+    assert!(
+        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        "the deliveries are spent, so the queue must not hand the message out again",
+    );
+
+    let mut dead_stream = Box::pin(graveyard.stream());
+    let carried = next(&mut dead_stream).await;
+    assert_eq!(carried.payload(), b"retried");
+    carried.ack().await.expect("ack");
+
+    drop(dead_stream);
+    drop(stream);
+    drop(subscriber);
+    drop(graveyard);
+    connected.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[&queue, &dead]).await;
+}
+
+// Half a declaration is refused before the subscription opens: the queue carries a spent delivery
+// away only when it knows both when and where, and a delivery limit on its own drops it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn half_a_declaration_refuses_to_start() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("half");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let declaration = RetryDeclaration::new().with_max_attempts(nonzero!(ATTEMPTS));
+    let def = SubscriptionSource::<ConnectedLapinBroker>::declare_retry(
+        RabbitQuorumQueue::new(&queue),
+        &declaration,
+    );
+
+    let err = connected
+        .subscribe(def)
+        .await
+        .expect_err("a cap with no destination cannot become queue arguments");
+    let message = err.to_string();
+    assert!(message.contains(&queue), "{message}");
+    assert!(message.contains("dead_letter"), "{message}");
+
+    connected.shutdown().await.expect("shutdown");
+}
+
+// A queue this service does not declare carries the arguments whoever declared it gave it, so a
+// declaration at the mount site would promise a cap nothing applies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declaration_on_a_queue_this_service_does_not_declare_refuses_to_start() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("undeclared");
+    let dead = unique("undeclared.dead");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(false)
+        .connect()
+        .await
+        .expect("connect");
+
+    let err = connected
+        .subscribe(declared(&queue, &dead))
+        .await
+        .expect_err("the declaration has no queue arguments to become");
+    let message = err.to_string();
+    assert!(message.contains(&queue), "{message}");
+    assert!(message.contains("declare_topology"), "{message}");
+
+    connected.shutdown().await.expect("shutdown");
+}
+
+/// The queue the capped service consumes, and where a spent delivery goes. The attribute takes a
+/// literal, so these two are fixed names the test cleans up after itself.
+const CAPPED: &str = "ruststream-retry.classic-capped";
+const CAPPED_DEAD: &str = "ruststream-retry.classic-capped.dead";
+
+/// What each delivery of the capped queue said about the attempts spent on it, in order.
+type Attempts = Arc<Mutex<Vec<Option<String>>>>;
+
+#[derive(Clone, FromRef)]
+struct Capped {
+    attempts: Attempts,
+    done: Arc<Notify>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Order {
+    id: u64,
+}
+
+/// Never ready, and it writes down what the delivery says about its own attempts.
+#[subscriber(RabbitQueue::new(CAPPED))]
+async fn never_ready(
+    order: &Order,
+    ctx: &mut Context<'_>,
+    State(attempts): State<Attempts>,
+) -> HandlerOutcome {
+    let _ = order.id;
+    attempts
+        .lock()
+        .expect("attempts mutex poisoned")
+        .push(ctx.headers().get_str(RETRY_COUNT_HEADER).map(str::to_owned));
+    HandlerOutcome::retry()
+}
+
+/// The end of the run: the message the cap spent lands here.
+#[subscriber(RabbitQueue::new(CAPPED_DEAD))]
+async fn capped_out(order: &Order, State(done): State<Arc<Notify>>) -> HandlerOutcome {
+    let _ = order.id;
+    done.notify_one();
+    HandlerOutcome::ack()
+}
+
+// A classic queue counts nothing, so the runtime counts: every immediate retry is a copy carrying
+// the framework's retry count one higher, and the cap ends the loop at the dead-letter queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_runtimes_cap_ends_a_retry_loop_on_a_classic_queue() {
+    let Some(url) = amqp_url() else { return };
+    delete_queues(&url, &[CAPPED, CAPPED_DEAD]).await;
+
+    let state = Capped {
+        attempts: Attempts::default(),
+        done: Arc::new(Notify::new()),
+    };
+    let recorded = Arc::clone(&state.attempts);
+    let finished = Arc::clone(&state.done);
+    let app = RustStream::new(AppInfo::new("capped", "0.1.0"))
+        .on_startup(move |()| {
+            let state = state;
+            async move { Ok::<_, Infallible>(state) }
+        })
+        .with_broker(LapinBroker::new(url.clone()).declare_topology(true), |b| {
+            b.include(never_ready)
+                .max_attempts(nonzero!(ATTEMPTS))
+                .dead_letter(CAPPED_DEAD);
+            b.include(capped_out);
+        });
+    let running = tokio::spawn(app.run_until(async move { finished.notified().await }));
+
+    // Published after the app is up, through a connection of its own: the queues exist by then,
+    // because the subscriptions declared them.
+    let publisher = LapinBroker::new(url.clone())
+        .connect()
+        .await
+        .expect("connect");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    publish(&publisher, CAPPED, br#"{"id":11}"#).await;
+
+    tokio::time::timeout(WAIT, running)
+        .await
+        .expect("the cap ends the loop and the app shuts down")
+        .expect("app task did not panic")
+        .expect("run_until succeeded");
+
+    assert_eq!(
+        *recorded.lock().expect("attempts mutex poisoned"),
+        vec![None, Some("1".to_owned()), Some("2".to_owned())],
+        "each copy carries the framework's count one higher",
+    );
+
+    publisher.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[CAPPED, CAPPED_DEAD]).await;
 }
 
 // A waiting queue releases a new message, and the server counts a new message from zero, so the

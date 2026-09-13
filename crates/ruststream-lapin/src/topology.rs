@@ -7,22 +7,20 @@
 use lapin::Channel;
 use lapin::options::{ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions};
 use lapin::types::{AMQPValue, FieldTable, ShortString};
-use ruststream::RetryDeclaration;
 
 use crate::convert;
 use crate::delay::{Delay, DelayTarget};
 use crate::error::AmqpError;
-use crate::queue::{
-    DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, DELIVERY_LIMIT, QueueType, RabbitQueue,
-};
+use crate::queue::{DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, QueueSpec};
 
-/// Declares the exchanges, queue, bindings, and delay backend `def` describes.
+/// Declares the exchanges, queue, bindings, and delay backend `spec` describes, with `arguments`
+/// as the descriptor and the registration between them asked for.
 pub(crate) async fn declare(
     channel: &Channel,
-    def: &RabbitQueue,
-    broker_default: Option<QueueType>,
+    spec: &QueueSpec,
+    arguments: FieldTable,
 ) -> Result<(), AmqpError> {
-    for (exchange, _) in def.bindings() {
+    for (exchange, _) in &spec.bindings {
         // The default exchange and the amq.* built-ins exist on every broker and must not be
         // redeclared.
         if exchange.name().is_empty() || exchange.name().starts_with("amq.") {
@@ -43,32 +41,13 @@ pub(crate) async fn declare(
             .map_err(AmqpError::declare)?;
     }
 
-    let queue_type = def.queue_type_or(broker_default);
-    if queue_type == Some(QueueType::Quorum) && !def.is_durable() {
-        return Err(AmqpError::InvalidOptions(format!(
-            "queue {:?} is a quorum queue and must stay durable; drop `.durable(false)` or pick \
-             `QueueType::Classic`",
-            def.name(),
-        )));
-    }
-
-    let mut arguments = def.declare_arguments().clone();
-    if let Some(queue_type) = queue_type {
-        arguments.insert(
-            ShortString::from("x-queue-type"),
-            AMQPValue::LongString(queue_type.as_str().into()),
-        );
-    }
-    if queue_type == Some(QueueType::Quorum) {
-        declare_retry(&mut arguments, def.retry());
-    }
     channel
         .queue_declare(
-            convert::short(def.name(), "queue name")?,
+            convert::short(&spec.name, "queue name")?,
             QueueDeclareOptions {
-                durable: def.is_durable(),
-                exclusive: def.is_exclusive(),
-                auto_delete: def.is_auto_delete(),
+                durable: spec.durable,
+                exclusive: spec.exclusive,
+                auto_delete: spec.auto_delete,
                 ..QueueDeclareOptions::default()
             },
             arguments,
@@ -76,10 +55,10 @@ pub(crate) async fn declare(
         .await
         .map_err(AmqpError::declare)?;
 
-    for (exchange, routing_key) in def.bindings() {
+    for (exchange, routing_key) in &spec.bindings {
         channel
             .queue_bind(
-                convert::short(def.name(), "queue name")?,
+                convert::short(&spec.name, "queue name")?,
                 convert::short(exchange.name(), "exchange name")?,
                 convert::short(routing_key, "routing key")?,
                 QueueBindOptions::default(),
@@ -89,46 +68,11 @@ pub(crate) async fn declare(
             .map_err(AmqpError::declare)?;
     }
 
-    if let Some(delay) = def.delay_config() {
-        declare_delay_backend(channel, delay, def.name()).await?;
+    if let Some(delay) = &spec.delay {
+        declare_delay_backend(channel, delay, &spec.name).await?;
     }
 
     Ok(())
-}
-
-/// Writes the registration's retry declaration into a quorum queue's arguments, so the server
-/// counts the deliveries and carries a spent one away on its own.
-///
-/// Only a declaration that names both halves reaches the server: `RabbitMQ` dead-letters a spent
-/// delivery only when the queue says where to, and a delivery limit on its own would drop it
-/// instead of carrying it away.
-fn declare_retry(arguments: &mut FieldTable, declared: &RetryDeclaration) {
-    let (Some(max_attempts), Some(dead_letter)) = (declared.max_attempts(), declared.dead_letter())
-    else {
-        return;
-    };
-    // The server counts returns, not deliveries: it carries a message away once it has been
-    // returned more often than the limit, so a limit of two is three deliveries.
-    arguments.insert(
-        ShortString::from(DELIVERY_LIMIT),
-        AMQPValue::LongLongInt(i64::from(max_attempts.get()) - 1),
-    );
-    // A destination is a routing key in this crate's vocabulary, so a dead letter leaves through
-    // the default exchange and lands in the queue of that name - unless the descriptor named an
-    // exchange of its own, which stays the queue's word on where its rejections go.
-    if !arguments
-        .inner()
-        .contains_key(&ShortString::from(DEAD_LETTER_EXCHANGE))
-    {
-        arguments.insert(
-            ShortString::from(DEAD_LETTER_EXCHANGE),
-            AMQPValue::LongString(String::new().into()),
-        );
-    }
-    arguments.insert(
-        ShortString::from(DEAD_LETTER_ROUTING_KEY),
-        AMQPValue::LongString(dead_letter.to_owned().into()),
-    );
 }
 
 /// Declares the infrastructure the delay backend needs to route a delayed copy back to `origin`.
