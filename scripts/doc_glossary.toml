@@ -277,6 +277,13 @@ ru_match = "кворумн"
 zh = "仲裁队列"
 
 [[term]]
+en = "classic queue"
+en_match = "classic queues?"
+ru = "классическая очередь"
+ru_match = "классическ\\w* очеред"
+zh = "经典队列"
+
+[[term]]
 en = "publisher confirms"
 ru = "подтверждения издателя"
 ru_match = "подтверждени\\w* издател"

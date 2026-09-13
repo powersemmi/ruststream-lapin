@@ -1,8 +1,8 @@
 # Queues and topology
 
-A `RabbitQueue` descriptor names the queue a handler consumes and describes what that queue is
-expected to look like: durability, queue type, exchange bindings, prefetch, and raw `x-*`
-arguments. A descriptor sits directly in the `#[subscriber(..)]` attribute:
+A descriptor names the queue a handler consumes and describes what that queue is expected to look
+like: durability, exchange bindings, prefetch, and raw `x-*` arguments. `RabbitQueue` is the
+classic queue; a descriptor sits directly in the `#[subscriber(..)]` attribute:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:descriptor"
@@ -28,18 +28,21 @@ different properties (`PRECONDITION_FAILED`).
 
 ## Queue types
 
-RabbitMQ picks the queue implementation at declaration time via `x-queue-type`, and the type of
-an existing queue can never change. The descriptor exposes it as a typed option:
+RabbitMQ picks the queue implementation at declaration time via `x-queue-type`, and the type of an
+existing queue can never change. So the implementation is the descriptor rather than a setting on
+one: `RabbitQueue` is the classic single-node queue, `RabbitQuorumQueue` the Raft-replicated one.
+Both are declared with the type they name.
 
-- `.queue_type(QueueType::Classic)` - the classic single-node implementation.
-- `.queue_type(QueueType::Quorum)` - Raft-replicated; must stay durable. The crate refuses to
-  declare a non-durable quorum queue rather than letting the broker fail the declare.
+What they describe reads the same - bindings, prefetch, dead-letter arguments, raw `x-*`
+arguments, `.delay(..)` - and what differs is the retries, which [Capping the
+retries](#capping-the-retries) covers.
 
-A broker-wide `.default_queue_type(..)` applies to descriptors that do not pick a type; with
-neither set, no `x-queue-type` is sent and the server default applies.
+A quorum queue is durable, shared and permanent by definition, so `.durable(..)`, `.exclusive(..)`
+and `.auto_delete(..)` are not on it: a queue that contradicts its own type is not expressible
+rather than refused when the service starts.
 
-RabbitMQ 4 denies transient (non-durable) non-exclusive queues by default: keep the durable
-default unless the queue is `.exclusive(true)`.
+RabbitMQ 4 denies transient (non-durable) non-exclusive queues by default: on a classic queue keep
+the durable default unless the queue is `.exclusive(true)`.
 
 ## Prefetch
 
@@ -110,7 +113,7 @@ this is a client-side convention, unrelated to the server-side hash routing belo
 ## Dead-letter
 
 `.dead_letter_exchange("dlx")` (plus optionally `.dead_letter_routing_key(..)`) sets the queue's
-native dead-letter target. A handler that drops a message settles with
+native dead-letter target, on either descriptor. A handler that drops a message settles with
 `basic.reject(requeue = false)`, which routes it there. This is the queue's own topology, and it
 applies to every rejection, whoever caused it.
 
@@ -127,36 +130,31 @@ in. Two steps after `include` end that:
 is where it goes once they run out, republished as it arrived. A destination is a routing key on
 the default exchange here, so the name is the queue the spent delivery lands in.
 
-On a quorum queue this service declares, the pair becomes topology: the queue is declared with
-`x-delivery-limit` and a dead-letter route to that name, so a message whose consumer keeps dying
-leaves the queue with no service running to count it. The argument is one less than the cap,
-because the server counts the returns a message survives where the cap counts the deliveries it
-gets. A classic queue has no delivery limit of its own, so the runtime applies the declaration on
-the retry path instead: the same promise, with the count kept in the service.
+On a quorum queue this service declares, the pair becomes the queue's own topology: it is declared
+with `x-delivery-limit` and a dead-letter route to that name, and the server applies them. The
+argument is one less than the cap, because the server counts the returns a message survives where
+the cap counts the deliveries it gets. A message whose consumers keep dying then leaves the queue
+with no service running to count it - which is also why `out_retry(policy)` does not compile on a
+quorum queue: there is no copy of this service's to publish, so there is no publisher to name.
 
-The server keeps two counters and the cap reads the longer of them. A quorum queue stamps
-`x-delivery-count` on a delivery that failed - one whose consumer went away without settling it.
-The `x-death` table counts the rounds the server itself carried a message through: an entry per
-queue it left, and this crate counts the two that bring a message back, `rejected` and `expired`.
-A handler asking for its message back spends no attempt either way: RabbitMQ 4.3 does not count a
-requeue where 4.2 did, so a handler-driven retry loop is ended by the framework's own retry-count
-header, which the runtime increments on every copy it publishes. A classic queue with no
-dead-letter route counts nothing at all, and the header is the whole count there.
+Declare both steps or neither. A cap with nowhere to send the spent delivery would drop it, so
+subscribing refuses half a declaration and names the missing step.
 
-## Delayed retry
-
-A handler that returns `HandlerOutcome::retry_after(delay)` asks for redelivery no sooner than
-`delay`, the not-ready-yet case where an immediate requeue would spin. AMQP has no per-message
-delay of its own, so the delayed copy is the runtime's to publish:
+A quorum queue this service does not declare carries the arguments whoever declared it gave it, so
+subscribing refuses the pair there too rather than promising a cap nothing applies: set
+`x-delivery-limit` and `x-dead-letter-exchange` on the broker and mount the handler plainly. The
+crate reads the queue's count either way. A descriptor states the same policy where the queue is
+the service's but the retries are not one handler's business:
 
 ```rust
---8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_fallback"
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:quorum_own_policy"
 ```
 
-The copy waits in the service process, at-most-once over the window. It goes back under the
-queue's own name, which is what addresses the queue on the default exchange, and it leaves
-through a publisher every registration already has: the broker's default publish policy. Name
-another one where that one will not do:
+A classic queue counts nothing and has no delivery limit, so there the cap is the runtime's: it
+counts the attempts in the `x-ruststream-retry-count` header of the copies it publishes, and a
+copy goes back under the queue's own name, which is what addresses the queue on the default
+exchange. The copies leave through a publisher every registration already has, the broker's
+default publish policy. Name another one where that will not do:
 
 ```rust
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_mount"
@@ -166,6 +164,26 @@ The position takes the slot steps: `.codec(..)` and `.transform(..)` after it, a
 where the copy belongs somewhere other than the queue it came from. A transform there reads the
 delivery being retried, the way a reply's transform reads the request.
 
+A handler's `retry()` settles with `basic.reject`, and RabbitMQ counts a rejected delivery as one
+the message has spent - it counts `basic.nack` not at all, which is why this crate never sends
+one. So a handler-driven loop runs a quorum queue's delivery limit down, and a delivery reports
+how far the message has come through `redelivery_count()`. A classic queue keeps no such counter:
+its `redelivered` flag says only that the message has been seen before, and every delivery off one
+reports no count at all.
+
+## Delayed retry
+
+A handler that returns `HandlerOutcome::retry_after(delay)` asks for redelivery no sooner than
+`delay`, the not-ready-yet case where an immediate requeue would spin. AMQP has no per-message
+delay of its own, so the delayed copy is the runtime's to publish, on either queue type:
+
+```rust
+--8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:retry_fallback"
+```
+
+The copy waits in the service process, at-most-once over the window, and goes back under the
+queue's own name.
+
 `.delay(..)` puts the delay on the broker instead: the message parks in a waiting queue with a
 per-message TTL and dead-letters back to the origin queue when the TTL fires, so a restart
 mid-window loses nothing. The service publishes no copy of its own there.
@@ -174,13 +192,13 @@ mid-window loses nothing. The service publishes no copy of its own there.
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"
 ```
 
-A copy is a new message to the server, which counts it from zero: the waiting queue writes its
-`x-death` entry afresh on every round, and a quorum queue's own counter starts again. So the copy
-carries the framework's count instead - the same `x-ruststream-retry-count` the runtime writes on
-the copies it publishes itself, one higher every time it comes back. The cap holds on a delayed
-queue once the core reads that count on this path, which it does from the release after
-0.7.0-rc.5; until this crate's floor names that release, a handler that keeps answering
-`retry_after` on a queue with `.delay(..)` circulates until it stops.
+The copy the waiting queue releases is a new message, and the server counts a new message from
+zero: a quorum queue's own counter starts again on it. So the copy carries the framework's count
+instead - the same `x-ruststream-retry-count` the runtime writes on the copies it publishes
+itself, one higher every time it comes back. The cap holds on a delayed queue once the core reads
+that count on this path, which it does from the release after 0.7.0-rc.5; until this crate's floor
+names that release, a handler that keeps answering `retry_after` on a queue with `.delay(..)`
+circulates until it stops.
 
 The waiting queue (`<queue>.retry` by default, or `Delay::dlx_ttl_named(..)`) is infrastructure:
 it is declared only under `declare_topology(true)`, otherwise provision it yourself. Because a

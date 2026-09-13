@@ -28,9 +28,10 @@
   `basic.reject(requeue = false)` - straight into the queue's dead-letter exchange when one is
   configured. A rejection is the frame RabbitMQ counts as a spent delivery, so a handler's retry
   runs down a quorum queue's own limit.
-- **Descriptors for real topology.** `RabbitQueue` carries durability, queue type
-  (`Classic` / `Quorum`), exchange bindings, prefetch, dead-letter and raw `x-*` arguments; the
-  bare-string `#[subscriber("orders")]` form consumes the queue with that name.
+- **A descriptor per queue type.** `RabbitQueue` is the classic queue and `RabbitQuorumQueue` the
+  quorum one, because the type decides what a retry does and can never change after the queue is
+  created. Both carry exchange bindings, prefetch, dead-letter and raw `x-*` arguments; the
+  bare-string `#[subscriber("orders")]` form consumes the classic queue with that name.
 - **Infrastructure stays yours.** Descriptors describe the EXPECTED topology; nothing is created
   on the broker unless the service opts in with `.declare_topology(true)`.
 - **Batches assembled on the client.** AMQP pushes one `basic.deliver` at a time, so there is no
@@ -46,8 +47,10 @@
 - **A cap the queue can enforce itself.** `.max_attempts(n).dead_letter(name)` after `include`
   says how many deliveries one message gets and where it goes once they run out. On a quorum queue
   this service declares, the pair becomes the queue's own `x-delivery-limit` and dead-letter route,
-  so a spent delivery leaves with no service running; on a classic queue the runtime applies it on
-  the retry path. The count is the queue's own `x-delivery-count` where the queue keeps one.
+  so a spent delivery leaves with no service running - and `out_retry(policy)` does not compile
+  there, because no copy of this service's is published. On a classic queue the runtime applies the
+  cap on the retry path, counting in its own header. A delivery reports the queue's
+  `x-delivery-count` where the queue keeps one, and no count at all where it does not.
 - **A document that knows AMQP.** Behind the `asyncapi` feature every subscription and every
   publish policy fills the specification's `amqp` binding: the queue's settings on the channel,
   the manual acknowledgement on the receive operation, the exchange and the message properties on
