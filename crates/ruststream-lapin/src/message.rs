@@ -5,7 +5,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use lapin::message::Delivery;
 use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
-use lapin::types::ShortString;
+use lapin::types::{AMQPValue, FieldTable, ShortString};
 use lapin::{Acker, BasicProperties};
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
 
@@ -24,6 +24,19 @@ pub const PARTITION_KEY_HEADER: &str = "amqp-partition-key";
 /// Classic queues keep no such counter, and a quorum queue omits the header until the message has
 /// been returned at least once, so its absence says "no count", not "one delivery".
 const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
+
+/// The table `RabbitMQ` stamps on a message it dead-letters, one entry per queue it has left and
+/// why.
+const DEATH_HEADER: &str = "x-death";
+
+/// The field of an `x-death` entry that carries how often that death has happened.
+const COUNT: &str = "count";
+
+/// The reason a waiting queue releases a delayed copy: its per-message TTL ran out.
+const EXPIRED: &[u8] = b"expired";
+
+/// The reason a queue dead-letters a delivery a consumer rejected.
+const REJECTED: &[u8] = b"rejected";
 
 /// One AMQP delivery, settled with the protocol's native acknowledgement frames.
 ///
@@ -189,20 +202,21 @@ impl IncomingMessage for LapinMessage {
         self.headers.get(PARTITION_KEY_HEADER)
     }
 
-    /// How many times this message has been delivered, counting this delivery, on a queue that
-    /// counts: a quorum queue reports its returns in `x-delivery-count`, and this is one more
-    /// than that.
+    /// How many times this message has been delivered, counting this delivery, from the two
+    /// counters the server keeps: a quorum queue's `x-delivery-count` and the `x-death` table of a
+    /// message the server has carried away and brought back. Where both are there the longer one
+    /// answers.
     ///
-    /// What the queue counts is a delivery that failed - one whose consumer went away without
+    /// A quorum queue counts a delivery that failed - one whose consumer went away without
     /// settling it. A `basic.nack` with requeue asks for the message back instead, and `RabbitMQ`
     /// 4.3 does not count that where 4.2 did, so a handler-driven retry loop is bounded by the
     /// framework's own retry-count header rather than by this.
     ///
-    /// `None` on a classic queue and on the first delivery from a quorum queue, which is what
-    /// leaves that header in charge of a registration's cap. A copy published back to the queue -
-    /// the runtime's deferred retry, or a delayed redelivery through a waiting queue - is a new
-    /// message to the server, so its count starts again and the header is what carries the
-    /// attempt forward.
+    /// `None` where neither counter is there: a classic queue that has not dead-lettered this
+    /// message, and the first delivery of any message. That is what leaves the framework's header
+    /// in charge of a registration's cap, and it is also what a delayed redelivery through
+    /// [`RabbitQueue::delay`](crate::RabbitQueue::delay) reports, because the copy the waiting
+    /// queue releases is a new message the server has counted once.
     fn redelivery_count(&self) -> Option<u64> {
         self.returns.map(|returns| returns.saturating_add(1))
     }
@@ -253,11 +267,68 @@ impl IncomingMessage for LapinMessage {
 
 /// The `x-delivery-count` a quorum queue stamps, or `None` where nothing counted.
 fn returns_of(properties: &BasicProperties) -> Option<u64> {
-    properties
-        .headers()
-        .as_ref()
-        .and_then(|table| table.inner().get(&ShortString::from(DELIVERY_COUNT_HEADER)))
-        .and_then(convert::counter)
+    let table = properties.headers().as_ref()?;
+    let counted = table
+        .inner()
+        .get(&ShortString::from(DELIVERY_COUNT_HEADER))
+        .and_then(convert::counter);
+    let dead_lettered = death_count(table);
+    match (counted, dead_lettered) {
+        (None, None) => None,
+        // A queue that counts its failures and also dead-letters keeps both, and they count
+        // different halves of the same journey; the longer one is how far the message has come.
+        (counted, dead_lettered) => Some(counted.unwrap_or(0).max(dead_lettered.unwrap_or(0))),
+    }
+}
+
+/// How often this message has left a queue and come back, from the `x-death` table.
+///
+/// Two reasons are summed because both are a round trip rather than an ending: `rejected` is a
+/// queue carrying away a delivery a handler dropped, and `expired` is a waiting queue releasing a
+/// message whose time was up. Every other reason (`maxlen`, `delivery_limit`) says the message
+/// left for good, and a message that left counts no attempt.
+///
+/// The table is the server's own record, so it grows only where the server itself moved the
+/// message: a delayed redelivery this crate publishes as a copy is a new message, and the server
+/// writes the entry afresh for it. That is why a cap does not reach `retry_after` on a queue with
+/// [`RabbitQueue::delay`](crate::RabbitQueue::delay), and why it does reach a delivery a queue
+/// dead-lettered on its own.
+fn death_count(table: &FieldTable) -> Option<u64> {
+    let AMQPValue::FieldArray(entries) = table.inner().get(&ShortString::from(DEATH_HEADER))?
+    else {
+        return None;
+    };
+    let total: u64 = entries
+        .as_slice()
+        .iter()
+        .filter_map(|entry| match entry {
+            AMQPValue::FieldTable(entry) => Some(entry),
+            _ => None,
+        })
+        .filter(|entry| {
+            entry
+                .inner()
+                .get(&ShortString::from("reason"))
+                .and_then(text_of)
+                .is_some_and(|reason| reason == EXPIRED || reason == REJECTED)
+        })
+        .filter_map(|entry| {
+            entry
+                .inner()
+                .get(&ShortString::from(COUNT))
+                .and_then(convert::counter)
+        })
+        .sum();
+    (total > 0).then_some(total)
+}
+
+/// The bytes of a header value that carries text, whichever string type the server chose.
+fn text_of(value: &AMQPValue) -> Option<&[u8]> {
+    match value {
+        AMQPValue::LongString(value) => Some(value.as_bytes()),
+        AMQPValue::ShortString(value) => Some(value.as_str().as_bytes()),
+        _ => None,
+    }
 }
 
 impl Partitioned for LapinMessage {
@@ -268,5 +339,89 @@ impl Partitioned for LapinMessage {
     /// header, so the producer sets it.
     fn partition_key(&self) -> Option<&[u8]> {
         self.headers.get(PARTITION_KEY_HEADER)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lapin::BasicProperties;
+    use lapin::types::{AMQPValue, FieldArray, FieldTable, ShortString};
+
+    use super::{DEATH_HEADER, DELIVERY_COUNT_HEADER, returns_of};
+
+    /// One `x-death` entry, as the server writes it.
+    fn death(queue: &str, reason: &str, count: i64) -> AMQPValue {
+        let mut entry = FieldTable::default();
+        entry.insert(
+            ShortString::from("queue"),
+            AMQPValue::LongString(queue.into()),
+        );
+        entry.insert(
+            ShortString::from("reason"),
+            AMQPValue::LongString(reason.into()),
+        );
+        entry.insert(ShortString::from("count"), AMQPValue::LongLongInt(count));
+        AMQPValue::FieldTable(entry)
+    }
+
+    fn deaths(entries: Vec<AMQPValue>) -> AMQPValue {
+        AMQPValue::FieldArray(FieldArray::from(entries))
+    }
+
+    /// A delivery carrying `fields` in its header table.
+    fn delivered(fields: &[(&str, AMQPValue)]) -> BasicProperties {
+        let mut table = FieldTable::default();
+        for (name, value) in fields {
+            table.insert(ShortString::from(*name), value.clone());
+        }
+        BasicProperties::default().with_headers(table)
+    }
+
+    // Both reasons are a round trip, so both count towards the attempts a message has spent.
+    #[test]
+    fn a_dead_lettered_delivery_counts_every_round_it_has_been_through() {
+        let properties = delivered(&[(
+            DEATH_HEADER,
+            deaths(vec![
+                death("orders.retry", "expired", 2),
+                death("orders", "rejected", 1),
+            ]),
+        )]);
+
+        assert_eq!(returns_of(&properties), Some(3));
+    }
+
+    // A message dropped for a queue length or a delivery limit left for good; it did not come
+    // round again, so it spent no attempt.
+    #[test]
+    fn a_death_that_is_not_a_round_trip_counts_for_nothing() {
+        let properties = delivered(&[(
+            DEATH_HEADER,
+            deaths(vec![
+                death("orders", "maxlen", 7),
+                death("orders", "delivery_limit", 4),
+            ]),
+        )]);
+
+        assert_eq!(returns_of(&properties), None);
+    }
+
+    // A quorum queue with a dead-letter route keeps both counters, and they count different
+    // halves of the same journey: the longer one is how far the message has come.
+    #[test]
+    fn the_longer_of_the_two_counters_answers() {
+        let properties = delivered(&[
+            (DELIVERY_COUNT_HEADER, AMQPValue::LongLongInt(4)),
+            (DEATH_HEADER, deaths(vec![death("orders", "rejected", 2)])),
+        ]);
+
+        assert_eq!(returns_of(&properties), Some(4));
+    }
+
+    // Nothing counted: the first delivery of a message on a queue that keeps no counter.
+    #[test]
+    fn a_delivery_with_neither_counter_reports_none() {
+        assert_eq!(returns_of(&BasicProperties::default()), None);
+        assert_eq!(returns_of(&delivered(&[])), None);
     }
 }

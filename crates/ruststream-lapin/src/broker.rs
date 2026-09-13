@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use lapin::options::{BasicConsumeOptions, BasicQosOptions};
 use lapin::types::{FieldTable, ShortString};
-use lapin::{Channel, Connection, ConnectionProperties};
+use lapin::{Channel, ChannelState, Connection, ConnectionProperties, ConnectionState, ErrorKind};
 use ruststream::{
     AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
 };
@@ -346,11 +346,20 @@ impl ConnectedBroker for ConnectedLapinBroker {
         self.conn.closed.store(true, Ordering::Release);
         let handshake = self.conn.connection.status().connected();
         if handshake {
-            self.conn
+            match self
+                .conn
                 .connection
                 .close(200, ShortString::from("OK"))
                 .await
-                .map_err(AmqpError::connect)?;
+            {
+                Ok(()) => {}
+                // A subscriber dropped just before the shutdown is still cancelling its consumer,
+                // and lapin refuses to close a channel it is already closing. The connection is
+                // going away either way, so reporting that as a teardown failure would make an
+                // orderly shutdown look broken - and would do so only sometimes, which is worse.
+                Err(err) if already_closing(&err) => {}
+                Err(err) => return Err(AmqpError::connect(err)),
+            }
         }
         Ok(ClosedLapinBroker { handshake })
     }
@@ -384,6 +393,15 @@ impl Subscribe for ConnectedLapinBroker {
 
 impl DefaultPublish for ConnectedLapinBroker {
     type Policy = LapinPublish;
+}
+
+/// Whether this error says the close is already under way rather than that it failed.
+fn already_closing(err: &lapin::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::InvalidChannelState(ChannelState::Closing | ChannelState::Closed, _)
+            | ErrorKind::InvalidConnectionState(ConnectionState::Closing | ConnectionState::Closed)
+    )
 }
 
 /// The terminal witness returned by shutting down a [`ConnectedLapinBroker`].

@@ -9,6 +9,7 @@
 //! the message back with `basic.nack(requeue = true)` is not that, and `RabbitMQ` 4.3 does not count
 //! it (4.2 did), which is why the runtime's own cap is what ends a handler-driven retry loop.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
@@ -37,8 +38,8 @@ fn amqp_url() -> Option<String> {
 
 /// Unique per test run and per call, so runs never see each other's queues.
 fn unique(base: &str) -> String {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("ruststream-retry.{base}.{}-{n}", std::process::id())
 }
 
@@ -171,30 +172,43 @@ async fn a_spent_delivery_leaves_for_the_dead_letter_queue() {
         .subscribe(RabbitQueue::new(&dead))
         .await
         .expect("the dead-letter queue has to exist before a message is sent there");
-    let mut subscriber = connected
+    connected
         .subscribe(declared(&queue, &dead))
         .await
-        .expect("subscribe");
+        .expect("subscribe declares the queue");
 
     publish(&connected, &queue, b"poison").await;
 
     for attempt in 1..=ATTEMPTS {
+        // A connection of its own per attempt: closing it is what returns the delivery to the
+        // queue, and the close handshake is awaited, so the next attempt cannot race the consumer
+        // that dropped this one.
+        let worker = LapinBroker::new(url.clone())
+            .connect()
+            .await
+            .expect("connect");
+        let mut subscriber = worker
+            .subscribe(declared(&queue, &dead))
+            .await
+            .expect("subscribe");
         let mut stream = Box::pin(subscriber.stream());
         let delivery = next(&mut stream).await;
         assert_eq!(delivery.payload(), b"poison", "attempt {attempt}");
-        // Dropping the delivery and its subscriber closes the channel with the message unsettled,
-        // which is the consumer going away: the queue takes the message back and counts the
-        // attempt.
+        // The delivery is left unsettled and the connection goes with it, which is the consumer
+        // dying on a message: the queue takes it back and counts the attempt. The subscriber
+        // outlives the shutdown on purpose - dropping it first starts a channel close the
+        // shutdown would then race.
         drop(delivery);
         drop(stream);
+        worker.shutdown().await.expect("the consumer goes away");
         drop(subscriber);
-        subscriber = connected
-            .subscribe(declared(&queue, &dead))
-            .await
-            .expect("resubscribe");
     }
 
-    let mut stream = Box::pin(subscriber.stream());
+    let mut spent = connected
+        .subscribe(declared(&queue, &dead))
+        .await
+        .expect("subscribe");
+    let mut stream = Box::pin(spent.stream());
     assert!(
         tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
         "the attempts are spent, so the queue must not hand the message out again",
@@ -207,7 +221,7 @@ async fn a_spent_delivery_leaves_for_the_dead_letter_queue() {
     carried.ack().await.expect("ack");
 
     drop(dead_stream);
-    drop(subscriber);
+    drop(spent);
     drop(graveyard);
     connected.shutdown().await.expect("shutdown");
     delete_queues(&url, &[&queue, &dead]).await;
@@ -283,4 +297,49 @@ async fn a_classic_delivery_reports_no_count() {
     drop(subscriber);
     connected.shutdown().await.expect("shutdown");
     delete_queues(&url, &[&queue]).await;
+}
+
+// What the queue carries away it also marks: a rejected delivery reaches the dead-letter queue
+// with an `x-death` entry naming the queue it left and why, and that entry is what tells the next
+// consumer how far the message has come.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_lettered_delivery_reports_the_round_it_has_been_through() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("rejected");
+    let dead = unique("rejected.dead");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let mut graveyard = connected
+        .subscribe(RabbitQueue::new(&dead))
+        .await
+        .expect("the dead-letter queue has to exist before a message is sent there");
+    let mut subscriber = connected
+        .subscribe(declared(&queue, &dead))
+        .await
+        .expect("subscribe");
+
+    publish(&connected, &queue, b"rejected").await;
+
+    let mut stream = Box::pin(subscriber.stream());
+    let first = next(&mut stream).await;
+    assert_eq!(first.redelivery_count(), None);
+    // Dropping the delivery is what sends it to the queue's dead-letter route.
+    first.nack(false).await.expect("reject");
+
+    let mut dead_stream = Box::pin(graveyard.stream());
+    let carried = next(&mut dead_stream).await;
+    assert_eq!(carried.payload(), b"rejected");
+    assert_eq!(carried.redelivery_count(), Some(2));
+    carried.ack().await.expect("ack");
+
+    drop(dead_stream);
+    drop(stream);
+    drop(subscriber);
+    drop(graveyard);
+    connected.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[&queue, &dead]).await;
 }

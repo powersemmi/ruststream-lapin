@@ -134,12 +134,14 @@ because the server counts the returns a message survives where the cap counts th
 gets. A classic queue has no delivery limit of its own, so the runtime applies the declaration on
 the retry path instead: the same promise, with the count kept in the service.
 
-What the queue counts is a delivery that failed - one whose consumer went away without settling it
-- and a quorum queue stamps that count on every redelivery as `x-delivery-count`. That is what the
-cap reads where it is there. A handler asking for its message back does not spend an attempt that
-way: RabbitMQ 4.3 does not count a requeue where 4.2 did, so a handler-driven retry loop is ended
-by the framework's own retry-count header, which the runtime increments on every copy it
-publishes. A classic queue counts nothing at all, and the header is the whole count there.
+The server keeps two counters and the cap reads the longer of them. A quorum queue stamps
+`x-delivery-count` on a delivery that failed - one whose consumer went away without settling it.
+The `x-death` table counts the rounds the server itself carried a message through: an entry per
+queue it left, and this crate counts the two that bring a message back, `rejected` and `expired`.
+A handler asking for its message back spends no attempt either way: RabbitMQ 4.3 does not count a
+requeue where 4.2 did, so a handler-driven retry loop is ended by the framework's own retry-count
+header, which the runtime increments on every copy it publishes. A classic queue with no
+dead-letter route counts nothing at all, and the header is the whole count there.
 
 ## Delayed retry
 
@@ -172,11 +174,12 @@ mid-window loses nothing. The service publishes no copy of its own there.
 --8<-- "crates/ruststream-lapin/examples/lapin_topology.rs:delay"
 ```
 
-A cap does not reach that path. The waiting queue republishes the message rather than returning
-it, so the queue's own count starts again on every delayed copy and no attempt is carried forward:
-a handler that keeps answering `retry_after` on a queue with `.delay(..)` circulates until it
-stops. Leave the delay to the runtime where the cap has to hold, since the copy it publishes
-carries the count in a header.
+A cap does not reach that path, and the reason is the republish. A copy is a new message to the
+server: the waiting queue writes its `x-death` entry afresh on every round, overwriting a count a
+client tries to carry, and the framework's own header is not incremented where the broker holds
+the message. Neither counter grows, so a handler that keeps answering `retry_after` on a queue
+with `.delay(..)` circulates until it stops. Leave the delay to the runtime where the cap has to
+hold: the copy it publishes carries the count in a header.
 
 The waiting queue (`<queue>.retry` by default, or `Delay::dlx_ttl_named(..)`) is infrastructure:
 it is declared only under `declare_topology(true)`, otherwise provision it yourself. Because a
