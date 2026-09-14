@@ -161,6 +161,13 @@ queue's own name, which is what addresses the queue on the default exchange. The
 through the broker's default publish policy unless `out_retry(policy)` names another, and that
 position takes the slot's own steps (`.codec(..)`, `.transform(..)`, `.to(name)`).
 
+A bare queue name takes the runtime's cap too. `#[subscriber("orders")]` carries no arguments to
+declare a queue with, so a name arriving here is a queue that already exists and the two steps
+stay what the runtime applies, whatever that queue turns out to be. A quorum queue that is to
+carry a spent delivery away itself gets `x-delivery-limit` and a dead-letter route where it is
+declared: from [`RabbitQuorumQueue`] in a service that owns the queue, on the server in a service
+that does not.
+
 ```
 # mod demo {
 use ruststream_lapin::prelude::*;
@@ -221,8 +228,10 @@ only from its head, so mixed delays want one waiting queue per delay class, a qu
 plugin. Either waiting queue is infrastructure, declared only under `declare_topology(true)`.
 
 The copy the wait releases is a new message, which the server counts from zero, so it carries the
-framework's `x-ruststream-retry-count` raised by one - the record that lets a registration's cap
-survive the round.
+framework's `x-ruststream-retry-count` raised by one. The runtime reads that count on this path as
+well, so a cap declared over a queue with [`delay`](RabbitQueue::delay) ends the loop the way it
+ends an immediate one: the spent delivery goes to the dead-letter queue instead of waiting once
+more.
 
 ## Batches
 
@@ -382,7 +391,8 @@ A publishing handler returns its reply and the runtime publishes it through the 
 `.out_reply(..)`. Where it goes is the reply type's word: `#[outgoing(name = "..")]` fixes the
 routing key, and a type that declares none takes the name the `publish("..")` clause gives. The
 steps after the position fill the rest of the wiring, `.codec(..)` for the reply codec and
-`.transform(..)` for a change to each reply before it leaves.
+`.transform(..)` for a change to each reply before it leaves. The whole reply surface is the
+core's: <https://docs.rs/ruststream/latest/ruststream/runtime/index.html#replies>.
 
 ## Transactions
 
@@ -491,18 +501,21 @@ document is built before anything connects.
 A subscription's channel is the queue, and its binding carries the durability, exclusivity and
 auto-delete the descriptor states; its receive operation reports `ack: true`, because this crate
 always acknowledges by hand. A publish policy describes the channel from the other side: a routing
-key on a named exchange, or a queue where the policy is on the default exchange. Its send operation
-carries the properties every message through the policy takes - the delivery mode, and the priority
-and expiration where the policy fixes them - because the document describes the declaration and not
-a call, so a per-message step changes nothing in it. A handler mounted with [`DirectReplyTo`] has
-no reply address to report, so the operation names where a client reads one instead,
-`$message.header#/reply-to`.
+key on a named exchange, or a queue where the policy is on the default exchange. The name it
+carries is the destination the mount site resolved - a reply's own name, a slot's name, a
+`dead_letter(..)` declaration - because a policy carries publish settings and never a destination.
+Its send operation carries the properties every message through the policy takes - the delivery
+mode, and the priority and expiration where the policy fixes them - because the document describes
+the declaration and not a call, so a per-message step changes nothing in it. A handler mounted
+with [`DirectReplyTo`] has no reply address to report, so the operation names where a client reads
+one instead, `$message.header#/reply-to`.
 
 The server entry reports the host and the AMQP version behind it. It never carries what the
 connection URI holds: the document is published and shared, so the credentials and the virtual host
 are dropped. Two fields of the specification's binding stay empty for want of an honest source -
 the virtual host, which no descriptor or policy sees, and the message type, which the document
-already reports as the message's own name.
+already reports as the message's own name and which a binding hook never learns, being handed the
+subscription or the destination and nothing of what travels over it.
 
 # Testing
 
