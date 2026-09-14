@@ -164,6 +164,13 @@ The position takes the slot steps: `.codec(..)` and `.transform(..)` after it, a
 where the copy belongs somewhere other than the queue it came from. A transform there reads the
 delivery being retried, the way a reply's transform reads the request.
 
+A bare queue name takes the runtime's cap too. `#[subscriber("orders")]` carries no arguments to
+declare a queue with, so the two steps stay what the runtime applies: the header counts the
+deliveries and the spent one goes to the dead-letter name. That holds whatever the queue on the
+broker turns out to be, so a quorum queue that is to carry a spent delivery away itself gets
+`x-delivery-limit` and `x-dead-letter-exchange` where it is declared - from `RabbitQuorumQueue` in
+a service that owns the queue, on the broker in a service that does not.
+
 A handler's `retry()` settles with `basic.reject`, and RabbitMQ counts a rejected delivery as one
 the message has spent - it counts `basic.nack` not at all, which is why this crate never sends
 one. So a handler-driven loop runs a quorum queue's delivery limit down, and a delivery reports

@@ -386,6 +386,11 @@ impl Subscribe for ConnectedLapinBroker {
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         ConnectedLapinBroker::subscribe(self, RabbitQueue::new(name)).await
     }
+
+    // `declare_retry` keeps the default, which accepts the declaration and leaves the runtime to
+    // apply it. A cap RabbitMQ enforces itself is `x-delivery-limit` with a dead-letter route, and
+    // a queue takes both at declaration time: a name arriving here is a queue that already exists,
+    // so there is nothing to declare them on. `RabbitQuorumQueue` is where they become topology.
 }
 
 impl DefaultPublish for ConnectedLapinBroker {

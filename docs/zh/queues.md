@@ -144,6 +144,11 @@ prelude 导出这些键，但不导出上下文类型，后者从 `ruststream_la
 这个位置接受槽位的各步骤：其后的 `.codec(..)` 与 `.transform(..)`，以及副本该去别处时的
 `.to(name)`。那里的变换读的是正在被重试的那次投递，正如回复的变换读请求。
 
+光一个队列名字，上限同样归运行时。`#[subscriber("orders")]` 没有可用来声明队列的参数，于是这两
+步仍旧由运行时来落实：消息头数投递，用完的那一次发往死信名字。Broker 上的队列无论是哪一种都这样，
+所以要让仲裁队列自己把用完的投递带走，`x-delivery-limit` 与 `x-dead-letter-exchange` 就得写在声
+明它的地方：队列属于本服务时用 `RabbitQuorumQueue`，不属于本服务时写在 Broker 上。
+
 处理器的 `retry()` 按 `basic.reject` 结算，而被拒绝的投递，RabbitMQ 算作消息用掉的一次 - 它完全
 不数 `basic.nack`，这个 crate 也就从不发它。于是处理器挑起的重试循环会耗掉仲裁队列的投递上限，
 而投递通过 `redelivery_count()` 报出消息已经走了多远。经典队列没有这样的计数器：它的
