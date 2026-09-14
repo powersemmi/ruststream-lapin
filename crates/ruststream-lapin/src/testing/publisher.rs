@@ -9,8 +9,8 @@
 //! [`ConfirmsPublish`] carries both transaction shapes and [`ServerTxPublish`] only the borrowed
 //! one, exactly as their live counterparts do.
 //!
-//! What the transport underneath cannot reproduce is stated per publisher below, and collected in
-//! the crate's testing guide.
+//! What the transport underneath cannot reproduce is stated per publisher below, and collected
+//! under [Testing](crate#testing).
 
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};

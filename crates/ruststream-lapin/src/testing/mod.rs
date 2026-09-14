@@ -21,7 +21,7 @@
 //!
 //! Scope: queue-name routing, competing consumers, settlement and redelivery, headers, buffered
 //! transactions, and request/reply correlation. What the transport cannot reproduce is stated on
-//! the type that would otherwise imply it, and collected in the crate's testing guide: the
+//! the type that would otherwise imply it, and collected under [Testing](crate#testing): the
 //! server-side halves of exchanges and bindings, dead-lettering, prefetch, publisher confirms,
 //! AMQP server transactions, the at-most-once nature of direct reply-to, and a quorum queue's
 //! delivery count, which rises on a delivery whose consumer went away - something no handler
