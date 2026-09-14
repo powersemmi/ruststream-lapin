@@ -195,10 +195,9 @@ mid-window loses nothing. The service publishes no copy of its own there.
 The copy the waiting queue releases is a new message, and the server counts a new message from
 zero: a quorum queue's own counter starts again on it. So the copy carries the framework's count
 instead - the same `x-ruststream-retry-count` the runtime writes on the copies it publishes
-itself, one higher every time it comes back. The cap holds on a delayed queue once the core reads
-that count on this path, which it does from the release after 0.7.0-rc.5; until this crate's floor
-names that release, a handler that keeps answering `retry_after` on a queue with `.delay(..)`
-circulates until it stops.
+itself, one higher every time it comes back. The runtime reads that count on this path as well, so
+a cap declared over a queue with `.delay(..)` ends the loop the way it ends an immediate one: the
+spent delivery goes to the dead-letter queue instead of waiting once more.
 
 The waiting queue (`<queue>.retry` by default, or `Delay::dlx_ttl_named(..)`) is infrastructure:
 it is declared only under `declare_topology(true)`, otherwise provision it yourself. Because a

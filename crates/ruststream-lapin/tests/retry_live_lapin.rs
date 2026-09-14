@@ -640,3 +640,87 @@ async fn a_copy_the_waiting_queue_releases_carries_the_count() {
     connected.shutdown().await.expect("shutdown");
     delete_queues(&url, &[&queue, &waiting]).await;
 }
+
+/// The queue whose delay is the broker's, the queue a copy waits in, and where a spent delivery
+/// goes. The attribute takes a literal, so these are fixed names the test cleans up after itself.
+const DELAYED: &str = "ruststream-retry.delayed-capped";
+const DELAYED_WAIT: &str = "ruststream-retry.delayed-capped.retry";
+const DELAYED_DEAD: &str = "ruststream-retry.delayed-capped.dead";
+
+/// Short enough that three rounds fit inside the test's timeout.
+const DELAY: Duration = Duration::from_millis(150);
+
+/// Never ready, and it asks for the delay the waiting queue holds the copy for.
+#[subscriber(RabbitQueue::new(DELAYED).delay(Delay::dlx_ttl()))]
+async fn never_ready_later(
+    order: &Order,
+    ctx: &mut Context<'_>,
+    State(attempts): State<Attempts>,
+) -> HandlerOutcome {
+    let _ = order.id;
+    attempts
+        .lock()
+        .expect("attempts mutex poisoned")
+        .push(ctx.headers().get_str(RETRY_COUNT_HEADER).map(str::to_owned));
+    HandlerOutcome::retry_after(DELAY)
+}
+
+/// The end of the run: the message the cap spent lands here.
+#[subscriber(RabbitQueue::new(DELAYED_DEAD))]
+async fn delayed_out(order: &Order, State(done): State<Arc<Notify>>) -> HandlerOutcome {
+    let _ = order.id;
+    done.notify_one();
+    HandlerOutcome::ack()
+}
+
+// The waiting queue releases a new message, which the server counts from zero, so the framework's
+// count on the copy is the only record of the round. The runtime reads it on this path too, so the
+// cap ends the loop here as it does on an immediate retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_runtimes_cap_ends_a_delayed_retry_loop_on_a_waiting_queue() {
+    let Some(url) = amqp_url() else { return };
+    delete_queues(&url, &[DELAYED, DELAYED_WAIT, DELAYED_DEAD]).await;
+
+    let state = Capped {
+        attempts: Attempts::default(),
+        done: Arc::new(Notify::new()),
+    };
+    let recorded = Arc::clone(&state.attempts);
+    let finished = Arc::clone(&state.done);
+    let app = RustStream::new(AppInfo::new("delayed", "0.1.0"))
+        .on_startup(move |()| {
+            let state = state;
+            async move { Ok::<_, Infallible>(state) }
+        })
+        .with_broker(LapinBroker::new(url.clone()).declare_topology(true), |b| {
+            b.include(never_ready_later)
+                .max_attempts(nonzero!(ATTEMPTS))
+                .dead_letter(DELAYED_DEAD);
+            b.include(delayed_out);
+        });
+    let running = tokio::spawn(app.run_until(async move { finished.notified().await }));
+
+    // Published after the app is up, through a connection of its own: the queues exist by then,
+    // because the subscriptions declared them.
+    let publisher = LapinBroker::new(url.clone())
+        .connect()
+        .await
+        .expect("connect");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    publish(&publisher, DELAYED, br#"{"id":12}"#).await;
+
+    tokio::time::timeout(WAIT, running)
+        .await
+        .expect("the cap ends the loop and the app shuts down")
+        .expect("app task did not panic")
+        .expect("run_until succeeded");
+
+    assert_eq!(
+        *recorded.lock().expect("attempts mutex poisoned"),
+        vec![None, Some("1".to_owned()), Some("2".to_owned())],
+        "each copy the waiting queue releases carries the count one higher",
+    );
+
+    publisher.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[DELAYED, DELAYED_WAIT, DELAYED_DEAD]).await;
+}

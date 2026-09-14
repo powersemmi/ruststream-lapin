@@ -380,10 +380,9 @@ async fn every_copy_the_waiting_queue_releases_counts_one_more_attempt() {
     tb.shutdown().await.expect("shutdown");
 }
 
-// The cap over a waiting queue, which the copy's count is what makes countable. The core reads
-// that count on the native delayed path from the release after 0.7.0-rc.5; until this crate's
-// floor names it, the delivery keeps coming back and the assertions below cannot hold.
-#[ignore = "needs the core after 0.7.0-rc.5, which reads the retry count on the delayed path"]
+// The cap over a waiting queue. The broker releases the copy, so the queue counts nothing and the
+// framework's count on the copy is the only record of the round: the runtime reads it on the
+// delayed path too, and the cap ends the loop at the dead-letter queue.
 #[tokio::test(start_paused = true)]
 async fn a_declared_cap_ends_a_delayed_retry_loop() {
     let app =
