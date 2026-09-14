@@ -20,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 `Out<impl RequestReply>`. Оно импортирует только прелюдию фреймворка, и поэтому один и тот же
 обработчик монтируется и на настоящий брокер, и на внутрипроцессный тестовый. Прелюдию этого крейта
 импортирует одно тело: то, которое меняет
-[свойство AMQP](publishing.md#per-message-amqp-properties) для одного сообщения. Оно называет тип
+[свойство AMQP][properties] для одного сообщения. Оно называет тип
 настроек, а не тип издателя - `Out<impl Publisher<Options = LapinPublishOptions>>`, - поэтому
 обработчик по-прежнему монтируется на оба.
 
@@ -40,12 +40,12 @@ serde = { version = "1", features = ["derive"] }
 ## Модель транспорта {#the-transport-model}
 
 - Подписка читает одну очередь. `#[subscriber("orders")]` читает очередь `orders`, а дескриптор
-  [`RabbitQueue`](queues.md) добавляет привязки, типы очередей и предвыборку. Пакетный обработчик
+  [`RabbitQueue`][subscribing] добавляет привязки, типы очередей и предвыборку. Пакетный обработчик
   называет свой размер в точке монтирования, и крейт собирает пакет на клиенте, потому что в AMQP
-  нет пакета на уровне протокола; смотрите [Пакеты](queues.md#batches).
+  нет пакета на уровне протокола; смотрите [Пакеты][batches].
 - На стороне публикации имя сообщения - это ключ маршрутизации, а обменник принадлежит политике
   публикации: пока вы не назовёте другой, это обменник по умолчанию. Смотрите
-  [Публикацию](publishing.md).
+  [Публикацию][publishing].
 - Завершение доставки нативное: `ack` отправляет `basic.ack`, повтор - `basic.reject(requeue = true)`,
   отбрасывание - `basic.reject(requeue = false)`, который отправляет сообщение в очередь
   недоставленных, если у очереди задан такой обменник. Отказ - это кадр, который RabbitMQ считает
@@ -60,14 +60,14 @@ serde = { version = "1", features = ["derive"] }
 
 | Совместимость | Нативно | Примечания |
 | --- | --- | --- |
-| `Subscribe` | да | Читает очередь, которую называет подписка; [`RabbitQueue`](queues.md) добавляет привязки, тип очереди и предвыборку. |
-| `BatchSubscriber` | да, на клиенте | AMQP присылает по одному `basic.deliver`, поэтому пакет собирается на клиенте до размера, названного в точке монтирования, в пределах окна предвыборки дескриптора и `batch_wait`. Смотрите [Пакеты](queues.md#batches). |
-| `TransactionalPublisher` | да | Оба транзакционных издателя: `.confirms()` буферизует на клиенте и при фиксации дожидается каждого подтверждения, `.server_tx()` использует транзакции канала AMQP. Смотрите [Три издателя](publishing.md#three-publishers). |
+| `Subscribe` | да | Читает очередь, которую называет подписка; [`RabbitQueue`](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#subscribing) добавляет привязки, тип очереди и предвыборку. |
+| `BatchSubscriber` | да, на клиенте | AMQP присылает по одному `basic.deliver`, поэтому пакет собирается на клиенте до размера, названного в точке монтирования, в пределах окна предвыборки дескриптора и `batch_wait`. Смотрите [Пакеты](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#batches). |
+| `TransactionalPublisher` | да | Оба транзакционных издателя: `.confirms()` буферизует на клиенте и при фиксации дожидается каждого подтверждения, `.server_tx()` использует транзакции канала AMQP. Смотрите [Публикацию](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#publishing). |
 | `OwnedTransactions` | да (только confirms) | Транзакция на подтверждениях - это клиентский буфер, поэтому на одном дескрипторе их может быть открыто сколько угодно. `server_tx` переводит в транзакционный режим сам канал, а это состояние канала, существующее ровно в одном экземпляре. |
-| `RequestReply` | да | `LapinRequest` конструирует запросчика поверх direct reply-to с мультиплексированием по `correlation-id`. Смотрите [Запрос-ответ](request-reply.md). |
-| `Partitioned` | да | Производитель кладёт ключ в заголовок `amqp-partition-key`, и партиции воркеров рантайма читают его; сам AMQP этот заголовок не интерпретирует. Смотрите [Партиции воркеров по ключу](queues.md#keyed-worker-lanes). |
+| `RequestReply` | да | `LapinRequest` конструирует запросчика поверх direct reply-to с мультиплексированием по `correlation-id`. Смотрите [Запрос-ответ](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#request-and-reply). |
+| `Partitioned` | да | Производитель кладёт ключ в заголовок `amqp-partition-key`, и партиции воркеров рантайма читают его; сам AMQP этот заголовок не интерпретирует. Смотрите [Метаданные доставки](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#delivery-metadata). |
 | `Seekable` + `Positioned` | нет | Очередь не хранит историю, в которую можно было бы вернуться. |
-| `DescribeServer` | да | Сообщает хост подключения и версию AMQP за ним, и именно это записывает документ AsyncAPI. См. [Документ AsyncAPI](documenting.md). |
+| `DescribeServer` | да | Сообщает хост подключения и версию AMQP за ним, и именно это записывает документ AsyncAPI. См. [Документ AsyncAPI](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-asyncapi-document). |
 
 ## Каркас сервиса {#scaffold-a-service}
 
@@ -80,12 +80,28 @@ cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/am
 cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-topic
 ```
 
-## Руководства {#guides}
+## Документация {#documentation}
 
-- [Очереди и топология](queues.md) - дескрипторы, типы очередей, привязки, предвыборка, очередь
-  недоставленных, объявление, которое включают явно.
-- [Публикация](publishing.md) - модель маршрутизации, сохраняемость, подтверждения издателя и
-  серверные транзакции.
-- [Запрос-ответ](request-reply.md) - RPC поверх RabbitMQ direct reply-to.
-- [Документ AsyncAPI](documenting.md) - привязки AMQP, которые сервис сообщает о себе.
-- [Тестирование](testing.md) - внутрипроцессный тестовый брокер под обвязкой `TestApp`.
+Крейт документирует себя на docs.rs, и этот обзор и есть руководство:
+
+- [Подписка][subscribing] - два дескриптора очередей, типы очередей, привязки, предвыборка,
+  предел повторов, отложенная повторная доставка, пакеты и метаданные доставки.
+- [Публикация][publishing] - модель маршрутизации, политики, свойства AMQP для одного сообщения,
+  ответы и транзакции.
+- [Запрос-ответ][request-reply] - RPC поверх direct reply-to.
+- [Документ AsyncAPI][documenting] - привязки AMQP, которые сервис сообщает о себе.
+- [Тестирование][testing] - внутрипроцессный тестовый брокер под обвязкой `TestApp`.
+- [Эксплуатация][operations] - TLS, настройки подключения, объявление по запросу и известные
+  пробелы.
+
+Установка, учебник и остальные брокеры - на сайте RustStream:
+<https://powersemmi.github.io/ruststream/>.
+
+[subscribing]: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#subscribing
+[batches]: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#batches
+[publishing]: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#publishing
+[properties]: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#per-message-properties
+[request-reply]: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#request-and-reply
+[documenting]: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-asyncapi-document
+[testing]: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#testing
+[operations]: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#operations

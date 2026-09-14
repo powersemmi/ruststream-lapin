@@ -71,6 +71,27 @@ hooks:
 
 plugins:
   - search
+  # Pages that moved keep their old URLs alive; extend the map on any future move. The guides
+  # moved to docs.rs, where the crate overview documents itself, so every old guide URL in every
+  # language lands on the section that took the topic over. `latest` there is the newest stable
+  # release, so the sections appear once the 0.7 line is out of its release candidates.
+  - redirects:
+      redirect_maps:
+        queues.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#subscribing
+        publishing.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#publishing
+        request-reply.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#request-and-reply
+        documenting.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-asyncapi-document
+        testing.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#testing
+        ru/queues.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#subscribing
+        ru/publishing.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#publishing
+        ru/request-reply.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#request-and-reply
+        ru/documenting.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-asyncapi-document
+        ru/testing.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#testing
+        zh/queues.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#subscribing
+        zh/publishing.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#publishing
+        zh/request-reply.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#request-and-reply
+        zh/documenting.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-asyncapi-document
+        zh/testing.md: https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#testing
   # Versioned docs published with `mike`
   # Each translation is a tree of its own under `docs/<locale>/`, mirroring the English paths.
   # English stays at the docs root: a file outside a locale folder is the default language.
@@ -93,7 +114,6 @@ plugins:
           build: true
           nav_translations:
             Home: Главная
-            Guide: Руководство
             RustStream docs: Документация RustStream
             API reference: Справочник API
         - locale: zh
@@ -101,7 +121,6 @@ plugins:
           build: true
           nav_translations:
             Home: 首页
-            Guide: 指南
             RustStream docs: RustStream 文档
             API reference: API 参考
 
@@ -114,11 +133,5 @@ extra:
 
 nav:
   - Home: index.md
-  - Guide:
-      - queues.md
-      - publishing.md
-      - request-reply.md
-      - documenting.md
-      - testing.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-lapin
