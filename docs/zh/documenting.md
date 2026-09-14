@@ -8,7 +8,7 @@ ruststream-lapin = { version = "0.7", features = ["asyncapi"] }
 ```
 
 不开这个特性，文档照样生成，只是里面没有任何 RabbitMQ 特有的东西。开了之后，一个读取一个队列、
-用 direct reply-to 作答的服务会这样报告自己：
+用 direct reply-to 作答、把用完的投递送进死信队列的服务会这样报告自己：
 
 ```json
 --8<-- "crates/ruststream-lapin/tests/snapshots/asyncapi-amqp.json"
@@ -38,8 +38,9 @@ Broker，把自己描述为 `rabbit:5672` - 密码和虚拟主机都被丢掉。
 ## 发布者写入的频道
 
 发布策略从另一侧描述频道。`LapinPublish::default().exchange("x")` 是交换机 `x` 上的一个路由键，
-所以绑定报告 `is: routingKey` 和该交换机的名字。在默认交换机上，路由键就是队列名，绑定也就照直
-写成 `is: queue`。
+所以绑定报告 `is: routingKey` 和该交换机的名字。在默认交换机上，路由键就是队列名，绑定于是报告
+`is: queue` 并点出这个队列。名字取自挂载点解析出来的目的地：应答自己的名字、`dead_letter(..)`
+的声明、槽位的名字。策略带的是发布设置，从来不带目的地。
 
 发送操作带的是每条经由该策略的消息所取得的属性：`deliveryMode`（持久化默认值为 2，
 `persistent(false)` 为 1），以及策略固定下来的 `priority` 与 `expiration`。为单条消息调整属性的
@@ -59,4 +60,4 @@ direct reply-to 约定。
 
 规范的 AMQP 绑定里有两个字段，在这里没有诚实的来源。虚拟主机住在 Broker 的连接地址里，而描述符和
 策略都看不到它。消息类型是 Rust 类型的名字，文档已经把它作为消息自己的名字报出来了，而绑定钩子
-也学不到它：交给钩子的是描述符，不是消息类型。
+也学不到它：交给钩子的是队列或目的地，不是在上面走的东西。

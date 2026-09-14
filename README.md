@@ -53,8 +53,9 @@
   `x-delivery-count` where the queue keeps one, and no count at all where it does not.
 - **A document that knows AMQP.** Behind the `asyncapi` feature every subscription and every
   publish policy fills the specification's `amqp` binding: the queue's settings on the channel,
-  the manual acknowledgement on the receive operation, the exchange and the message properties on
-  a send, and the reply-to header a client reads an answer's address from. The server reports
+  the manual acknowledgement on the receive operation, the exchange a publish leaves through or
+  the queue it lands in, the message properties on a send, and the reply-to header a client reads
+  an answer's address from. The server reports
   `protocolVersion` `0.9.1`, which is what tells AMQP 0.9.1 from AMQP 1.0.
 - **Three publishers, chosen on the policy.** `LapinPublish::default()` is fire-and-forget;
   `.confirms()` awaits every broker confirm and buffers a transaction client-side (durable, fast,

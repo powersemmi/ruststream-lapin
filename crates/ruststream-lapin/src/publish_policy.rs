@@ -123,15 +123,19 @@ macro_rules! publish_policy_settings {
 /// client reads the address of an answer: this crate routes a reply by the `reply-to` header
 /// whichever publisher carries it. The bodies are the same for every policy and for its
 /// in-process stand-in, and the core copies nothing between them, so they are written once here.
+///
+/// The core names the hooks' parameter `channel`, the `AsyncAPI` word for what a message is
+/// published to. It is the routing key here, and `channel` is an AMQP connection's own word in
+/// this crate, so the parameter is `destination` on this side of the call.
 macro_rules! publish_policy_bindings {
     () => {
         #[cfg(feature = "asyncapi")]
-        fn channel_bindings(&self) -> Bindings {
-            crate::bindings::publish_channel(self.publish_options())
+        fn channel_bindings(&self, destination: &str) -> Bindings {
+            crate::bindings::publish_channel(self.publish_options(), destination)
         }
 
         #[cfg(feature = "asyncapi")]
-        fn operation_bindings(&self) -> Bindings {
+        fn operation_bindings(&self, _destination: &str) -> Bindings {
             crate::bindings::publish_operation(self.publish_options())
         }
 

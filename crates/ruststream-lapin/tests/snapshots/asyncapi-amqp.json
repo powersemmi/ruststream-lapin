@@ -33,6 +33,18 @@
           "bindingVersion": "0.3.0"
         }
       }
+    },
+    "inventory.dead": {
+      "address": "inventory.dead",
+      "bindings": {
+        "amqp": {
+          "is": "queue",
+          "queue": {
+            "name": "inventory.dead"
+          },
+          "bindingVersion": "0.3.0"
+        }
+      }
     }
   },
   "operations": {

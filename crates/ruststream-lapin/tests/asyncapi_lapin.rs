@@ -126,6 +126,9 @@ fn a_reply_reports_the_exchange_it_leaves_through() {
 
     assert_eq!(channel["is"], "routingKey");
     assert_eq!(channel["exchange"]["name"], "answers");
+    // A named exchange leaves the routing key as the channel's address, so the binding has no
+    // second place to write the destination into.
+    assert!(channel["queue"].is_null());
 }
 
 #[test]
@@ -134,8 +137,10 @@ fn a_dead_letter_reports_the_properties_its_copies_carry() {
     let channel = &value["channels"]["inventory.dead"]["bindings"]["amqp"];
 
     // The dead-letter copy leaves through the broker's default publish policy, which publishes on
-    // the default exchange: there the routing key is the queue it lands in.
+    // the default exchange: there the routing key is the queue it lands in. The policy holds no
+    // destination, so the name can only be the one the mount site declared.
     assert_eq!(channel["is"], "queue");
+    assert_eq!(channel["queue"]["name"], "inventory.dead");
 
     let operation = &value["operations"]["send_inventory_check_inventory_dead"]["bindings"]["amqp"];
     assert_eq!(operation["deliveryMode"], 2);

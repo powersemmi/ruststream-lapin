@@ -8,7 +8,8 @@
 //! Two fields of the specification's objects stay empty because nothing in this crate can fill
 //! them honestly. The virtual host is on the broker's connection URI, which neither a descriptor
 //! nor a policy sees; the message type is the Rust type's name, which the core already reports as
-//! the message's own name and which a binding hook (taking only `&self`) never learns.
+//! the message's own name and which a binding hook never learns, being handed the subscription or
+//! the destination and nothing of what travels over it.
 
 use ruststream::asyncapi::{Binding, Bindings};
 use serde::Serialize;
@@ -45,11 +46,21 @@ struct Queue<'a> {
     auto_delete: bool,
 }
 
-/// A channel whose kind is all that is known of it: a publish on the default exchange addresses a
-/// queue by name, and a policy knows nothing else about that queue.
+/// A channel that is a queue a publish addresses by name: the destination the mount site
+/// resolved is the routing key, and on the default exchange a routing key is a queue name.
+///
+/// Only the name is written. A policy carries this crate's publish settings, and a queue's
+/// durability is the declaring side's business, so the rest of the specification's queue object
+/// has nobody here to fill it honestly.
 #[derive(Serialize)]
-struct ChannelKind {
+struct PublishQueueChannel<'a> {
     is: &'static str,
+    queue: PublishQueue<'a>,
+}
+
+#[derive(Serialize)]
+struct PublishQueue<'a> {
+    name: &'a str,
 }
 
 /// A channel that is a routing key: its address is the key a publish carries to the exchange.
@@ -112,9 +123,18 @@ pub(crate) fn consumer_operation() -> Bindings {
 
 /// The channel one publish policy describes: a routing key on the policy's exchange, or the queue
 /// the key names when the policy publishes on the default exchange.
-pub(crate) fn publish_channel(options: &PublishOptions) -> Bindings {
+///
+/// `destination` is what the mount site resolved for the position - a reply's name, a slot's own
+/// name, a `dead_letter(..)` declaration - which on this crate is the routing key a publish
+/// carries. On the default exchange that key is the queue it lands in, and naming it is all a
+/// policy can add; on a named exchange the routing key is the channel's address and the exchange
+/// is what the binding has room for.
+pub(crate) fn publish_channel(options: &PublishOptions, destination: &str) -> Bindings {
     if options.exchange.is_empty() {
-        one(&ChannelKind { is: "queue" })
+        one(&PublishQueueChannel {
+            is: "queue",
+            queue: PublishQueue { name: destination },
+        })
     } else {
         one(&RoutingKeyChannel {
             is: "routingKey",

@@ -9,7 +9,8 @@ ruststream-lapin = { version = "0.7", features = ["asyncapi"] }
 ```
 
 Without the feature the document is generated all the same, with nothing RabbitMQ-specific in it.
-With it, a service that consumes one queue and answers over direct reply-to reports this:
+With it, a service that consumes one queue, answers over direct reply-to and sends a spent
+delivery to a dead-letter queue reports this:
 
 ```json
 --8<-- "crates/ruststream-lapin/tests/snapshots/asyncapi-amqp.json"
@@ -44,8 +45,10 @@ does: a delivery is settled by the handler's outcome, never by the broker handin
 
 A publish policy describes the channel from the other side. `LapinPublish::default().exchange("x")`
 is a routing key on the exchange `x`, so the binding reports `is: routingKey` and the exchange's
-name. On the default exchange the routing key is a queue name, and the binding says so with
-`is: queue`.
+name. On the default exchange the routing key is a queue name, so the binding reports `is: queue`
+and names that queue. The name is the destination the mount site resolved - a reply's own name,
+the `dead_letter(..)` declaration, a slot's name - because a policy carries publish settings and
+never a destination.
 
 The send operation carries the properties every message through that policy takes: `deliveryMode`
 (2 for the persistent default, 1 for `persistent(false)`), and `priority` and `expiration` where
@@ -70,4 +73,5 @@ the channel reports.
 Two fields of the specification's AMQP binding have no honest source here. The virtual host lives
 on the broker's connection URI, which no descriptor and no policy sees. The message type is the
 Rust type's name, which the document already reports as the message's own name, and which a
-binding hook never learns: it is handed the descriptor, not the message type.
+binding hook never learns: it is handed the queue or the destination, never what travels over
+it.
