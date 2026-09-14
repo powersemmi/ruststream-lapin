@@ -54,7 +54,7 @@
 回复，`.out_reply(Publish::default().exchange("events"))` 在主题交换机上回复。其后的步骤把回复
 接线的其余部分补齐：`.codec(..)` 指定回复的编解码器，`.transform(..)` 在发布前改动每一条回复。
 
-完整的回复表面写在[核心的发布指南](https://powersemmi.github.io/ruststream/)里。
+完整的回复表面写在[核心的发布总览](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#replies)里。
 [请求与回复页面](request-reply.md)给出 RPC 变体，那里由一个变换把每条回复重定向到请求方的私有
 地址。
 

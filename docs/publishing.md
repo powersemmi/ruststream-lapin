@@ -64,7 +64,7 @@ Either name is a routing key, and the policy at the mount site names the exchang
 the rest of the reply wiring: `.codec(..)` sets the reply codec, `.transform(..)` changes each
 reply before it is published.
 
-The [core publishing guide](https://powersemmi.github.io/ruststream/) has the whole reply surface.
+The core's [publishing overview](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#replies) has the whole reply surface.
 The [request/reply page](request-reply.md) shows the RPC variant, where a transform redirects each
 reply to the requester's private address.
 
