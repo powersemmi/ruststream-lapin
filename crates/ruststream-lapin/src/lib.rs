@@ -1,53 +1,10 @@
-//! `RabbitMQ` / AMQP 0.9.1 broker for the
-//! [RustStream](https://github.com/powersemmi/ruststream) messaging framework, backed by
-//! [`lapin`].
-//!
-//! A service imports [`prelude`] and has both this crate's vocabulary and the framework's own
-//! prelude in scope from that one glob.
-//!
-//! # Transport model
-//!
-//! A subscription consumes one queue; [`RabbitQueue`] describes the queue and its bindings, and
-//! the bare-string `#[subscriber("orders")]` form consumes the queue named `orders`. On the
-//! publish side [`OutgoingMessage::name`](ruststream::OutgoingMessage) is the routing key, sent
-//! to the publisher's exchange (the default exchange unless configured, where the routing key
-//! addresses the queue with that name).
-//!
-//! AMQP pushes one `basic.deliver` at a time, so a batch handler's size is honoured by assembling
-//! the batch on the client: [`LapinSubscriber`] offers `BatchSubscriber` through the framework's
-//! own buffer. How the batch forms is the descriptor's:
-//! [`prefetch`](RabbitQueue::prefetch) has to be at least as wide as the batch, and
-//! [`batch_wait`](RabbitQueue::batch_wait) caps how long a batch that never fills keeps its
-//! deliveries.
-//!
-//! Settlement uses the protocol natively, without client-side republishing:
-//!
-//! - ack sends `basic.ack`
-//! - retry (`nack(true)`) sends `basic.nack` with requeue
-//! - drop (`nack(false)`) sends `basic.reject` without requeue, dead-lettering when the queue
-//!   has a dead-letter exchange
-//!
-//! # The lifecycle ladder
-//!
-//! [`LapinBroker::new`] is synchronous and I/O-free, so a service composes with the synchronous
-//! `#[ruststream::app]` builder. The network work happens in the consuming `Broker::connect`,
-//! called once by the runtime at startup, which yields [`ConnectedLapinBroker`]: subscriptions,
-//! publishers, and requesters exist only from there, and `ConnectedBroker::shutdown` consumes it
-//! again into [`ClosedLapinBroker`]. Publishers are declared as policies ([`LapinPublish`],
-//! [`ConfirmsPublish`], [`ServerTxPublish`], [`LapinRequest`]) that hold no connection and pair
-//! into their live form against the connected broker.
-//!
-//! # Topology
-//!
-//! Descriptors describe the EXPECTED topology; nothing is created on the broker by default,
-//! because managing infrastructure is the user's job. Declaration is a per-broker opt-in:
-//! [`LapinBroker::declare_topology`].
-//!
-//! [`lapin`]: https://docs.rs/lapin
-
+#![doc = include_str!("README.md")]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "asyncapi")]
+mod bindings;
 mod broker;
+mod channel;
 mod convert;
 mod delay;
 mod error;
@@ -74,9 +31,11 @@ pub use error::AmqpError;
 pub use exchange::RabbitExchange;
 pub use message::{LapinMessage, PARTITION_KEY_HEADER};
 pub use publish_policy::{ConfirmsPublish, LapinPublish, LapinPublishPolicy, ServerTxPublish};
-pub use publish_step::{EXPIRATION_HEADER, LapinPublishExt, PRIORITY_HEADER, WithProperties};
+pub use publish_step::{
+    EXPIRATION_HEADER, LapinPublishOptions, LapinPublishSteps, PRIORITY_HEADER,
+};
 pub use publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
-pub use queue::{QueueType, RabbitQueue};
+pub use queue::{QueueDescriptor, QueueSpec, RabbitQueue, RabbitQuorumQueue};
 pub use reply::DirectReplyTo;
 pub use requester::{LapinRequest, LapinRequester};
 pub use subscriber::LapinSubscriber;

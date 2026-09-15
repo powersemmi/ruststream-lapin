@@ -13,3 +13,5 @@ mkdocs-material>=9.5
 mkdocs-static-i18n>=1.3
 pymdown-extensions>=10.7
 mike>=2.2
+# Pages that moved keep their old URLs alive: the guides are now the crate overview on docs.rs.
+mkdocs-redirects>=1.2.3

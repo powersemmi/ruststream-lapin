@@ -1,14 +1,25 @@
 //! The responder half of the direct reply-to convention, packaged as a publish transform.
 
-use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
+use ruststream::runtime::{ForReply, Names, Outgoing, PublishContext, PublishTransform};
 
 /// Redirects each reply of a `#[subscriber(.., publish(..))]` handler to the requester's
 /// private reply-to address, echoing its correlation id.
 ///
 /// This is the canonical responder wiring for [request/reply over `RabbitMQ` direct
 /// reply-to](crate::LapinRequester): compose it onto the reply publisher at mount time and the
-/// handler stays a pure request-to-reply function. Requests without a `reply-to` header fall
-/// through to the mount's static destination.
+/// handler stays a pure request-to-reply function. A request without a `reply-to` header falls
+/// through to the mount site's `publish("..")` name.
+///
+/// The transform names the destination per delivery, so it mounts only where nothing has declared
+/// one: the reply type derives `Outgoing` without `#[outgoing(name = "..")]` and the mount site
+/// supplies the fallback name. A reply type that declares its own destination refuses this
+/// transform at the mount site, which is what keeps the generated `AsyncAPI` document and the wire
+/// in step.
+///
+/// It writes none of the per-message AMQP properties, so it is generic over the publisher's
+/// options and mounts over any of this crate's publishers. The reply-to address and the
+/// correlation id it echoes are protocol fields the crate carries as headers, and the publisher
+/// puts them back on the frame.
 ///
 /// # Examples
 ///
@@ -21,7 +32,9 @@ use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
 ///     sku: String,
 /// }
 ///
-/// #[derive(Serialize)]
+/// // An RPC reply goes wherever the request asked, so the destination belongs to the mount
+/// // site and the type declares none.
+/// #[derive(Serialize, Outgoing)]
 /// struct Stock {
 ///     available: bool,
 /// }
@@ -36,7 +49,7 @@ use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
 /// let broker = LapinBroker::new("amqp://localhost:5672");
 /// let app = RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
 ///     b.include(check)
-///         .out(Reply, Publish::default())
+///         .out_reply(Publish::default())
 ///         .transform(DirectReplyTo);
 /// });
 /// # let _ = app;
@@ -45,8 +58,15 @@ use ruststream::runtime::{Outgoing, PublishContext, PublishTransform};
 pub struct DirectReplyTo;
 
 // --8<-- [start:transform]
-impl<C> PublishTransform<C> for DirectReplyTo {
-    fn apply(&self, out: &mut Outgoing<'_>, cx: &PublishContext<'_, C>) {
+impl<C, Options> PublishTransform<ForReply<C>, Options> for DirectReplyTo {
+    type Destination = Names;
+
+    fn apply(
+        &self,
+        out: &mut Outgoing<'_>,
+        _options: &mut Option<Options>,
+        cx: &PublishContext<'_, C>,
+    ) {
         if let Some(reply_to) = cx.headers().reply_to() {
             out.set_name(reply_to.to_owned());
         }

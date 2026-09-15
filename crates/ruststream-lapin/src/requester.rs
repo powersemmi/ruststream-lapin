@@ -10,17 +10,21 @@ use futures::StreamExt;
 use lapin::Channel;
 use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
 use lapin::types::{FieldTable, ShortString};
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
-use tokio::sync::{OnceCell, oneshot};
+use tokio::sync::oneshot;
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
+use crate::channel::{ChannelCell, Holds};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::message::LapinMessage;
-use crate::publish_policy::{LapinPublishPolicy, PublishOptions};
+use crate::publish_policy::{LapinPublishPolicy, PublishOptions, publish_policy_bindings};
+use crate::publish_step::LapinPublishOptions;
 
 /// The pseudo-queue `RabbitMQ` rewrites per-request for direct reply-to.
-const REPLY_TO: &str = "amq.rabbitmq.reply-to";
+pub(crate) const REPLY_TO: &str = "amq.rabbitmq.reply-to";
 
 type Pending = Mutex<HashMap<String, oneshot::Sender<LapinMessage>>>;
 
@@ -46,13 +50,25 @@ pub struct LapinRequest(PublishOptions);
 impl Default for LapinRequest {
     fn default() -> Self {
         Self(PublishOptions {
-            persistent: false,
+            defaults: LapinPublishOptions {
+                persistent: Some(false),
+                ..LapinPublishOptions::default()
+            },
             ..PublishOptions::default()
         })
     }
 }
 
 impl LapinRequest {
+    /// What this policy hands the requester it pairs into.
+    ///
+    /// The live requester takes the value by move at `bind`; this borrow is for the in-process
+    /// stand-in, which clones it, and for the document, which reads it.
+    #[cfg(any(feature = "testing", feature = "asyncapi"))]
+    pub(crate) const fn publish_options(&self) -> &PublishOptions {
+        &self.0
+    }
+
     /// Publishes requests to `exchange` instead of the default exchange.
     pub fn exchange(mut self, exchange: impl Into<String>) -> Self {
         self.0.exchange = exchange.into();
@@ -60,8 +76,33 @@ impl LapinRequest {
     }
 
     /// Whether requests are marked persistent (delivery mode 2). Defaults to `false`.
+    ///
+    /// One request departs from this with the publish builder's
+    /// [`persistent`](crate::LapinPublishSteps::persistent) step.
     pub fn persistent(mut self, persistent: bool) -> Self {
-        self.0.persistent = persistent;
+        self.0.defaults.persistent = Some(persistent);
+        self
+    }
+
+    /// The AMQP `priority` property requests carry. Unset by default.
+    ///
+    /// One request departs from this with the publish builder's
+    /// [`priority`](crate::LapinPublishSteps::priority) step.
+    pub fn priority(mut self, priority: u8) -> Self {
+        self.0.defaults.priority = Some(priority);
+        self
+    }
+
+    /// The AMQP per-message `expiration` (TTL) requests carry: the broker drops one once `ttl`
+    /// has passed without it being consumed. Unset by default.
+    ///
+    /// Pair it with the per-request timeout: a request that expires on the broker fails with
+    /// [`AmqpError::RequestTimeout`] at the caller, without a responder ever seeing it.
+    ///
+    /// One request departs from this with the publish builder's
+    /// [`expiration`](crate::LapinPublishSteps::expiration) step.
+    pub fn expiration(mut self, ttl: Duration) -> Self {
+        self.0.defaults.expiration = Some(ttl);
         self
     }
 }
@@ -75,6 +116,8 @@ impl PublishPolicy<ConnectedLapinBroker> for LapinRequest {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(self.bind(connected)))
     }
+
+    publish_policy_bindings!();
 }
 
 impl LapinPublishPolicy for LapinRequest {
@@ -82,7 +125,7 @@ impl LapinPublishPolicy for LapinRequest {
         LapinRequester {
             conn: Arc::clone(connected.connection()),
             options: self.0,
-            state: Arc::new(OnceCell::new()),
+            state: Arc::new(ChannelCell::new()),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(AtomicU64::new(0)),
         }
@@ -109,26 +152,38 @@ impl LapinPublishPolicy for LapinRequest {
 pub struct LapinRequester {
     conn: Arc<AmqpConnection>,
     options: PublishOptions,
-    state: Arc<OnceCell<ReqState>>,
+    state: Arc<ChannelCell<ReqState>>,
     pending: Arc<Pending>,
     next_id: Arc<AtomicU64>,
 }
 
-#[derive(Debug)]
+/// The requester's channel and the reply consumer running on it.
+#[derive(Debug, Clone)]
 struct ReqState {
     channel: Channel,
 }
 
+impl Holds for ReqState {
+    fn channel(&self) -> &Channel {
+        &self.channel
+    }
+}
+
 impl LapinRequester {
-    /// Opens the requester channel and starts the reply consumer, once.
+    /// Opens the requester channel and starts the reply consumer, and does it again once the
+    /// broker closes that channel.
     ///
     /// The consumer MUST be up before the first publish carrying the direct reply-to address;
     /// `RabbitMQ` rejects such a publish with `PRECONDITION_FAILED` otherwise. Opening it on
     /// first use rather than at pairing time keeps pairing a synchronous constructor call and
     /// leaves an unused requester without a channel.
-    async fn state(&self, target: &str) -> Result<&ReqState, AmqpError> {
+    ///
+    /// A channel-level error closes the channel and takes the reply consumer with it. The
+    /// requests in flight on it are lost, which is what the per-request timeout is for; what the
+    /// requester must not do is stop working for every later request too.
+    async fn state(&self, target: &str) -> Result<ReqState, AmqpError> {
         self.state
-            .get_or_try_init(|| async {
+            .get(|| async {
                 let channel = self
                     .conn
                     .live_connection(target)?
@@ -197,8 +252,11 @@ async fn dispatch_replies(mut consumer: lapin::Consumer, pending: Weak<Pending>)
 
 impl Publisher for LapinRequester {
     type Error = AmqpError;
+    type Options = LapinPublishOptions;
 
     /// Publishes `msg` on the requester channel without expecting a reply.
+    ///
+    /// The AMQP basic properties are `options` resolved over the policy's defaults.
     ///
     /// # Errors
     ///
@@ -208,10 +266,15 @@ impl Publisher for LapinRequester {
     /// # Cancel safety
     ///
     /// Not cancel safe: dropping the future may leave the message published or not.
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         self.conn.ensure_live(msg.name())?;
         let state = self.state(msg.name()).await?;
-        let properties = convert::properties_for_publish(msg.headers(), self.options.persistent)?;
+        let properties =
+            convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
         let _confirm = state
             .channel
             .basic_publish(
@@ -269,7 +332,7 @@ impl RequestReply for LapinRequester {
         };
 
         let properties =
-            match convert::properties_for_publish(msg.headers(), self.options.persistent) {
+            match convert::properties_for_publish(msg.headers(), &self.options.resolve(None)) {
                 Ok(properties) => properties
                     .with_reply_to(ShortString::from(REPLY_TO))
                     .with_correlation_id(ShortString::from(correlation_id.clone())),

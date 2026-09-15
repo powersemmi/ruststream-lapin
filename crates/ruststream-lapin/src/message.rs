@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use lapin::Acker;
 use lapin::message::Delivery;
-use lapin::options::{BasicAckOptions, BasicNackOptions, BasicRejectOptions};
+use lapin::options::{BasicAckOptions, BasicRejectOptions};
+use lapin::types::ShortString;
+use lapin::{Acker, BasicProperties};
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
 
 use crate::convert;
@@ -18,15 +19,27 @@ use crate::delay::DelayContext;
 /// header table like any other header; nothing else in the broker interprets it.
 pub const PARTITION_KEY_HEADER: &str = "amqp-partition-key";
 
+/// The header a quorum queue stamps with how often it has returned this message to the queue.
+///
+/// Classic queues keep no such counter, and a quorum queue omits the header until the message has
+/// been returned at least once, so its absence says "no count", not "one delivery".
+pub(crate) const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
+
 /// One AMQP delivery, settled with the protocol's native acknowledgement frames.
 ///
 /// Settlement mapping:
 ///
 /// - [`ack`](IncomingMessage::ack) sends `basic.ack`.
-/// - [`nack(true)`](IncomingMessage::nack) sends `basic.nack` with `requeue = true`; the broker
+/// - [`nack(true)`](IncomingMessage::nack) sends `basic.reject` with `requeue = true`; the broker
 ///   redelivers the message (typically to the same queue, `redelivered` set).
 /// - [`nack(false)`](IncomingMessage::nack) sends `basic.reject` with `requeue = false`; the
 ///   broker drops the message, or dead-letters it when the queue has a dead-letter exchange.
+///
+/// Both settle with `basic.reject` rather than `basic.nack`. The two frames are the same
+/// operation on a single delivery, and they differ in one thing that matters: `RabbitMQ` 4.3
+/// counts a rejection as a delivery a message has spent and does not count a nack. A handler
+/// asking for its message back is a failed attempt, so it is counted, and a quorum queue's
+/// `x-delivery-limit` can then end a poison loop on the server.
 /// - [`nack_after(delay)`](IncomingMessage::nack_after) is native only when the subscription set
 ///   [`RabbitQueue::delay`](crate::RabbitQueue::delay); otherwise the default reports the delay
 ///   unsupported and the runtime uses its broker-agnostic fallback.
@@ -41,6 +54,7 @@ pub struct LapinMessage {
     routing_key: String,
     redelivered: bool,
     delivery_tag: u64,
+    returns: Option<u64>,
     acker: Option<Acker>,
     delay: Option<DelayContext>,
 }
@@ -55,6 +69,7 @@ impl LapinMessage {
             routing_key: delivery.routing_key.to_string(),
             redelivered: delivery.redelivered,
             delivery_tag: delivery.delivery_tag,
+            returns: returns_of(&delivery.properties),
             acker: Some(delivery.acker),
             delay,
         }
@@ -140,7 +155,14 @@ impl IncomingMessage for LapinMessage {
         .await
     }
 
-    /// Settles negatively: `basic.nack(requeue = true)` or `basic.reject(requeue = false)`.
+    /// Settles negatively with `basic.reject`: back to the queue under `requeue = true`, away
+    /// from it under `requeue = false`.
+    ///
+    /// The frame is a rejection in both cases, never `basic.nack`. On one delivery the two are
+    /// the same operation - `basic.nack` only adds the `multiple` flag this crate never sets -
+    /// but a quorum queue counts a rejected delivery and does not count a nacked one, so a
+    /// handler's `retry()` spends an attempt the server can see and its `x-delivery-limit` ends
+    /// the loop.
     ///
     /// # Errors
     ///
@@ -152,32 +174,35 @@ impl IncomingMessage for LapinMessage {
     /// Not cancel safe: dropping the future after the frame was queued may still settle the
     /// message on the broker.
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
-        if requeue {
-            self.settle(
-                |acker| async move {
-                    acker
-                        .nack(BasicNackOptions {
-                            multiple: false,
-                            requeue: true,
-                        })
-                        .await
-                },
-                "basic.nack",
-            )
-            .await
-        } else {
-            self.settle(
-                |acker| async move { acker.reject(BasicRejectOptions { requeue: false }).await },
-                "basic.reject",
-            )
-            .await
-        }
+        self.settle(
+            |acker| async move { acker.reject(BasicRejectOptions { requeue }).await },
+            "basic.reject",
+        )
+        .await
     }
 
     /// The partition key from the [`PARTITION_KEY_HEADER`], if set. Overridden so keyed worker
     /// lanes see it without a `Partitioned` bound on every dispatch path.
     fn partition_key(&self) -> Option<&[u8]> {
         self.headers.get(PARTITION_KEY_HEADER)
+    }
+
+    /// How many times this message has been delivered, counting this delivery, from the one
+    /// counter the server keeps: a quorum queue's `x-delivery-count`.
+    ///
+    /// A quorum queue counts a delivery that failed - one whose consumer went away without
+    /// settling it, and one this crate rejected for a handler that asked for the message back.
+    ///
+    /// `None` where nothing counted: every delivery off a classic queue, which keeps no counter,
+    /// and the first delivery of any message. A classic queue's `redelivered` flag is not a count,
+    /// and the `x-death` table a dead-lettered message carries counts the queues it has left
+    /// rather than the deliveries it has spent, so neither stands in for the server's own count.
+    /// That is what leaves the framework's header in charge of a classic queue's cap, and it is
+    /// also what a delayed redelivery through [`RabbitQueue::delay`](crate::RabbitQueue::delay)
+    /// reports, because the copy the waiting queue releases is a new message the server counts
+    /// from zero.
+    fn redelivery_count(&self) -> Option<u64> {
+        self.returns.map(|returns| returns.saturating_add(1))
     }
 
     /// Whether this delivery can honor a native delayed redelivery.
@@ -224,6 +249,16 @@ impl IncomingMessage for LapinMessage {
     }
 }
 
+/// The `x-delivery-count` a quorum queue stamps, or `None` where nothing counted.
+fn returns_of(properties: &BasicProperties) -> Option<u64> {
+    properties
+        .headers()
+        .as_ref()?
+        .inner()
+        .get(&ShortString::from(DELIVERY_COUNT_HEADER))
+        .and_then(convert::counter)
+}
+
 impl Partitioned for LapinMessage {
     /// The partition key from the [`PARTITION_KEY_HEADER`], or `None` when unset.
     ///
@@ -232,5 +267,56 @@ impl Partitioned for LapinMessage {
     /// header, so the producer sets it.
     fn partition_key(&self) -> Option<&[u8]> {
         self.headers.get(PARTITION_KEY_HEADER)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lapin::BasicProperties;
+    use lapin::types::{AMQPValue, FieldArray, FieldTable, ShortString};
+
+    use super::{DELIVERY_COUNT_HEADER, returns_of};
+
+    /// A delivery carrying `fields` in its header table.
+    fn delivered(fields: &[(&str, AMQPValue)]) -> BasicProperties {
+        let mut table = FieldTable::default();
+        for (name, value) in fields {
+            table.insert(ShortString::from(*name), value.clone());
+        }
+        BasicProperties::default().with_headers(table)
+    }
+
+    // The queue's own counter is the count, whichever integer width the server wrote it in.
+    #[test]
+    fn the_queues_counter_is_the_count() {
+        let properties = delivered(&[(DELIVERY_COUNT_HEADER, AMQPValue::LongLongInt(4))]);
+
+        assert_eq!(returns_of(&properties), Some(4));
+    }
+
+    // The `x-death` table is a record of the queues a message has left, not of the deliveries it
+    // has spent, so a message the server carried away and brought back still reports the queue's
+    // count and nothing else.
+    #[test]
+    fn a_dead_lettered_delivery_reports_no_count_of_its_own() {
+        let mut entry = FieldTable::default();
+        entry.insert(
+            ShortString::from("reason"),
+            AMQPValue::LongString("rejected".into()),
+        );
+        entry.insert(ShortString::from("count"), AMQPValue::LongLongInt(2));
+        let properties = delivered(&[(
+            "x-death",
+            AMQPValue::FieldArray(FieldArray::from(vec![AMQPValue::FieldTable(entry)])),
+        )]);
+
+        assert_eq!(returns_of(&properties), None);
+    }
+
+    // Nothing counted: the first delivery of a message, and every delivery on a classic queue.
+    #[test]
+    fn a_delivery_with_no_counter_reports_none() {
+        assert_eq!(returns_of(&BasicProperties::default()), None);
+        assert_eq!(returns_of(&delivered(&[])), None);
     }
 }

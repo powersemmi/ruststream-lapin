@@ -1,0 +1,14 @@
+{
+  "rules": [
+    "Import `ruststream_lapin::prelude::*` in a routes file (it re-exports the framework's prelude); a handler body imports `ruststream::prelude::*` alone, the one exception being a body that adjusts an AMQP property for a single message.",
+    "Subscribe to a classic queue with `#[subscriber(RabbitQueue::new(\"orders\"))]` or the bare `#[subscriber(\"orders\")]`, and to a quorum queue with `RabbitQuorumQueue::new(..)`; neither descriptor has a bare-type form, so write it out in full in the attribute.",
+    "Cap redeliveries with `.max_attempts(n).dead_letter(name)` right after `include`; on a classic queue add `.out_retry(policy)` to choose the publisher the runtime's copies leave through, and on a quorum queue `out_retry` does not compile because the server moves a spent delivery itself.",
+    "Write a per-message AMQP setting as a publish-builder step (`.priority(n)`, `.expiration(ttl)`, `.persistent(flag)`) on a slot bounded `Out<impl Publisher<Options = LapinPublishOptions>, Marker>`, never as a header, and set the defaults on the policy at the mount site.",
+    "Name the publish policy at the mount site under the family's uniform names - `Publish`, `TransactionalPublish` (publisher confirms, with borrowed and owned transactions), `Request` - and `ServerTxPublish` only where AMQP channel transactions are required.",
+    "Settlement, dead-lettering and a quorum queue's delivery limit are native protocol behaviour; the runtime only counts retries and republishes copies on a classic queue, and holds a `retry_after` copy in process unless the descriptor opts into `.delay(..)`.",
+    "Create nothing on the broker unless the service owns its topology: `LapinBroker::declare_topology(true)` is the opt-in, and a mount-site retry cap reaches a quorum queue's arguments only through it.",
+    "Answer an RPC request by mounting `.out_reply(policy).transform(DirectReplyTo)` over a reply type that declares no `#[outgoing(name = \"..\")]`; the `publish(\"..\")` clause is the address a request without a `reply-to` header falls back to.",
+    "Pair `.batch(n)` with a prefetch of at least `n` and tune `.batch_wait(..)`: AMQP pushes one delivery at a time, so the batch is assembled on the client.",
+    "Test with `ruststream::testing::TestApp` over `ruststream_lapin::testing::LapinTestBroker` (feature `testing`), which routes by queue name only, so exchanges, bindings, dead-lettering, prefetch, confirms and a quorum delivery count need a real server."
+  ]
+}

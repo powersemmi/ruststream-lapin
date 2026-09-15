@@ -16,10 +16,12 @@
 use std::fmt;
 use std::time::Duration;
 
+use bytes::Bytes;
 use lapin::Channel;
 use lapin::options::BasicPublishOptions;
 use lapin::types::ShortString;
 use ruststream::HeaderMap;
+use ruststream::runtime::RETRY_COUNT_HEADER;
 
 use crate::convert;
 use crate::error::AmqpError;
@@ -159,17 +161,26 @@ impl DelayContext {
     /// Re-publishes `payload` so the broker redelivers it to the origin queue after `delay`.
     ///
     /// Sent on the delivery's own channel, so it orders before the original ack.
+    ///
+    /// The copy carries the framework's retry count, raised by one. The waiting queue releases a
+    /// new message, and the server counts a new message from zero, so this header is the only
+    /// record that the delivery has been round before - the same record the runtime keeps on the
+    /// copies it publishes itself.
     pub(crate) async fn republish(
         &self,
         payload: &[u8],
         headers: &HeaderMap,
         delay: Duration,
     ) -> Result<(), AmqpError> {
+        // A redelivery has no call site to adjust anything, so the copy carries what the original
+        // delivery reported.
+        let options = convert::redelivery_options(headers);
+        let headers = &counted_again(headers);
         match &self.target {
             DelayTarget::WaitingQueue { waiting_queue } => {
                 // The waiting queue's own TTL replaces whatever expiration the delivery carried:
                 // the delay is what the copy waits for there.
-                let properties = convert::properties_for_publish(headers, true)?
+                let properties = convert::properties_for_publish(headers, &options)?
                     .with_expiration(convert::expiration_millis(delay));
                 self.channel
                     .basic_publish(
@@ -189,7 +200,7 @@ impl DelayContext {
             } => {
                 use lapin::types::{AMQPValue, FieldTable};
 
-                let mut properties = convert::properties_for_publish(headers, true)?;
+                let mut properties = convert::properties_for_publish(headers, &options)?;
                 let mut table = properties
                     .headers()
                     .clone()
@@ -212,6 +223,21 @@ impl DelayContext {
         }
         Ok(())
     }
+}
+
+/// The delivery's headers with the framework's retry count raised by one; an absent count is zero,
+/// so the first copy leaves with one.
+fn counted_again(headers: &HeaderMap) -> HeaderMap {
+    let spent = headers
+        .get_str(RETRY_COUNT_HEADER)
+        .and_then(|count| count.parse::<u64>().ok())
+        .unwrap_or(0);
+    let mut headers = headers.clone();
+    headers.insert(
+        RETRY_COUNT_HEADER,
+        Bytes::from(spent.saturating_add(1).to_string()),
+    );
+    headers
 }
 
 impl fmt::Debug for DelayContext {

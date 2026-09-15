@@ -12,6 +12,7 @@ use ruststream::{OutgoingMessage, OwnedTransactions, Transaction};
 use tracing::warn;
 
 use crate::error::AmqpError;
+use crate::publish_step::LapinPublishOptions;
 use crate::publisher::{Buffered, ConfirmsPublisher};
 
 /// An owned confirm-transaction, opened by
@@ -38,8 +39,8 @@ use crate::publisher::{Buffered, ConfirmsPublisher};
 ///
 /// let mut orders = publisher.transaction().await?;
 /// let mut audit = publisher.transaction().await?; // concurrent with `orders`
-/// orders.publish(OutgoingMessage::new("orders", b"{}".as_slice())).await?;
-/// audit.publish(OutgoingMessage::new("audit", b"{}".as_slice())).await?;
+/// orders.publish(OutgoingMessage::new("orders", b"{}".as_slice()), None).await?;
+/// audit.publish(OutgoingMessage::new("audit", b"{}".as_slice()), None).await?;
 /// orders.commit().await?;
 /// audit.commit().await?;
 /// # Ok(())
@@ -78,9 +79,12 @@ impl Drop for ConfirmsTransaction {
 
 impl Transaction for ConfirmsTransaction {
     type Error = AmqpError;
+    /// The publisher's own settings: a buffered message becomes an ordinary publish at the
+    /// commit, so it honours exactly what one outside the transaction does.
+    type Options = LapinPublishOptions;
 
-    /// Buffers `msg` in this transaction; nothing reaches the broker before
-    /// [`commit`](Self::commit).
+    /// Buffers `msg` and the per-message settings its call site adjusted; nothing reaches the
+    /// broker before [`commit`](Self::commit).
     ///
     /// # Errors
     ///
@@ -89,8 +93,9 @@ impl Transaction for ConfirmsTransaction {
     fn publish(
         &mut self,
         msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        self.buffered.push(Buffered::new(&msg));
+        self.buffered.push(Buffered::new(&msg, options));
         ready(Ok(()))
     }
 

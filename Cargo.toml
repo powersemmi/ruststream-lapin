@@ -19,11 +19,14 @@ authors = ["RustStream contributors"]
 ruststream-lapin = { path = "crates/ruststream-lapin" }
 
 # The lower bound names the pre-release on purpose: cargo keeps pre-releases out of a range that
-# does not mention one, so `>=0.7.0` alone would skip `0.7.0-rc.1`. The bound admits the candidate
+# does not mention one, so `>=0.7.0` alone would skip `0.7.0-rc.7`. The bound admits the candidate
 # now and the final `0.7.0` when it lands, so it needs no follow-up edit.
-ruststream = { version = ">=0.7.0-rc.1, <0.8.0", default-features = false }
+ruststream = { version = ">=0.7.0-rc.7, <0.8.0", default-features = false }
 
 lapin = { version = "4.10", default-features = false, features = ["tokio"] }
+# The channel a live handle keeps is read on every publish and replaced only when the broker has
+# closed it, so the read side must not synchronise.
+arc-swap = "1.7"
 bytes = "1"
 futures = "0.3"
 thiserror = "2"

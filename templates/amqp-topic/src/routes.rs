@@ -13,7 +13,7 @@ use crate::events;
 ///
 /// `record` replies through a policy targeting the `events` exchange (so the reply's routing key
 /// `order.recorded` is matched by topic bindings, not treated as a queue name), bound on the mount
-/// site with `out(Reply, ..)`; with no codec named after it the reply takes the default one, which
+/// site with `out_reply(..)`; with no codec named after it the reply takes the default one, which
 /// also decodes the event. The policy holds no connection, so the router is built long before
 /// anything connects and the runtime pairs it at startup. `build` seals that reply wiring and
 /// commits the registration; `on_shipment` has no reply to wire, so `include` commits it on its
@@ -21,7 +21,7 @@ use crate::events;
 pub fn events() -> impl RouterDef<LapinBroker> {
     Router::new()
         .include(events::record)
-        .out(Reply, Publish::default().exchange("events"))
+        .out_reply(Publish::default().exchange("events"))
         .build()
         .include(events::on_shipment)
 }
