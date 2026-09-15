@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
+use lapin::types::ShortString;
 use serde::Deserialize;
 use tokio::sync::Notify;
 
@@ -29,9 +30,9 @@ use ruststream::{
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
-    AmqpError, Delay, EXPIRATION_HEADER, LapinBroker, LapinMessage, LapinPublish,
-    LapinPublishSteps, PARTITION_KEY_HEADER, PRIORITY_HEADER, RabbitExchange, RabbitQueue,
-    RabbitQuorumQueue,
+    AMQPValue, AmqpError, Delay, EXPIRATION_HEADER, FieldTable, LapinBroker, LapinMessage,
+    LapinPublish, LapinPublishSteps, PARTITION_KEY_HEADER, PRIORITY_HEADER, RabbitExchange,
+    RabbitQueue, RabbitQuorumQueue,
 };
 
 mod live;
@@ -235,6 +236,114 @@ async fn direct_and_fanout_exchanges_route_as_declared() {
 
     drop(created_stream);
     drop(cancelled_stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The binding arguments a headers exchange matches on: how much of the rest has to match, and
+/// the headers themselves.
+fn match_headers(mode: &str) -> FieldTable {
+    let mut arguments = FieldTable::default();
+    arguments.insert("x-match".into(), AMQPValue::LongString(mode.into()));
+    arguments.insert("region".into(), AMQPValue::LongString("eu".into()));
+    arguments.insert("tier".into(), AMQPValue::LongString("gold".into()));
+    arguments
+}
+
+// A headers exchange routes by the binding's arguments and ignores the routing key: `x-match`
+// says whether a message has to carry all of the rest or any one of them. Without arguments the
+// binding filters nothing at all, which is what the second step exists for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_headers_exchange_routes_by_the_bindings_arguments() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let exchange = unique("attributes");
+    let by_headers = || {
+        RabbitExchange::headers(&exchange)
+            .durable(false)
+            .auto_delete(true)
+    };
+    let every = unique("every");
+    let either = unique("either");
+    let bare = unique("bare");
+    let mut every_sub = broker
+        .subscribe(transient_queue(&every).bind_with(by_headers(), "", match_headers("all")))
+        .await
+        .expect("subscribe the queue that wants both headers");
+    let mut either_sub = broker
+        .subscribe(transient_queue(&either).bind_with(by_headers(), "", match_headers("any")))
+        .await
+        .expect("subscribe the queue that wants either header");
+    let mut bare_sub = broker
+        .subscribe(transient_queue(&bare).bind(by_headers(), "ignored"))
+        .await
+        .expect("subscribe the queue bound without arguments");
+
+    let publisher = broker.publisher(LapinPublish::default().exchange(&exchange));
+    let mut both = HeaderMap::new();
+    both.insert("region", "eu");
+    both.insert("tier", "gold");
+    publisher
+        .publish(
+            OutgoingMessage::new("ignored", b"both").with_headers(both),
+            None,
+        )
+        .await
+        .expect("publish the message carrying both headers");
+    let mut one = HeaderMap::new();
+    one.insert("region", "eu");
+    publisher
+        .publish(
+            OutgoingMessage::new("ignored", b"one").with_headers(one),
+            None,
+        )
+        .await
+        .expect("publish the message carrying one header");
+
+    let mut every_stream = Box::pin(every_sub.stream());
+    let msg = next(&mut every_stream).await;
+    assert_eq!(
+        msg.payload(),
+        b"both",
+        "`all` takes the message that has both"
+    );
+    msg.ack().await.expect("ack");
+    expect_silence(&mut every_stream).await;
+
+    let mut either_stream = Box::pin(either_sub.stream());
+    let first = next(&mut either_stream).await;
+    assert_eq!(first.payload(), b"both");
+    first.ack().await.expect("ack");
+    let second = next(&mut either_stream).await;
+    assert_eq!(
+        second.payload(),
+        b"one",
+        "`any` takes the message that has one of them too"
+    );
+    second.ack().await.expect("ack");
+
+    // The binding the plain step writes, and the trap it is on a headers exchange: `all` of no
+    // headers is true of every message, so the queue gets the whole exchange instead of a slice
+    // of it.
+    let mut bare_stream = Box::pin(bare_sub.stream());
+    let first = next(&mut bare_stream).await;
+    assert_eq!(first.payload(), b"both");
+    first.ack().await.expect("ack");
+    let second = next(&mut bare_stream).await;
+    assert_eq!(
+        second.payload(),
+        b"one",
+        "a binding with no arguments filters nothing out"
+    );
+    second.ack().await.expect("ack");
+
+    drop(every_stream);
+    drop(either_stream);
+    drop(bare_stream);
     broker.shutdown().await.expect("shutdown");
 }
 
@@ -915,7 +1024,7 @@ async fn declare_empty_keyed_queue(url: &str) {
                 durable: true,
                 ..Default::default()
             },
-            lapin::types::FieldTable::default(),
+            FieldTable::default(),
         )
         .await
         .expect("setup declare");
@@ -1178,7 +1287,7 @@ async fn ctx_extractors_inject_delivery_fields() {
                 durable: true,
                 ..Default::default()
             },
-            lapin::types::FieldTable::default(),
+            FieldTable::default(),
         )
         .await
         .expect("setup queue declare");
@@ -1252,11 +1361,11 @@ async fn declare_probe_queue(channel: &lapin::Channel, queue: &str, max_priority
     let _ = channel
         .queue_delete(queue.into(), lapin::options::QueueDeleteOptions::default())
         .await;
-    let mut arguments = lapin::types::FieldTable::default();
+    let mut arguments = FieldTable::default();
     if let Some(max_priority) = max_priority {
         arguments.insert(
             "x-max-priority".into(),
-            lapin::types::AMQPValue::ShortInt(i16::from(max_priority)),
+            AMQPValue::ShortInt(i16::from(max_priority)),
         );
     }
     channel
@@ -1284,12 +1393,12 @@ async fn consume_probe_queue(channel: &lapin::Channel, queue: &str) -> lapin::Co
     channel
         .basic_consume(
             queue.into(),
-            lapin::types::ShortString::default(),
+            ShortString::default(),
             lapin::options::BasicConsumeOptions {
                 no_ack: true,
                 ..Default::default()
             },
-            lapin::types::FieldTable::default(),
+            FieldTable::default(),
         )
         .await
         .expect("probe consume")

@@ -10,7 +10,7 @@ use ruststream::runtime::IntoSource;
 use ruststream::{BrokerMoves, RetryDeclaration, SubscriptionSource};
 
 use super::spec::{
-    DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, DELIVERY_LIMIT, QueueKind, QueueSpec,
+    Binding, DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, DELIVERY_LIMIT, QueueKind, QueueSpec,
     queue_settings,
 };
 use crate::broker::ConnectedLapinBroker;

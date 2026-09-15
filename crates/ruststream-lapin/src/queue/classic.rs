@@ -11,7 +11,7 @@ use ruststream::runtime::IntoSource;
 use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
 
 use super::spec::{
-    DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, QueueKind, QueueSpec, queue_settings,
+    Binding, DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, QueueKind, QueueSpec, queue_settings,
 };
 use crate::broker::ConnectedLapinBroker;
 use crate::delay::Delay;

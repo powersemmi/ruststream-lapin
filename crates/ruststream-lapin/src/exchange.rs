@@ -52,13 +52,21 @@ impl RabbitExchange {
         Self::new(name, ExchangeKind::Fanout)
     }
 
-    /// A headers exchange: routes on header attributes instead of the routing key.
+    /// A headers exchange: routes on the binding's arguments instead of the routing key.
+    ///
+    /// A queue binds to one with [`bind_with`](crate::RabbitQueue::bind_with), whose argument
+    /// table carries `x-match` (`all` or `any`) and the headers a message has to match. The
+    /// plain [`bind`](crate::RabbitQueue::bind) sends no arguments, and an empty table here
+    /// matches every message the exchange gets rather than none.
     #[must_use]
     pub fn headers(name: impl Into<String>) -> Self {
         Self::new(name, ExchangeKind::Headers)
     }
 
     /// An exchange of a plugin-provided type, for example `"x-delayed-message"`.
+    ///
+    /// A plugin that routes by binding arguments takes them through
+    /// [`bind_with`](crate::RabbitQueue::bind_with).
     #[must_use]
     pub fn custom(name: impl Into<String>, kind: impl Into<String>) -> Self {
         Self::new(name, ExchangeKind::Custom(kind.into()))

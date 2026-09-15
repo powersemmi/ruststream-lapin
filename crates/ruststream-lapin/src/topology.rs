@@ -20,7 +20,8 @@ pub(crate) async fn declare(
     spec: &QueueSpec,
     arguments: FieldTable,
 ) -> Result<(), AmqpError> {
-    for (exchange, _) in &spec.bindings {
+    for binding in &spec.bindings {
+        let exchange = &binding.exchange;
         // The default exchange and the amq.* built-ins exist on every broker and must not be
         // redeclared.
         if exchange.name().is_empty() || exchange.name().starts_with("amq.") {
@@ -55,14 +56,14 @@ pub(crate) async fn declare(
         .await
         .map_err(AmqpError::declare)?;
 
-    for (exchange, routing_key) in &spec.bindings {
+    for binding in &spec.bindings {
         channel
             .queue_bind(
                 convert::short(&spec.name, "queue name")?,
-                convert::short(exchange.name(), "exchange name")?,
-                convert::short(routing_key, "routing key")?,
+                convert::short(binding.exchange.name(), "exchange name")?,
+                convert::short(&binding.routing_key, "routing key")?,
                 QueueBindOptions::default(),
-                FieldTable::default(),
+                binding.arguments.clone(),
             )
             .await
             .map_err(AmqpError::declare)?;

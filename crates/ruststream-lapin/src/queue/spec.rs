@@ -29,6 +29,18 @@ pub(crate) const DEAD_LETTER_ROUTING_KEY: &str = "x-dead-letter-routing-key";
 /// How often a quorum queue returns a message before it dead-letters it.
 pub(crate) const DELIVERY_LIMIT: &str = "x-delivery-limit";
 
+/// One binding of a queue: what it is bound to, under which routing key, and the arguments the
+/// server matches on.
+///
+/// The arguments are empty for every exchange type that routes on the key alone. A headers
+/// exchange is the one that reads them, and a plugin exchange may.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Binding {
+    pub(crate) exchange: RabbitExchange,
+    pub(crate) routing_key: String,
+    pub(crate) arguments: FieldTable,
+}
+
 /// Which of the two implementations a descriptor describes.
 ///
 /// The type of a queue is fixed when it is created and can never change, so it is a property of
@@ -60,7 +72,7 @@ pub struct QueueSpec {
     pub(crate) durable: bool,
     pub(crate) exclusive: bool,
     pub(crate) auto_delete: bool,
-    pub(crate) bindings: Vec<(RabbitExchange, String)>,
+    pub(crate) bindings: Vec<Binding>,
     pub(crate) arguments: FieldTable,
     pub(crate) prefetch: Option<NonZeroU16>,
     pub(crate) batch_wait: Duration,
@@ -160,13 +172,52 @@ macro_rules! queue_settings {
             ///
             /// Call repeatedly for multiple bindings. Without any binding the queue only receives
             /// messages published to the default exchange under the queue name.
+            ///
+            /// The binding carries no arguments, which is what every exchange that routes on the
+            /// routing key wants. A headers exchange routes on arguments instead, and an empty
+            /// table there matches every message it gets rather than none, so bind to one with
+            /// [`bind_with`](Self::bind_with).
             #[must_use]
             pub fn bind(
                 mut self,
                 exchange: RabbitExchange,
                 routing_key: impl Into<String>,
             ) -> Self {
-                self.spec.bindings.push((exchange, routing_key.into()));
+                self.spec.bindings.push(Binding {
+                    exchange,
+                    routing_key: routing_key.into(),
+                    arguments: FieldTable::default(),
+                });
+                self
+            }
+
+            /// Binds the queue to `exchange` under `routing_key`, with `arguments` for the
+            /// exchange to match on.
+            ///
+            /// A headers exchange routes by these rather than by the routing key: `x-match`
+            /// decides whether a message has to carry `all` of the remaining entries or any one
+            /// of them, and the routing key is ignored (pass `""`). Binding to one without
+            /// arguments quietly takes the whole exchange - `all` of no headers is true of every
+            /// message - so the plain [`bind`](Self::bind) belongs to the exchanges that route on
+            /// the key.
+            ///
+            /// The crate overview has the worked `all` and `any` example; [`AMQPValue`] and
+            /// [`FieldTable`] are re-exported for building the table.
+            ///
+            /// [`AMQPValue`]: crate::AMQPValue
+            /// [`FieldTable`]: crate::FieldTable
+            #[must_use]
+            pub fn bind_with(
+                mut self,
+                exchange: RabbitExchange,
+                routing_key: impl Into<String>,
+                arguments: FieldTable,
+            ) -> Self {
+                self.spec.bindings.push(Binding {
+                    exchange,
+                    routing_key: routing_key.into(),
+                    arguments,
+                });
                 self
             }
 

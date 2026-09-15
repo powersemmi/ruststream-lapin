@@ -120,6 +120,7 @@ fn app() -> impl App {
 ```
 
 Both descriptors describe the same queue: [`bind`](RabbitQueue::bind) for exchange bindings,
+[`bind_with`](RabbitQueue::bind_with) where the exchange routes by the binding's arguments,
 [`dead_letter_exchange`](RabbitQueue::dead_letter_exchange) and
 [`dead_letter_routing_key`](RabbitQueue::dead_letter_routing_key) for the queue's own rejection
 route, [`prefetch`](RabbitQueue::prefetch), [`batch_wait`](RabbitQueue::batch_wait),
@@ -128,6 +129,38 @@ route, [`prefetch`](RabbitQueue::prefetch), [`batch_wait`](RabbitQueue::batch_wa
 ([`AMQPValue`] and [`FieldTable`] are re-exported for that). A quorum queue is durable, shared and
 permanent by definition, so `durable`, `exclusive` and `auto_delete` are not on it: a queue that
 contradicts its own type does not compile.
+
+[`RabbitExchange`] names the exchange a binding points at: `direct` routes on an exact routing
+key, `topic` on a dotted pattern, `fanout` on nothing at all, and `headers` on the binding's
+arguments rather than the key. The last one is what `bind_with` exists for - `x-match` decides
+whether a message has to carry `all` of the remaining entries or any one of them, and the routing
+key is ignored:
+
+```rust
+use ruststream_lapin::{AMQPValue, FieldTable, RabbitExchange, RabbitQueue};
+
+let mut gold_in_eu = FieldTable::default();
+gold_in_eu.insert("x-match".into(), AMQPValue::LongString("all".into()));
+gold_in_eu.insert("region".into(), AMQPValue::LongString("eu".into()));
+gold_in_eu.insert("tier".into(), AMQPValue::LongString("gold".into()));
+
+let both = RabbitQueue::new("orders.eu.gold")
+    .bind_with(RabbitExchange::headers("orders"), "", gold_in_eu);
+
+let mut either = FieldTable::default();
+either.insert("x-match".into(), AMQPValue::LongString("any".into()));
+either.insert("region".into(), AMQPValue::LongString("eu".into()));
+either.insert("tier".into(), AMQPValue::LongString("gold".into()));
+
+// One header is enough here, where the binding above needs both.
+let some = RabbitQueue::new("orders.eu.or.gold")
+    .bind_with(RabbitExchange::headers("orders"), "", either);
+# let _ = (both, some);
+```
+
+Binding to a headers exchange with the plain `bind` takes the whole exchange instead of a slice of
+it, because `all` of no headers is true of every message, so `bind` is for the exchanges that route
+on the key.
 
 ## Settling a delivery
 
