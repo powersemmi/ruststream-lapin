@@ -4,7 +4,8 @@
 //! here comes from a descriptor or a policy and none of them is a credential. The `amqp` binding
 //! is where the broker's own vocabulary lands: the queue's settings on the channel, the
 //! acknowledgement on the receive operation, the message properties on a send, and the header a
-//! client reads a reply address from.
+//! client reads a reply address from. What binds a queue to its exchanges has no field there, so
+//! it rides the crate's own extension beside it.
 
 #![cfg(all(feature = "asyncapi", feature = "testing"))]
 
@@ -41,6 +42,31 @@ async fn check(ask: &Ask) -> Stock {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct Event {
+    id: u64,
+}
+
+/// What a headers exchange matches a binding on: every entry, or any one of them.
+fn gold_in_eu() -> FieldTable {
+    let mut arguments = FieldTable::default();
+    arguments.insert("x-match".into(), AMQPValue::LongString("all".into()));
+    arguments.insert("tier".into(), AMQPValue::LongString("gold".into()));
+    arguments
+}
+
+// A queue fed by two exchanges: one that routes on the key, one that routes on the binding's
+// arguments. The order is what the document has to keep.
+#[subscriber(
+    RabbitQueue::new("inventory.events")
+        .bind(RabbitExchange::topic("events"), "inventory.*")
+        .bind_with(RabbitExchange::headers("attributes"), "", gold_in_eu())
+)]
+async fn on_event(event: &Event) -> HandlerOutcome {
+    let _ = event.id;
+    HandlerOutcome::ack()
+}
+
 /// The document of a service that answers over direct reply-to and carries a spent delivery away.
 fn document() -> Value {
     let app = RustStream::new(AppInfo::new("inventory", "1.0.0"))
@@ -59,6 +85,7 @@ fn document() -> Value {
                         .expiration(Duration::from_secs(30)),
                 )
                 .transform(DirectReplyTo);
+            b.include(on_event);
         });
     let json = build_spec(&app)
         .to_json()
@@ -117,6 +144,48 @@ fn a_subscription_reports_its_queue_and_its_acknowledgement() {
     let operation = &value["operations"]["receive_inventory_check"]["bindings"]["amqp"];
     assert_eq!(operation["ack"], true);
     assert_eq!(operation["bindingVersion"], "0.3.0");
+}
+
+// The specification's binding describes a channel as a queue or as a routing key and has no field
+// for what binds the two, so the routing table a service expects rides the crate's extension.
+#[test]
+fn a_subscription_reports_the_bindings_it_declares() {
+    let value = document();
+    let extension = &value["channels"]["inventory.events"]["bindings"]["x-ruststream-amqp"];
+    let bindings = &extension["bindings"];
+
+    assert_eq!(
+        bindings.as_array().expect("a list of bindings").len(),
+        2,
+        "one entry per binding the descriptor declared"
+    );
+    assert_eq!(bindings[0]["exchange"], "events");
+    assert_eq!(bindings[0]["type"], "topic");
+    assert_eq!(bindings[0]["routingKey"], "inventory.*");
+    assert!(
+        bindings[0]["arguments"].is_null(),
+        "an exchange that routes on the key matches on nothing else"
+    );
+
+    assert_eq!(bindings[1]["exchange"], "attributes");
+    assert_eq!(bindings[1]["type"], "headers");
+    // An empty key is a binding key like any other, so it is written rather than left out.
+    assert_eq!(bindings[1]["routingKey"], "");
+    assert_eq!(bindings[1]["arguments"]["x-match"], "all");
+    assert_eq!(bindings[1]["arguments"]["tier"], "gold");
+
+    // An extension is not a binding, so the field that belongs to one is absent.
+    assert!(extension["bindingVersion"].is_null());
+}
+
+#[test]
+fn a_subscription_with_no_binding_reports_no_extension() {
+    let value = document();
+
+    assert!(
+        value["channels"]["inventory.check"]["bindings"]["x-ruststream-amqp"].is_null(),
+        "a queue nothing is bound to has no routing table to report"
+    );
 }
 
 #[test]

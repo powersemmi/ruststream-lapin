@@ -22,6 +22,36 @@
         }
       }
     },
+    "inventory.events": {
+      "address": "inventory.events",
+      "bindings": {
+        "amqp": {
+          "is": "queue",
+          "queue": {
+            "name": "inventory.events"
+          },
+          "bindingVersion": "0.3.0"
+        },
+        "x-ruststream-amqp": {
+          "bindings": [
+            {
+              "exchange": "events",
+              "type": "topic",
+              "routingKey": "inventory.*"
+            },
+            {
+              "exchange": "attributes",
+              "type": "headers",
+              "routingKey": "",
+              "arguments": {
+                "x-match": "all",
+                "tier": "gold"
+              }
+            }
+          ]
+        }
+      }
+    },
     "inventory.unrouted": {
       "address": null,
       "bindings": {

@@ -543,6 +543,31 @@ the declaration and not a call, so a per-message step changes nothing in it. A h
 with [`DirectReplyTo`] has no reply address to report, so the operation names where a client reads
 one instead, `$message.header#/reply-to`.
 
+What binds a queue to its exchanges has no place in the specification's binding at all: a channel
+there is a queue or a routing key, and nothing describes what joins the two - no exchange, no
+binding key, no arguments. The request for them, `asyncapi/bindings#263`, was closed as not
+planned. So a subscription reports its bindings in this crate's own extension beside the `amqp`
+one, `x-ruststream-amqp`, as a `bindings` list in declaration order, one entry per `bind` and
+`bind_with`:
+
+```json
+"x-ruststream-amqp": {
+  "bindings": [
+    { "exchange": "events", "type": "topic", "routingKey": "inventory.*" },
+    {
+      "exchange": "attributes",
+      "type": "headers",
+      "routingKey": "",
+      "arguments": { "tier": "gold", "x-match": "all" }
+    }
+  ]
+}
+```
+
+The routing key is written even when it is empty, because an empty key is a binding key like any
+other; the arguments are left out where there are none; and a subscription that declares no
+binding carries no extension. An extension is not a binding, so it has no `bindingVersion`.
+
 The server entry reports the host and the AMQP version behind it. It never carries what the
 connection URI holds: the document is published and shared, so the credentials and the virtual host
 are dropped. Two fields of the specification's binding stay empty for want of an honest source -

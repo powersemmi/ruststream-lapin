@@ -177,6 +177,10 @@ macro_rules! queue_settings {
             /// routing key wants. A headers exchange routes on arguments instead, and an empty
             /// table there matches every message it gets rather than none, so bind to one with
             /// [`bind_with`](Self::bind_with).
+            ///
+            /// The generated `AsyncAPI` document reports every binding in the crate's own
+            /// `x-ruststream-amqp` extension, in declaration order; the specification's binding
+            /// has no field for one.
             #[must_use]
             pub fn bind(
                 mut self,
@@ -202,7 +206,9 @@ macro_rules! queue_settings {
             /// the key.
             ///
             /// The crate overview has the worked `all` and `any` example; [`AMQPValue`] and
-            /// [`FieldTable`] are re-exported for building the table.
+            /// [`FieldTable`] are re-exported for building the table. The generated `AsyncAPI`
+            /// document reports the arguments with the binding, in the crate's own
+            /// `x-ruststream-amqp` extension.
             ///
             /// [`AMQPValue`]: crate::AMQPValue
             /// [`FieldTable`]: crate::FieldTable
