@@ -117,41 +117,231 @@ async fn a_declaration_becomes_the_queues_own_arguments() {
         .await
         .expect("subscribe declares the queue");
 
-    let mut expected = FieldTable::default();
-    expected.insert(
+    let check = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+        .await
+        .expect("check connect");
+    let channel = check.create_channel().await.expect("check channel");
+    // One less than the cap: the argument counts the returns a message survives, and the cap
+    // counts the deliveries it gets.
+    redeclare(
+        &channel,
+        &queue,
+        quorum_arguments(&dead, i64::from(ATTEMPTS) - 1),
+    )
+    .await
+    .expect("the queue must carry exactly the arguments the declaration asked for");
+    check.close(200, "OK".into()).await.expect("check close");
+
+    drop(subscriber);
+    connected.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[&queue]).await;
+}
+
+/// The arguments a quorum queue carries when it dead-letters to `dead` after `returns` returns.
+fn quorum_arguments(dead: &str, returns: i64) -> FieldTable {
+    let mut arguments = FieldTable::default();
+    arguments.insert(
         ShortString::from("x-queue-type"),
         AMQPValue::LongString("quorum".into()),
     );
-    // One less than the cap: the argument counts the returns a message survives, and the cap
-    // counts the deliveries it gets.
-    expected.insert(
+    arguments.insert(
         ShortString::from("x-delivery-limit"),
-        AMQPValue::LongLongInt(i64::from(ATTEMPTS) - 1),
+        AMQPValue::LongLongInt(returns),
     );
-    expected.insert(
+    arguments.insert(
         ShortString::from("x-dead-letter-exchange"),
         AMQPValue::LongString(String::new().into()),
     );
-    expected.insert(
+    arguments.insert(
         ShortString::from("x-dead-letter-routing-key"),
-        AMQPValue::LongString(dead.clone().into()),
+        AMQPValue::LongString(dead.to_owned().into()),
     );
+    arguments
+}
+
+/// Declares `queue` again with `arguments`: the server holds a redeclaration to what the queue
+/// already carries, so this succeeds only if the arguments are the queue's own.
+///
+/// A refused declaration closes the channel it ran on, so a test that asserts both answers needs
+/// a channel per answer.
+async fn redeclare(
+    channel: &lapin::Channel,
+    queue: &str,
+    arguments: FieldTable,
+) -> Result<(), lapin::Error> {
+    channel
+        .queue_declare(
+            queue.into(),
+            QueueDeclareOptions {
+                durable: true,
+                ..QueueDeclareOptions::default()
+            },
+            arguments,
+        )
+        .await
+        .map(drop)
+}
+
+// `delivery_limit` is the queue's own policy, for a queue whose retries are not one
+// registration's business. The argument counts the returns a message survives, so one return is
+// two deliveries, and the queue's dead-letter route is where the spent message goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_queues_own_delivery_limit_spends_one_delivery_more_than_it_counts() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("limited");
+    let dead = unique("limited.dead");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let mut graveyard = connected
+        .subscribe(RabbitQueue::new(&dead))
+        .await
+        .expect("the dead-letter queue has to exist before a message is sent there");
+    let mut subscriber = connected
+        .subscribe(
+            RabbitQuorumQueue::new(&queue)
+                .delivery_limit(1)
+                .dead_letter_exchange("")
+                .dead_letter_routing_key(&dead),
+        )
+        .await
+        .expect("subscribe declares the queue");
+
+    publish(&connected, &queue, b"twice").await;
+
+    let mut stream = Box::pin(subscriber.stream());
+    for attempt in 1..=2u64 {
+        let delivery = next(&mut stream).await;
+        assert_eq!(delivery.payload(), b"twice", "attempt {attempt}");
+        delivery.nack(true).await.expect("the handler asks again");
+    }
+    assert!(
+        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        "one return is two deliveries, so there must be no third",
+    );
+
+    let mut dead_stream = Box::pin(graveyard.stream());
+    let carried = next(&mut dead_stream).await;
+    assert_eq!(carried.payload(), b"twice");
+    carried.ack().await.expect("ack");
+
+    drop(dead_stream);
+    drop(stream);
+    drop(subscriber);
+    drop(graveyard);
+    connected.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[&queue, &dead]).await;
+}
+
+/// How many messages `queue` holds, as the server counts them.
+async fn ready_messages(url: &str, queue: &str) -> u32 {
+    let probe = lapin::Connection::connect(url, lapin::ConnectionProperties::default())
+        .await
+        .expect("probe connect");
+    let channel = probe.create_channel().await.expect("probe channel");
+    let state = channel
+        .queue_declare(
+            queue.into(),
+            QueueDeclareOptions {
+                passive: true,
+                durable: true,
+                ..QueueDeclareOptions::default()
+            },
+            FieldTable::default(),
+        )
+        .await
+        .expect("passive declare");
+    let ready = state.message_count();
+    probe.close(200, "OK".into()).await.expect("probe close");
+    ready
+}
+
+// A limit with no dead-letter route drops the spent message instead of carrying it away, which
+// is why a mount site that declares a cap has to name a destination with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_limit_with_no_dead_letter_route_drops_the_spent_message() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("dropped");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let mut subscriber = connected
+        .subscribe(RabbitQuorumQueue::new(&queue).delivery_limit(1))
+        .await
+        .expect("subscribe declares the queue");
+    publish(&connected, &queue, b"lost").await;
+
+    let mut stream = Box::pin(subscriber.stream());
+    for attempt in 1..=2u64 {
+        let delivery = next(&mut stream).await;
+        assert_eq!(delivery.payload(), b"lost", "attempt {attempt}");
+        delivery.nack(true).await.expect("the handler asks again");
+    }
+    assert!(
+        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        "the deliveries are spent, so the queue must not hand the message out again",
+    );
+
+    // The consumer is gone before the count is read, so a message still in flight would show as
+    // ready: an empty queue is the message being gone, not the message being held somewhere.
+    drop(stream);
+    drop(subscriber);
+    connected.shutdown().await.expect("shutdown");
+    assert_eq!(
+        ready_messages(&url, &queue).await,
+        0,
+        "with nowhere to carry the spent message to, the queue drops it",
+    );
+
+    delete_queues(&url, &[&queue]).await;
+}
+
+// The registration is the more specific statement about the retries of the handler mounted on it,
+// so its cap is written over a limit the descriptor carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mount_sites_cap_is_written_over_the_descriptors_own_limit() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("overridden");
+    let dead = unique("overridden.dead");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let declaration = RetryDeclaration::new()
+        .with_max_attempts(nonzero!(ATTEMPTS))
+        .with_dead_letter(dead.clone());
+    let def = SubscriptionSource::<ConnectedLapinBroker>::declare_retry(
+        RabbitQuorumQueue::new(&queue).delivery_limit(9),
+        &declaration,
+    );
+    let subscriber = connected
+        .subscribe(def)
+        .await
+        .expect("subscribe declares the queue");
 
     let check = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
         .await
         .expect("check connect");
     let channel = check.create_channel().await.expect("check channel");
-    channel
-        .queue_declare(
-            queue.as_str().into(),
-            QueueDeclareOptions {
-                durable: true,
-                ..QueueDeclareOptions::default()
-            },
-            expected,
-        )
+    redeclare(
+        &channel,
+        &queue,
+        quorum_arguments(&dead, i64::from(ATTEMPTS) - 1),
+    )
+    .await
+    .expect("the queue must carry the cap the mount site declared");
+    let contrast = check.create_channel().await.expect("check channel");
+    redeclare(&contrast, &queue, quorum_arguments(&dead, 9))
         .await
-        .expect("the queue must carry exactly the arguments the declaration asked for");
+        .expect_err("the descriptor's own limit must not be what the queue carries");
     check.close(200, "OK".into()).await.expect("check close");
 
     drop(subscriber);
@@ -723,4 +913,122 @@ async fn the_runtimes_cap_ends_a_delayed_retry_loop_on_a_waiting_queue() {
 
     publisher.shutdown().await.expect("shutdown");
     delete_queues(&url, &[DELAYED, DELAYED_WAIT, DELAYED_DEAD]).await;
+}
+
+/// The `x-delivery-count` the server stamped, read straight off the wire.
+fn delivery_count(delivery: &lapin::message::Delivery) -> Option<i64> {
+    let value = delivery
+        .properties
+        .headers()
+        .as_ref()?
+        .inner()
+        .get(&ShortString::from("x-delivery-count"))?;
+    match value {
+        AMQPValue::LongLongInt(count) => Some(*count),
+        AMQPValue::LongInt(count) => Some(i64::from(*count)),
+        AMQPValue::ShortInt(count) => Some(i64::from(*count)),
+        AMQPValue::ShortShortInt(count) => Some(i64::from(*count)),
+        _ => None,
+    }
+}
+
+async fn raw_next(consumer: &mut lapin::Consumer) -> lapin::message::Delivery {
+    tokio::time::timeout(WAIT, consumer.next())
+        .await
+        .expect("delivery within timeout")
+        .expect("consumer has next")
+        .expect("delivery ok")
+}
+
+// The contrast the settle frame was chosen for: the queue counts a rejected delivery and does not
+// count a nacked one, so a handler's retry has to be a rejection for `x-delivery-limit` to see it.
+//
+// This is `RabbitMQ` 4.3's answer, and the reason the crate sends the frame it sends. Up to 4.2
+// the server counted both, so a failure here is either a broker older than the stand's or a
+// server that has changed its mind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_nack_is_not_a_delivery_the_queue_counts() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("nacked");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+    let subscriber = connected
+        .subscribe(RabbitQuorumQueue::new(&queue))
+        .await
+        .expect("subscribe declares the queue");
+    drop(subscriber);
+    connected.shutdown().await.expect("shutdown");
+
+    // The two frames are the same operation on a single delivery, so only a raw client can send
+    // the one this crate never sends.
+    let raw = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+        .await
+        .expect("raw connect");
+    let channel = raw.create_channel().await.expect("raw channel");
+    let mut consumer = channel
+        .basic_consume(
+            queue.as_str().into(),
+            ShortString::default(),
+            lapin::options::BasicConsumeOptions::default(),
+            FieldTable::default(),
+        )
+        .await
+        .expect("raw consume");
+    channel
+        .basic_publish(
+            ShortString::default(),
+            queue.as_str().into(),
+            lapin::options::BasicPublishOptions::default(),
+            b"settled",
+            lapin::BasicProperties::default(),
+        )
+        .await
+        .expect("raw publish");
+
+    let first = raw_next(&mut consumer).await;
+    assert_eq!(delivery_count(&first), None, "nothing has been spent yet");
+    channel
+        .basic_nack(
+            first.delivery_tag,
+            lapin::options::BasicNackOptions {
+                requeue: true,
+                multiple: false,
+            },
+        )
+        .await
+        .expect("nack");
+
+    let second = raw_next(&mut consumer).await;
+    assert_eq!(
+        delivery_count(&second),
+        None,
+        "a nack must not raise the counter the delivery limit reads"
+    );
+    channel
+        .basic_reject(
+            second.delivery_tag,
+            lapin::options::BasicRejectOptions { requeue: true },
+        )
+        .await
+        .expect("reject");
+
+    let third = raw_next(&mut consumer).await;
+    assert_eq!(
+        delivery_count(&third),
+        Some(1),
+        "a rejection is the attempt the queue counts"
+    );
+    channel
+        .basic_ack(
+            third.delivery_tag,
+            lapin::options::BasicAckOptions::default(),
+        )
+        .await
+        .expect("ack");
+
+    raw.close(200, "OK".into()).await.expect("raw close");
+    delete_queues(&url, &[&queue]).await;
 }
