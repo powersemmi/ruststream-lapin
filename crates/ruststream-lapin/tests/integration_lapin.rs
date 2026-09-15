@@ -29,8 +29,9 @@ use ruststream::{
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
-    Delay, EXPIRATION_HEADER, LapinBroker, LapinMessage, LapinPublish, LapinPublishSteps,
-    PARTITION_KEY_HEADER, PRIORITY_HEADER, RabbitExchange, RabbitQueue, RabbitQuorumQueue,
+    AmqpError, Delay, EXPIRATION_HEADER, LapinBroker, LapinMessage, LapinPublish,
+    LapinPublishSteps, PARTITION_KEY_HEADER, PRIORITY_HEADER, RabbitExchange, RabbitQueue,
+    RabbitQuorumQueue,
 };
 
 mod live;
@@ -59,7 +60,7 @@ fn transient_queue(name: &str) -> RabbitQueue {
 
 async fn next<S>(stream: &mut S) -> LapinMessage
 where
-    S: Stream<Item = Result<LapinMessage, ruststream_lapin::AmqpError>> + Unpin,
+    S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
     tokio::time::timeout(WAIT, stream.next())
         .await
@@ -70,7 +71,7 @@ where
 
 async fn expect_silence<S>(stream: &mut S)
 where
-    S: Stream<Item = Result<LapinMessage, ruststream_lapin::AmqpError>> + Unpin,
+    S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
     let outcome = tokio::time::timeout(SILENCE, stream.next()).await;
     assert!(outcome.is_err(), "expected no delivery, got one");
@@ -234,6 +235,47 @@ async fn direct_and_fanout_exchanges_route_as_declared() {
 
     drop(created_stream);
     drop(cancelled_stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// A transient queue is a deprecated feature on `RabbitMQ` 4 and is refused unless it belongs to
+// one connection, which is what the descriptor's documentation tells a reader and what every
+// throwaway queue in this suite is built on. The server refuses it by closing the connection, so
+// the accepted form needs one of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transient_queue_is_refused_unless_it_is_exclusive() {
+    let Some(url) = amqp_url() else { return };
+    let refusing = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let shared = unique("transient-shared");
+    let refused = refusing
+        .subscribe(RabbitQueue::new(&shared).durable(false))
+        .await
+        .expect_err("a transient queue open to every connection must be refused");
+    assert!(
+        matches!(refused, AmqpError::Declare(_)),
+        "the refusal comes from the declaration, got {refused:?}"
+    );
+    drop(refusing);
+
+    // The same queue exclusive to this connection: the form the server accepts, and the one the
+    // descriptor's documentation points at.
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+    let own = unique("transient-exclusive");
+    let subscriber = broker
+        .subscribe(transient_queue(&own))
+        .await
+        .expect("a transient queue exclusive to one connection is accepted");
+
+    drop(subscriber);
     broker.shutdown().await.expect("shutdown");
 }
 
