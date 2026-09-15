@@ -13,9 +13,10 @@ use lapin::types::{FieldTable, ShortString};
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
-use tokio::sync::{OnceCell, oneshot};
+use tokio::sync::oneshot;
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
+use crate::channel::{ChannelCell, Holds};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::message::LapinMessage;
@@ -124,7 +125,7 @@ impl LapinPublishPolicy for LapinRequest {
         LapinRequester {
             conn: Arc::clone(connected.connection()),
             options: self.0,
-            state: Arc::new(OnceCell::new()),
+            state: Arc::new(ChannelCell::new()),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(AtomicU64::new(0)),
         }
@@ -151,26 +152,38 @@ impl LapinPublishPolicy for LapinRequest {
 pub struct LapinRequester {
     conn: Arc<AmqpConnection>,
     options: PublishOptions,
-    state: Arc<OnceCell<ReqState>>,
+    state: Arc<ChannelCell<ReqState>>,
     pending: Arc<Pending>,
     next_id: Arc<AtomicU64>,
 }
 
-#[derive(Debug)]
+/// The requester's channel and the reply consumer running on it.
+#[derive(Debug, Clone)]
 struct ReqState {
     channel: Channel,
 }
 
+impl Holds for ReqState {
+    fn channel(&self) -> &Channel {
+        &self.channel
+    }
+}
+
 impl LapinRequester {
-    /// Opens the requester channel and starts the reply consumer, once.
+    /// Opens the requester channel and starts the reply consumer, and does it again once the
+    /// broker closes that channel.
     ///
     /// The consumer MUST be up before the first publish carrying the direct reply-to address;
     /// `RabbitMQ` rejects such a publish with `PRECONDITION_FAILED` otherwise. Opening it on
     /// first use rather than at pairing time keeps pairing a synchronous constructor call and
     /// leaves an unused requester without a channel.
-    async fn state(&self, target: &str) -> Result<&ReqState, AmqpError> {
+    ///
+    /// A channel-level error closes the channel and takes the reply consumer with it. The
+    /// requests in flight on it are lost, which is what the per-request timeout is for; what the
+    /// requester must not do is stop working for every later request too.
+    async fn state(&self, target: &str) -> Result<ReqState, AmqpError> {
         self.state
-            .get_or_try_init(|| async {
+            .get(|| async {
                 let channel = self
                     .conn
                     .live_connection(target)?

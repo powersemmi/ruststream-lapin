@@ -11,9 +11,9 @@ use lapin::options::{BasicPublishOptions, ConfirmSelectOptions};
 use lapin::{BasicProperties, Channel};
 use lapin::{Confirmation, PublisherConfirm};
 use ruststream::{HeaderMap, OutgoingMessage, Publisher, TransactionalPublisher};
-use tokio::sync::OnceCell;
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
+use crate::channel::ChannelCell;
 use crate::convert;
 use crate::error::AmqpError;
 use crate::publish_policy::PublishOptions;
@@ -105,13 +105,13 @@ impl Publisher for LapinPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
-        let channel = self.conn.live_publish_channel(msg.name())?;
+        let channel = self.conn.live_publish_channel(msg.name()).await?;
         let properties =
             convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
         // Without confirm_select on the channel the returned confirm resolves to NotRequested;
         // dropping it does not lose anything.
         let _confirm = do_publish(
-            channel,
+            &channel,
             &self.options.exchange,
             msg.name(),
             msg.payload(),
@@ -146,7 +146,7 @@ impl Publisher for LapinPublisher {
 pub struct ConfirmsPublisher {
     conn: Arc<AmqpConnection>,
     options: PublishOptions,
-    channel: Arc<OnceCell<Channel>>,
+    channel: Arc<ChannelCell<Channel>>,
     txn: Arc<Mutex<Option<Vec<Buffered>>>>,
 }
 
@@ -155,18 +155,20 @@ impl ConfirmsPublisher {
         Self {
             conn: Arc::clone(connected.connection()),
             options,
-            channel: Arc::new(OnceCell::new()),
+            channel: Arc::new(ChannelCell::new()),
             txn: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// The confirm channel, opened on first use.
+    /// The confirm channel, opened on first use and opened again once the broker closes it.
     ///
     /// Why lazily and not at pairing time: pairing is a synchronous constructor call (see
-    /// [`LapinPublishPolicy`]), and a publisher that never publishes should hold no channel.
-    async fn channel(&self, target: &str) -> Result<&Channel, AmqpError> {
+    /// [`LapinPublishPolicy`]), and a publisher that never publishes should hold no channel. Why
+    /// again: a rejected publish closes the channel, and a publisher that kept the dead one would
+    /// never send anything through this handle again.
+    async fn channel(&self, target: &str) -> Result<Channel, AmqpError> {
         self.channel
-            .get_or_try_init(|| async {
+            .get(|| async {
                 let channel = self
                     .conn
                     .live_connection(target)?
@@ -204,7 +206,7 @@ impl ConfirmsPublisher {
                 &self.options.resolve(Some(&entry.options)),
             )?;
             let confirm = do_publish(
-                channel,
+                &channel,
                 &self.options.exchange,
                 &entry.routing_key,
                 &entry.payload,
@@ -231,7 +233,7 @@ impl ConfirmsPublisher {
         let channel = self.channel(routing_key).await?;
         let properties = convert::properties_for_publish(headers, &self.options.resolve(options))?;
         let confirm = do_publish(
-            channel,
+            &channel,
             &self.options.exchange,
             routing_key,
             payload,
@@ -348,7 +350,7 @@ impl TransactionalPublisher for ConfirmsPublisher {
                 &self.options.resolve(Some(&entry.options)),
             )?;
             let confirm = do_publish(
-                channel,
+                &channel,
                 &self.options.exchange,
                 &entry.routing_key,
                 &entry.payload,
@@ -407,7 +409,7 @@ impl TransactionalPublisher for ConfirmsPublisher {
 pub struct ServerTxPublisher {
     conn: Arc<AmqpConnection>,
     options: PublishOptions,
-    channel: Arc<OnceCell<Channel>>,
+    channel: Arc<ChannelCell<Channel>>,
     open: Arc<Mutex<bool>>,
 }
 
@@ -416,16 +418,30 @@ impl ServerTxPublisher {
         Self {
             conn: Arc::clone(connected.connection()),
             options,
-            channel: Arc::new(OnceCell::new()),
+            channel: Arc::new(ChannelCell::new()),
             open: Arc::new(Mutex::new(false)),
         }
     }
 
     /// The transactional channel, opened on first use; see [`ConfirmsPublisher::channel`] for
     /// why it is not opened at pairing time.
-    async fn tx_channel(&self, target: &str) -> Result<&Channel, AmqpError> {
+    ///
+    /// A channel that died while a transaction was open is handed back as it is: the transaction
+    /// lives in the channel, so a fresh one would commit nothing and report success for the
+    /// publishes it never carried. Outside a transaction there is no such state, and a dead
+    /// channel is replaced like any other publisher's.
+    async fn tx_channel(&self, target: &str) -> Result<Channel, AmqpError> {
+        if self.is_open() {
+            return self.channel.held().ok_or_else(|| {
+                AmqpError::Transaction(
+                    "the transactional channel is gone; the open transaction cannot be published \
+                     into or committed"
+                        .to_owned(),
+                )
+            });
+        }
         self.channel
-            .get_or_try_init(|| async {
+            .get(|| async {
                 let channel = self
                     .conn
                     .live_connection(target)?
@@ -471,14 +487,16 @@ impl Publisher for ServerTxPublisher {
     ) -> Result<(), Self::Error> {
         let properties =
             convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
+        // The transaction is channel state, so an open one is published into the channel that
+        // holds it; outside one the connection's shared channel carries the message.
         let channel = if self.is_open() {
             self.conn.ensure_live(msg.name())?;
-            self.tx_channel(msg.name()).await?
+            self.tx_channel(msg.name()).await?.clone()
         } else {
-            self.conn.live_publish_channel(msg.name())?
+            self.conn.live_publish_channel(msg.name()).await?
         };
         let _confirm = do_publish(
-            channel,
+            &channel,
             &self.options.exchange,
             msg.name(),
             msg.payload(),

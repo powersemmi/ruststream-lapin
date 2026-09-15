@@ -4,6 +4,7 @@
 #[cfg(feature = "asyncapi")]
 mod bindings;
 mod broker;
+mod channel;
 mod convert;
 mod delay;
 mod error;
