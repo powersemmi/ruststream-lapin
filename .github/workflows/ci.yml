@@ -174,19 +174,16 @@ jobs:
       # RUSTSTREAM_REQUIRE_LIVE is this job's contract with the suites: a broker is up, so a test
       # that skips is a defect rather than a convenience. Without it a live test returns before
       # its first assertion and reports ok, which reads exactly like a run that did the work.
-      - name: Run RabbitMQ integration tests
+      # Every test target of the crate, rather than a list kept by hand: the retry suite was
+      # gated on this address and never given it here, so it reported ok in every run without
+      # reaching a broker, and a new live file would have been as easy to forget. The plugin
+      # suite compiles to nothing without its own features, so it cannot demand the second stand
+      # from this job.
+      - name: Run the RabbitMQ suites against the live node
         env:
           AMQP_TEST_URL: amqp://127.0.0.1:5672
           RUSTSTREAM_REQUIRE_LIVE: "1"
-        run: cargo test -p ruststream-lapin --test integration_lapin -- --test-threads=1
-
-      # run_suite in-process plus lifecycle, transactions (confirms and server tx), and
-      # request/reply against the live node.
-      - name: Run RabbitMQ conformance suite
-        env:
-          AMQP_TEST_URL: amqp://127.0.0.1:5672
-          RUSTSTREAM_REQUIRE_LIVE: "1"
-        run: cargo test -p ruststream-lapin --features testing --test conformance_lapin -- --test-threads=1
+        run: cargo test -p ruststream-lapin --features testing,asyncapi -- --test-threads=1
 
       - name: Stop RabbitMQ
         if: always()
