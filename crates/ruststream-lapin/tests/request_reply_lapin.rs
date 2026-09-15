@@ -4,8 +4,9 @@
 //! The stand-in reproduces the convention, not the transport: a private reply address per
 //! request, a generated correlation id, a reply that does not correlate dropped rather than
 //! resolving the call, and a timeout when nobody answers. What it cannot reproduce - direct
-//! reply-to being at-most-once channel state on one broker node - is covered against a live
-//! server by `tests/integration_lapin.rs`.
+//! reply-to being channel state the broker rewrites per request - is covered against a live
+//! server by `tests/request_reply_live_lapin.rs` and the request/reply conformance suite in
+//! `tests/conformance_lapin.rs`.
 
 #![cfg(feature = "testing")]
 
