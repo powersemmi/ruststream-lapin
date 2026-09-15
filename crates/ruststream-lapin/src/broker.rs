@@ -5,8 +5,8 @@
 //! surface. [`ConnectedBroker::shutdown`] consumes it in turn and returns the terminal witness.
 
 use std::num::NonZeroU16;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use lapin::options::{BasicConsumeOptions, BasicQosOptions};
 use lapin::types::{FieldTable, ShortString};
@@ -15,6 +15,7 @@ use ruststream::{
     AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
 };
 
+use crate::channel::ChannelCell;
 use crate::convert;
 use crate::delay::DelayContext;
 use crate::error::AmqpError;
@@ -38,7 +39,7 @@ pub(crate) const PROTOCOL_VERSION: &str = "0.9.1";
 /// subscriber paired off it, so they all speak over the same connection.
 pub(crate) struct AmqpConnection {
     connection: Connection,
-    publish_channel: Mutex<Channel>,
+    publish_channel: ChannelCell<Channel>,
     closed: AtomicBool,
 }
 
@@ -46,7 +47,7 @@ impl AmqpConnection {
     fn new(connection: Connection, publish_channel: Channel) -> Arc<Self> {
         Arc::new(Self {
             connection,
-            publish_channel: Mutex::new(publish_channel),
+            publish_channel: ChannelCell::holding(publish_channel),
             closed: AtomicBool::new(false),
         })
     }
@@ -70,40 +71,14 @@ impl AmqpConnection {
     /// again until it is restarted.
     pub(crate) async fn live_publish_channel(&self, target: &str) -> Result<Channel, AmqpError> {
         self.ensure_live(target)?;
-        if let Some(channel) = self.usable_publish_channel() {
-            return Ok(channel);
-        }
-
-        let opened = self
-            .connection
-            .create_channel()
+        self.publish_channel
+            .get(|| async {
+                self.connection
+                    .create_channel()
+                    .await
+                    .map_err(AmqpError::publish)
+            })
             .await
-            .map_err(AmqpError::publish)?;
-        let shared = {
-            let mut held = self
-                .publish_channel
-                .lock()
-                .expect("publish channel mutex poisoned");
-            // Another task may have opened one while this one was dialling; that one is the
-            // shared channel, and this one goes away with the handle.
-            if !held.status().connected() {
-                *held = opened;
-            }
-            held.clone()
-        };
-        Ok(shared)
-    }
-
-    /// The held publish channel while it can still carry a frame.
-    ///
-    /// A `Channel` is a handle, so the clone costs a refcount and lets the lock go before the
-    /// publish.
-    fn usable_publish_channel(&self) -> Option<Channel> {
-        let held = self
-            .publish_channel
-            .lock()
-            .expect("publish channel mutex poisoned");
-        held.status().connected().then(|| held.clone())
     }
 
     /// `Ok` while the connection is live, [`AmqpError::Closed`] once the broker has shut down.

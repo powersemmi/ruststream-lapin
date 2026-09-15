@@ -24,6 +24,9 @@ ruststream-lapin = { path = "crates/ruststream-lapin" }
 ruststream = { version = ">=0.7.0-rc.7, <0.8.0", default-features = false }
 
 lapin = { version = "4.10", default-features = false, features = ["tokio"] }
+# The channel a live handle keeps is read on every publish and replaced only when the broker has
+# closed it, so the read side must not synchronise.
+arc-swap = "1.7"
 bytes = "1"
 futures = "0.3"
 thiserror = "2"
