@@ -21,7 +21,11 @@ pub struct Order {
 }
 
 /// The reply published to the `confirmations` queue for each order.
-#[derive(Debug, Serialize, JsonSchema)]
+///
+/// `Outgoing` declares the destination: the default exchange routes that name to the queue
+/// called `confirmations`.
+#[derive(Debug, Serialize, JsonSchema, Outgoing)]
+#[outgoing(name = "confirmations")]
 pub struct Confirmation {
     pub id: u64,
     pub accepted: bool,
@@ -29,10 +33,9 @@ pub struct Confirmation {
 
 /// Confirms an incoming order and publishes a `Confirmation` to the `confirmations` queue.
 ///
-/// The `publish("confirmations")` clause makes the runtime encode the return value and publish it
-/// through the publisher wired in `routes` (the default exchange routes it to the queue named
-/// `confirmations`).
-#[subscriber("orders", publish("confirmations"))]
+/// The `publish` clause makes the runtime encode the return value and publish it through the
+/// publisher wired in `routes`, at the destination `Confirmation` declares.
+#[subscriber("orders", publish)]
 pub async fn confirm(order: &Order) -> Confirmation {
     Confirmation {
         id: order.id,

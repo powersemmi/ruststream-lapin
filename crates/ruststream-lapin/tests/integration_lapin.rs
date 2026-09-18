@@ -18,26 +18,32 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
+use lapin::types::ShortString;
 use serde::Deserialize;
 use tokio::sync::Notify;
 
 use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, PublishExt, RustStream, State};
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, Outgoing,
-    OutgoingMessage, Partitioned, Publisher, Serialized, Subscriber, TransactionalPublisher,
-    nonzero, subscriber,
+    AckError, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap,
+    IncomingMessage, Outgoing, OutgoingMessage, Partitioned, Publisher, Serialized, Subscriber,
+    TransactionalPublisher, nonzero, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
-    Delay, LapinBroker, LapinMessage, LapinPublish, LapinPublishExt, PARTITION_KEY_HEADER,
-    QueueType, RabbitExchange, RabbitQueue,
+    AMQPValue, AmqpError, Delay, EXPIRATION_HEADER, FieldTable, LapinBroker, LapinMessage,
+    LapinPublish, LapinPublishSteps, PARTITION_KEY_HEADER, PRIORITY_HEADER, RabbitExchange,
+    RabbitQueue, RabbitQuorumQueue,
 };
+
+mod live;
 
 const WAIT: Duration = Duration::from_secs(5);
 const SILENCE: Duration = Duration::from_millis(200);
 
+/// The broker address, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing address
+/// fails the suite instead of skipping it.
 fn amqp_url() -> Option<String> {
-    std::env::var("AMQP_TEST_URL").ok()
+    live::url("AMQP_TEST_URL")
 }
 
 /// Unique per test run and per call, so runs never see each other's queues.
@@ -55,7 +61,7 @@ fn transient_queue(name: &str) -> RabbitQueue {
 
 async fn next<S>(stream: &mut S) -> LapinMessage
 where
-    S: Stream<Item = Result<LapinMessage, ruststream_lapin::AmqpError>> + Unpin,
+    S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
     tokio::time::timeout(WAIT, stream.next())
         .await
@@ -66,7 +72,7 @@ where
 
 async fn expect_silence<S>(stream: &mut S)
 where
-    S: Stream<Item = Result<LapinMessage, ruststream_lapin::AmqpError>> + Unpin,
+    S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
     let outcome = tokio::time::timeout(SILENCE, stream.next()).await;
     assert!(outcome.is_err(), "expected no delivery, got one");
@@ -91,7 +97,10 @@ async fn round_trip_on_default_exchange() {
     headers.insert("content-type", "application/json");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"{\"id\":1}").with_headers(headers))
+        .publish(
+            OutgoingMessage::new(&queue, b"{\"id\":1}").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -128,11 +137,11 @@ async fn topic_binding_routes_by_pattern() {
 
     let publisher = broker.publisher(LapinPublish::default().exchange(&exchange));
     publisher
-        .publish(OutgoingMessage::new("order.created", b"hit"))
+        .publish(OutgoingMessage::new("order.created", b"hit"), None)
         .await
         .expect("publish hit");
     publisher
-        .publish(OutgoingMessage::new("payment.created", b"miss"))
+        .publish(OutgoingMessage::new("payment.created", b"miss"), None)
         .await
         .expect("publish miss");
 
@@ -149,6 +158,236 @@ async fn topic_binding_routes_by_pattern() {
     broker.shutdown().await.expect("shutdown");
 }
 
+// The other two exchange kinds a descriptor declares, and what each does with a routing key: a
+// direct exchange routes on an exact match and nothing else, a fanout ignores the key and hands
+// every bound queue a copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_and_fanout_exchanges_route_as_declared() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let direct = unique("direct");
+    let exact = || {
+        RabbitExchange::direct(&direct)
+            .durable(false)
+            .auto_delete(true)
+    };
+    let created = unique("created");
+    let cancelled = unique("cancelled");
+    let mut created_sub = broker
+        .subscribe(transient_queue(&created).bind(exact(), "order.created"))
+        .await
+        .expect("subscribe the created queue");
+    let mut cancelled_sub = broker
+        .subscribe(transient_queue(&cancelled).bind(exact(), "order.cancelled"))
+        .await
+        .expect("subscribe the cancelled queue");
+
+    broker
+        .publisher(LapinPublish::default().exchange(&direct))
+        .publish(OutgoingMessage::new("order.created", b"one"), None)
+        .await
+        .expect("publish through the direct exchange");
+
+    let mut created_stream = Box::pin(created_sub.stream());
+    let msg = next(&mut created_stream).await;
+    assert_eq!(msg.payload(), b"one");
+    assert_eq!(msg.exchange(), direct);
+    msg.ack().await.expect("ack");
+
+    // The other binding key is another key: an exact match is exact.
+    let mut cancelled_stream = Box::pin(cancelled_sub.stream());
+    expect_silence(&mut cancelled_stream).await;
+
+    let fanout = unique("fanout");
+    let everyone = || {
+        RabbitExchange::fanout(&fanout)
+            .durable(false)
+            .auto_delete(true)
+    };
+    let left = unique("left");
+    let right = unique("right");
+    let mut left_sub = broker
+        .subscribe(transient_queue(&left).bind(everyone(), ""))
+        .await
+        .expect("subscribe the left queue");
+    let mut right_sub = broker
+        .subscribe(transient_queue(&right).bind(everyone(), ""))
+        .await
+        .expect("subscribe the right queue");
+
+    broker
+        .publisher(LapinPublish::default().exchange(&fanout))
+        .publish(OutgoingMessage::new("ignored.key", b"both"), None)
+        .await
+        .expect("publish through the fanout exchange");
+
+    for (name, subscriber) in [("left", &mut left_sub), ("right", &mut right_sub)] {
+        let mut stream = Box::pin(subscriber.stream());
+        let msg = next(&mut stream).await;
+        assert_eq!(msg.payload(), b"both", "the {name} queue gets its own copy");
+        assert_eq!(msg.exchange(), fanout);
+        msg.ack().await.expect("ack");
+    }
+
+    drop(created_stream);
+    drop(cancelled_stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// The binding arguments a headers exchange matches on: how much of the rest has to match, and
+/// the headers themselves.
+fn match_headers(mode: &str) -> FieldTable {
+    let mut arguments = FieldTable::default();
+    arguments.insert("x-match".into(), AMQPValue::LongString(mode.into()));
+    arguments.insert("region".into(), AMQPValue::LongString("eu".into()));
+    arguments.insert("tier".into(), AMQPValue::LongString("gold".into()));
+    arguments
+}
+
+// A headers exchange routes by the binding's arguments and ignores the routing key: `x-match`
+// says whether a message has to carry all of the rest or any one of them. Without arguments the
+// binding filters nothing at all, which is what the second step exists for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_headers_exchange_routes_by_the_bindings_arguments() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let exchange = unique("attributes");
+    let by_headers = || {
+        RabbitExchange::headers(&exchange)
+            .durable(false)
+            .auto_delete(true)
+    };
+    let every = unique("every");
+    let either = unique("either");
+    let bare = unique("bare");
+    let mut every_sub = broker
+        .subscribe(transient_queue(&every).bind_with(by_headers(), "", match_headers("all")))
+        .await
+        .expect("subscribe the queue that wants both headers");
+    let mut either_sub = broker
+        .subscribe(transient_queue(&either).bind_with(by_headers(), "", match_headers("any")))
+        .await
+        .expect("subscribe the queue that wants either header");
+    let mut bare_sub = broker
+        .subscribe(transient_queue(&bare).bind(by_headers(), "ignored"))
+        .await
+        .expect("subscribe the queue bound without arguments");
+
+    let publisher = broker.publisher(LapinPublish::default().exchange(&exchange));
+    let mut both = HeaderMap::new();
+    both.insert("region", "eu");
+    both.insert("tier", "gold");
+    publisher
+        .publish(
+            OutgoingMessage::new("ignored", b"both").with_headers(both),
+            None,
+        )
+        .await
+        .expect("publish the message carrying both headers");
+    let mut one = HeaderMap::new();
+    one.insert("region", "eu");
+    publisher
+        .publish(
+            OutgoingMessage::new("ignored", b"one").with_headers(one),
+            None,
+        )
+        .await
+        .expect("publish the message carrying one header");
+
+    let mut every_stream = Box::pin(every_sub.stream());
+    let msg = next(&mut every_stream).await;
+    assert_eq!(
+        msg.payload(),
+        b"both",
+        "`all` takes the message that has both"
+    );
+    msg.ack().await.expect("ack");
+    expect_silence(&mut every_stream).await;
+
+    let mut either_stream = Box::pin(either_sub.stream());
+    let first = next(&mut either_stream).await;
+    assert_eq!(first.payload(), b"both");
+    first.ack().await.expect("ack");
+    let second = next(&mut either_stream).await;
+    assert_eq!(
+        second.payload(),
+        b"one",
+        "`any` takes the message that has one of them too"
+    );
+    second.ack().await.expect("ack");
+
+    // The binding the plain step writes, and the trap it is on a headers exchange: `all` of no
+    // headers is true of every message, so the queue gets the whole exchange instead of a slice
+    // of it.
+    let mut bare_stream = Box::pin(bare_sub.stream());
+    let first = next(&mut bare_stream).await;
+    assert_eq!(first.payload(), b"both");
+    first.ack().await.expect("ack");
+    let second = next(&mut bare_stream).await;
+    assert_eq!(
+        second.payload(),
+        b"one",
+        "a binding with no arguments filters nothing out"
+    );
+    second.ack().await.expect("ack");
+
+    drop(every_stream);
+    drop(either_stream);
+    drop(bare_stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+// A transient queue is a deprecated feature on `RabbitMQ` 4 and is refused unless it belongs to
+// one connection, which is what the descriptor's documentation tells a reader and what every
+// throwaway queue in this suite is built on. The server refuses it by closing the connection, so
+// the accepted form needs one of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transient_queue_is_refused_unless_it_is_exclusive() {
+    let Some(url) = amqp_url() else { return };
+    let refusing = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let shared = unique("transient-shared");
+    let refused = refusing
+        .subscribe(RabbitQueue::new(&shared).durable(false))
+        .await
+        .expect_err("a transient queue open to every connection must be refused");
+    assert!(
+        matches!(refused, AmqpError::Declare(_)),
+        "the refusal comes from the declaration, got {refused:?}"
+    );
+    drop(refusing);
+
+    // The same queue exclusive to this connection: the form the server accepts, and the one the
+    // descriptor's documentation points at.
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+    let own = unique("transient-exclusive");
+    let subscriber = broker
+        .subscribe(transient_queue(&own))
+        .await
+        .expect("a transient queue exclusive to one connection is accepted");
+
+    drop(subscriber);
+    broker.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quorum_queue_declares_and_delivers() {
     let Some(url) = amqp_url() else { return };
@@ -160,12 +399,12 @@ async fn quorum_queue_declares_and_delivers() {
 
     // Quorum queues must be durable and never auto-delete, so this one needs explicit cleanup.
     let queue = unique("quorum");
-    let def = RabbitQueue::new(&queue).queue_type(QueueType::Quorum);
+    let def = RabbitQuorumQueue::new(&queue);
     let mut subscriber = broker.subscribe(def).await.expect("subscribe");
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"q1"))
+        .publish(OutgoingMessage::new(&queue, b"q1"), None)
         .await
         .expect("publish");
 
@@ -211,7 +450,7 @@ async fn nack_requeue_marks_redelivered() {
         .expect("subscribe");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"again"))
+        .publish(OutgoingMessage::new(&queue, b"again"), None)
         .await
         .expect("publish");
 
@@ -256,7 +495,7 @@ async fn reject_dead_letters_into_dlx() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"poison"))
+        .publish(OutgoingMessage::new(&queue, b"poison"), None)
         .await
         .expect("publish");
 
@@ -294,7 +533,10 @@ async fn binary_header_values_round_trip() {
     headers.insert("x-tenant", "acme");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"payload").with_headers(headers))
+        .publish(
+            OutgoingMessage::new(&queue, b"payload").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -337,7 +579,7 @@ async fn prefetch_caps_a_batch_below_its_size() {
     let publisher = broker.publisher(LapinPublish::default());
     for payload in [b"m1".as_slice(), b"m2", b"m3"] {
         publisher
-            .publish(OutgoingMessage::new(&queue, payload))
+            .publish(OutgoingMessage::new(&queue, payload), None)
             .await
             .expect("publish");
     }
@@ -388,7 +630,7 @@ async fn prefetch_caps_unacknowledged_deliveries() {
     let publisher = broker.publisher(LapinPublish::default());
     for payload in [b"m1".as_slice(), b"m2", b"m3"] {
         publisher
-            .publish(OutgoingMessage::new(&queue, payload))
+            .publish(OutgoingMessage::new(&queue, payload), None)
             .await
             .expect("publish");
     }
@@ -411,6 +653,70 @@ async fn prefetch_caps_unacknowledged_deliveries() {
     broker.shutdown().await.expect("shutdown");
 }
 
+// The broker-wide window applies to a subscription that names none, and a descriptor that names
+// one replaces it rather than adding to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_brokers_prefetch_applies_and_a_descriptor_overrides_it() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .prefetch(nonzero!(1))
+        .connect()
+        .await
+        .expect("connect");
+    let publisher = broker.publisher(LapinPublish::default());
+
+    let capped = unique("broker-prefetch");
+    let mut narrow = broker
+        .subscribe(transient_queue(&capped))
+        .await
+        .expect("subscribe");
+    for payload in [b"m1".as_slice(), b"m2"] {
+        publisher
+            .publish(OutgoingMessage::new(&capped, payload), None)
+            .await
+            .expect("publish");
+    }
+
+    let mut stream = Box::pin(narrow.stream());
+    let first = next(&mut stream).await;
+    assert_eq!(first.payload(), b"m1");
+    expect_silence(&mut stream).await;
+    first.ack().await.expect("ack first");
+    let second = next(&mut stream).await;
+    second.ack().await.expect("ack second");
+    drop(stream);
+
+    let wide = unique("descriptor-prefetch");
+    let mut wider = broker
+        .subscribe(transient_queue(&wide).prefetch(nonzero!(3)))
+        .await
+        .expect("subscribe");
+    for payload in [b"m1".as_slice(), b"m2", b"m3"] {
+        publisher
+            .publish(OutgoingMessage::new(&wide, payload), None)
+            .await
+            .expect("publish");
+    }
+
+    // Three unacknowledged deliveries at once: the broker's window of one is not what applies
+    // here, or the second of them would not have arrived.
+    let mut stream = Box::pin(wider.stream());
+    let held = [
+        next(&mut stream).await,
+        next(&mut stream).await,
+        next(&mut stream).await,
+    ];
+    assert_eq!(held[0].payload(), b"m1");
+    assert_eq!(held[2].payload(), b"m3");
+    for delivery in held {
+        delivery.ack().await.expect("ack");
+    }
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_tx_publisher_is_plain_outside_a_transaction() {
     let Some(url) = amqp_url() else { return };
@@ -428,7 +734,7 @@ async fn server_tx_publisher_is_plain_outside_a_transaction() {
 
     let publisher = broker.publisher(LapinPublish::default().server_tx());
     publisher
-        .publish(OutgoingMessage::new(&queue, b"direct"))
+        .publish(OutgoingMessage::new(&queue, b"direct"), None)
         .await
         .expect("publish");
 
@@ -460,7 +766,10 @@ async fn partition_key_round_trips_through_the_header() {
     headers.insert(PARTITION_KEY_HEADER, "tenant-a");
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"payload").with_headers(headers))
+        .publish(
+            OutgoingMessage::new(&queue, b"payload").with_headers(headers),
+            None,
+        )
         .await
         .expect("publish");
 
@@ -491,7 +800,7 @@ async fn nack_after_redelivers_through_the_delay_queue() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"later"))
+        .publish(OutgoingMessage::new(&queue, b"later"), None)
         .await
         .expect("publish");
 
@@ -536,6 +845,64 @@ async fn nack_after_redelivers_through_the_delay_queue() {
         .close(200, "OK".into())
         .await
         .expect("cleanup close");
+}
+
+// The other side of the delay descriptor: a subscription that named no waiting queue says so
+// rather than inventing one, and the runtime then falls back to its own deferred re-publish. The
+// refused settle must also leave the delivery where it was, not quietly acknowledge it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_without_a_waiting_queue_refuses_a_delayed_redelivery() {
+    let Some(url) = amqp_url() else { return };
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let queue = unique("no-delay");
+    let mut subscriber = broker
+        .subscribe(transient_queue(&queue))
+        .await
+        .expect("subscribe");
+    broker
+        .publisher(LapinPublish::default())
+        .publish(OutgoingMessage::new(&queue, b"now"), None)
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(subscriber.stream());
+    let msg = next(&mut stream).await;
+    assert!(
+        !msg.supports_nack_after(),
+        "a subscription with no waiting queue cannot honour a delay"
+    );
+    let refused = msg
+        .nack_after(Duration::from_millis(50))
+        .await
+        .expect_err("the delay must be refused, not silently dropped");
+    assert!(
+        matches!(refused, AckError::Unsupported),
+        "the refusal must be the one the runtime falls back on, got {refused:?}"
+    );
+
+    // The refusal settled nothing, so closing the consumer returns the delivery to the queue.
+    drop(stream);
+    drop(subscriber);
+    let mut again = broker
+        .subscribe(transient_queue(&queue))
+        .await
+        .expect("resubscribe");
+    let mut stream = Box::pin(again.stream());
+    let returned = next(&mut stream).await;
+    assert_eq!(returned.payload(), b"now");
+    assert!(
+        returned.redelivered(),
+        "the delivery the refusal left unsettled comes back as a redelivery"
+    );
+    returned.ack().await.expect("ack");
+
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
 }
 
 // Keyed worker lanes, driven through the full runtime dispatch path against a live broker: this is
@@ -657,7 +1024,7 @@ async fn declare_empty_keyed_queue(url: &str) {
                 durable: true,
                 ..Default::default()
             },
-            lapin::types::FieldTable::default(),
+            FieldTable::default(),
         )
         .await
         .expect("setup declare");
@@ -682,6 +1049,7 @@ async fn prequeue_keyed_deliveries(url: &str) {
             publisher
                 .publish(
                     OutgoingMessage::new(KEYED_LANES_QUEUE, body.as_bytes()).with_headers(headers),
+                    None,
                 )
                 .await
                 .expect("publish");
@@ -808,6 +1176,54 @@ async fn subscribe_fails_without_declaration_when_queue_is_missing() {
     broker.shutdown().await.expect("shutdown");
 }
 
+// The document a service publishes reports the coordinate and nothing else, and the URL it was
+// taken from is a working one: the credentials and the vhost that the description drops are the
+// halves that actually got this connection open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_url_with_credentials_connects_and_is_described_as_the_address_alone() {
+    let Some(url) = amqp_url() else { return };
+    let address = url
+        .strip_prefix("amqp://")
+        .expect("the test address is an amqp URL");
+    // The stand's default account is accepted from localhost, which is where the port is
+    // published; `%2f` is the default vhost.
+    let configured = format!("amqp://guest:guest@{address}/%2f");
+
+    let broker = LapinBroker::new(configured).declare_topology(true);
+    let spec = broker.describe_server();
+    assert_eq!(spec.host.as_deref(), Some(address));
+    assert_eq!(spec.protocol, "amqp");
+    assert_eq!(spec.protocol_version.as_deref(), Some("0.9.1"));
+    assert!(
+        !format!("{spec:?}").contains("guest"),
+        "a published document must carry no credential: {spec:?}"
+    );
+
+    let connected = broker.connect().await.expect("connect with credentials");
+    let queue = unique("credentialed");
+    let mut subscriber = connected
+        .subscribe(transient_queue(&queue))
+        .await
+        .expect("subscribe");
+    connected
+        .publisher(LapinPublish::default())
+        .publish(OutgoingMessage::new(&queue, b"authenticated"), None)
+        .await
+        .expect("publish");
+
+    let mut stream = Box::pin(subscriber.stream());
+    let msg = next(&mut stream).await;
+    assert_eq!(msg.payload(), b"authenticated");
+    msg.ack().await.expect("ack");
+
+    drop(stream);
+    let closed = connected.shutdown().await.expect("shutdown");
+    assert!(
+        closed.handshake(),
+        "an orderly shutdown runs the close handshake"
+    );
+}
+
 const CTX_DI_QUEUE: &str = "ruststream-tests-ctx-di";
 
 #[derive(Debug, Deserialize)]
@@ -871,7 +1287,7 @@ async fn ctx_extractors_inject_delivery_fields() {
                 durable: true,
                 ..Default::default()
             },
-            lapin::types::FieldTable::default(),
+            FieldTable::default(),
         )
         .await
         .expect("setup queue declare");
@@ -945,11 +1361,11 @@ async fn declare_probe_queue(channel: &lapin::Channel, queue: &str, max_priority
     let _ = channel
         .queue_delete(queue.into(), lapin::options::QueueDeleteOptions::default())
         .await;
-    let mut arguments = lapin::types::FieldTable::default();
+    let mut arguments = FieldTable::default();
     if let Some(max_priority) = max_priority {
         arguments.insert(
             "x-max-priority".into(),
-            lapin::types::AMQPValue::ShortInt(i16::from(max_priority)),
+            AMQPValue::ShortInt(i16::from(max_priority)),
         );
     }
     channel
@@ -977,12 +1393,12 @@ async fn consume_probe_queue(channel: &lapin::Channel, queue: &str) -> lapin::Co
     channel
         .basic_consume(
             queue.into(),
-            lapin::types::ShortString::default(),
+            ShortString::default(),
             lapin::options::BasicConsumeOptions {
                 no_ack: true,
                 ..Default::default()
             },
-            lapin::types::FieldTable::default(),
+            FieldTable::default(),
         )
         .await
         .expect("probe consume")
@@ -1023,14 +1439,15 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     let mut headered = consume_probe_queue(&channel, &headers_queue).await;
 
     let broker = LapinBroker::new(url).connect().await.expect("connect");
-    // Confirms, so every publish below has reached the broker once it resolves.
-    let publisher = broker.publisher(LapinPublish::default().confirms());
+    // Confirms, so every publish below has reached the broker once it resolves. The policy fixes
+    // a priority for every message it sends.
+    let publisher = broker.publisher(LapinPublish::default().priority(2).confirms());
 
     publisher
-        .with_priority(4)
-        .with_expiration(Duration::from_secs(60))
         .message(&Wire::of(b"{\"id\":1}"))
         .to(&stepped_queue)
+        .priority(4)
+        .expiration(Duration::from_secs(60))
         .publish()
         .await
         .expect("publish with steps");
@@ -1040,12 +1457,25 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     assert_eq!(delivery.properties.priority(), &Some(4));
     assert_eq!(expiration_of(&delivery).as_deref(), Some("60000"));
 
-    // The borrowed transaction form keeps the properties across the client-side buffer.
+    // A publish that names no step carries what the mount site fixed, and nothing else.
+    publisher
+        .message(&Wire::of(b"{\"id\":4}"))
+        .to(&stepped_queue)
+        .publish()
+        .await
+        .expect("publish with the policy defaults");
+
+    let delivery = next_delivery(&mut stepped).await;
+    assert_eq!(delivery.data, b"{\"id\":4}");
+    assert_eq!(delivery.properties.priority(), &Some(2));
+    assert_eq!(expiration_of(&delivery), None);
+
+    // The borrowed transaction form keeps the settings across the client-side buffer.
     publisher.begin_transaction().await.expect("begin");
     publisher
-        .with_priority(9)
         .message(&Wire::of(b"{\"id\":2}"))
         .to(&stepped_queue)
+        .priority(9)
         .publish()
         .await
         .expect("publish into the transaction");
@@ -1055,12 +1485,17 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     assert_eq!(delivery.data, b"{\"id\":2}");
     assert_eq!(delivery.properties.priority(), &Some(9));
 
-    // The same names as plain headers: they travel in the header table, and neither property is
-    // set - which is exactly what the steps exist to fix.
+    // The same values written as headers, under the protocol's own names and under the names a
+    // delivery reports them with: they travel in the header table and set no property at all,
+    // which is exactly what the steps exist to fix. A publisher with no policy setting either, so
+    // a property that does turn up came from the header.
+    let plain = broker.publisher(LapinPublish::default().confirms());
     let mut headers = HeaderMap::new();
     headers.insert("priority", "4");
     headers.insert("expiration", "60000");
-    publisher
+    headers.insert(PRIORITY_HEADER, "4");
+    headers.insert(EXPIRATION_HEADER, "60000");
+    plain
         .message(&Wire::of(b"{\"id\":3}"))
         .with_headers(headers)
         .to(&headers_queue)
@@ -1078,7 +1513,7 @@ async fn publish_steps_reach_the_native_amqp_properties() {
         .as_ref()
         .expect("header table");
     assert!(table.inner().contains_key("priority"));
-    assert!(table.inner().contains_key("expiration"));
+    assert!(table.inner().contains_key(PRIORITY_HEADER));
 
     broker.shutdown().await.expect("shutdown");
     for queue in [&stepped_queue, &headers_queue] {

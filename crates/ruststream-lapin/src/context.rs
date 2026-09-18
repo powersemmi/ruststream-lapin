@@ -3,6 +3,26 @@
 //! [`AmqpContext`] carries the AMQP delivery metadata that is not part of the payload or the
 //! headers. Request it in a handler by typing the context parameter as
 //! `Context<'_, AmqpContext>` and read individual fields with the zero-sized keys in [`keys`].
+//! The prelude carries the keys but not the context type, so import that from here:
+//!
+//! ```
+//! use ruststream_lapin::context::AmqpContext;
+//! use ruststream_lapin::context::keys::RoutingKey;
+//! use ruststream_lapin::prelude::*;
+//! use serde::Deserialize;
+//!
+//! #[derive(Deserialize)]
+//! struct Order {
+//!     id: u64,
+//! }
+//!
+//! #[subscriber(RabbitQueue::new("orders"))]
+//! async fn audit(order: &Order, ctx: &mut Context<'_, AmqpContext>) -> HandlerOutcome {
+//!     println!("order {} came via {}", order.id, ctx.context(RoutingKey));
+//!     HandlerOutcome::ack()
+//! }
+//! # let _ = audit;
+//! ```
 
 use ruststream::{BuildContext, Field};
 

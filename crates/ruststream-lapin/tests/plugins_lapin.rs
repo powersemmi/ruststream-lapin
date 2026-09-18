@@ -20,8 +20,12 @@ use ruststream::{
 };
 use ruststream_lapin::{LapinBroker, LapinPublish, RabbitQueue};
 
+mod live;
+
+/// The plugin stand's address, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing
+/// address fails the suite instead of skipping it.
 fn plugins_url() -> Option<String> {
-    std::env::var("AMQP_PLUGINS_TEST_URL").ok()
+    live::url("AMQP_PLUGINS_TEST_URL")
 }
 
 fn unique(base: &str) -> String {
@@ -31,25 +35,26 @@ fn unique(base: &str) -> String {
     format!("ruststream-plugin.{base}.{}-{n}", std::process::id())
 }
 
+/// Drains everything a subscriber delivers within a short quiet window, acking each.
+#[cfg(feature = "plugin-consistent-hash")]
+async fn drain(sub: &mut ruststream_lapin::LapinSubscriber) -> u32 {
+    let mut stream = Box::pin(sub.stream());
+    let mut count = 0;
+    while let Ok(Some(Ok(msg))) =
+        tokio::time::timeout(Duration::from_millis(300), stream.next()).await
+    {
+        count += 1;
+        msg.ack().await.expect("ack");
+    }
+    count
+}
+
 /// A consistent-hash exchange should split published messages across the queues bound to it, so
 /// two equally weighted shards each receive part of the stream.
 #[cfg(feature = "plugin-consistent-hash")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn consistent_hash_exchange_distributes_across_shards() {
     use ruststream_lapin::RabbitExchange;
-
-    // Drains everything a subscriber delivers within a short quiet window, acking each.
-    async fn drain(sub: &mut ruststream_lapin::LapinSubscriber) -> u32 {
-        let mut stream = Box::pin(sub.stream());
-        let mut count = 0;
-        while let Ok(Some(Ok(msg))) =
-            tokio::time::timeout(Duration::from_millis(300), stream.next()).await
-        {
-            count += 1;
-            msg.ack().await.expect("ack");
-        }
-        count
-    }
 
     let Some(url) = plugins_url() else { return };
     let broker = LapinBroker::new(url)
@@ -91,7 +96,10 @@ async fn consistent_hash_exchange_distributes_across_shards() {
     let total = 40u32;
     for i in 0..total {
         publisher
-            .publish(OutgoingMessage::new(&format!("key-{i}"), &i.to_be_bytes()))
+            .publish(
+                OutgoingMessage::new(&format!("key-{i}"), &i.to_be_bytes()),
+                None,
+            )
             .await
             .expect("publish");
     }
@@ -111,6 +119,72 @@ async fn consistent_hash_exchange_distributes_across_shards() {
     assert!(
         got_b > 0,
         "shard b received nothing: hash did not distribute"
+    );
+
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// What makes the fan-out usable as a partitioning: the hash is of the routing key, so one key
+/// always lands on the same shard instead of spreading over both.
+#[cfg(feature = "plugin-consistent-hash")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_consistent_hash_exchange_keeps_one_key_on_one_shard() {
+    use ruststream_lapin::RabbitExchange;
+
+    let Some(url) = plugins_url() else { return };
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let exchange = unique("hash-key");
+    let shard_a = unique("key-shard-a");
+    let shard_b = unique("key-shard-b");
+    let hash = || {
+        RabbitExchange::consistent_hash(&exchange)
+            .durable(false)
+            .auto_delete(true)
+    };
+    let mut a = broker
+        .subscribe(
+            RabbitQueue::new(&shard_a)
+                .durable(false)
+                .exclusive(true)
+                .bind(hash(), "1"),
+        )
+        .await
+        .expect("subscribe shard a");
+    let mut b = broker
+        .subscribe(
+            RabbitQueue::new(&shard_b)
+                .durable(false)
+                .exclusive(true)
+                .bind(hash(), "1"),
+        )
+        .await
+        .expect("subscribe shard b");
+
+    let publisher = broker.publisher(LapinPublish::default().exchange(&exchange));
+    let total = 12u32;
+    for i in 0..total {
+        publisher
+            .publish(OutgoingMessage::new("tenant-a", &i.to_be_bytes()), None)
+            .await
+            .expect("publish");
+    }
+
+    let got_a = drain(&mut a).await;
+    let got_b = drain(&mut b).await;
+
+    assert_eq!(
+        got_a + got_b,
+        total,
+        "every message must reach exactly one shard"
+    );
+    assert!(
+        got_a == total || got_b == total,
+        "one routing key must stay on one shard, got {got_a} and {got_b}",
     );
 
     broker.shutdown().await.expect("shutdown");
@@ -139,7 +213,7 @@ async fn delayed_message_exchange_holds_then_redelivers() {
 
     broker
         .publisher(LapinPublish::default())
-        .publish(OutgoingMessage::new(&queue, b"later"))
+        .publish(OutgoingMessage::new(&queue, b"later"), None)
         .await
         .expect("publish");
 

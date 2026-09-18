@@ -11,15 +11,17 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use crate::convert;
 use crate::delay::{Delay, DelayTarget};
 use crate::error::AmqpError;
-use crate::queue::{QueueType, RabbitQueue};
+use crate::queue::{DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, QueueSpec};
 
-/// Declares the exchanges, queue, bindings, and delay backend `def` describes.
+/// Declares the exchanges, queue, bindings, and delay backend `spec` describes, with `arguments`
+/// as the descriptor and the registration between them asked for.
 pub(crate) async fn declare(
     channel: &Channel,
-    def: &RabbitQueue,
-    broker_default: Option<QueueType>,
+    spec: &QueueSpec,
+    arguments: FieldTable,
 ) -> Result<(), AmqpError> {
-    for (exchange, _) in def.bindings() {
+    for binding in &spec.bindings {
+        let exchange = &binding.exchange;
         // The default exchange and the amq.* built-ins exist on every broker and must not be
         // redeclared.
         if exchange.name().is_empty() || exchange.name().starts_with("amq.") {
@@ -40,29 +42,13 @@ pub(crate) async fn declare(
             .map_err(AmqpError::declare)?;
     }
 
-    let queue_type = def.queue_type_or(broker_default);
-    if queue_type == Some(QueueType::Quorum) && !def.is_durable() {
-        return Err(AmqpError::InvalidOptions(format!(
-            "queue {:?} is a quorum queue and must stay durable; drop `.durable(false)` or pick \
-             `QueueType::Classic`",
-            def.name(),
-        )));
-    }
-
-    let mut arguments = def.declare_arguments().clone();
-    if let Some(queue_type) = queue_type {
-        arguments.insert(
-            ShortString::from("x-queue-type"),
-            AMQPValue::LongString(queue_type.as_str().into()),
-        );
-    }
     channel
         .queue_declare(
-            convert::short(def.name(), "queue name")?,
+            convert::short(&spec.name, "queue name")?,
             QueueDeclareOptions {
-                durable: def.is_durable(),
-                exclusive: def.is_exclusive(),
-                auto_delete: def.is_auto_delete(),
+                durable: spec.durable,
+                exclusive: spec.exclusive,
+                auto_delete: spec.auto_delete,
                 ..QueueDeclareOptions::default()
             },
             arguments,
@@ -70,21 +56,21 @@ pub(crate) async fn declare(
         .await
         .map_err(AmqpError::declare)?;
 
-    for (exchange, routing_key) in def.bindings() {
+    for binding in &spec.bindings {
         channel
             .queue_bind(
-                convert::short(def.name(), "queue name")?,
-                convert::short(exchange.name(), "exchange name")?,
-                convert::short(routing_key, "routing key")?,
+                convert::short(&spec.name, "queue name")?,
+                convert::short(binding.exchange.name(), "exchange name")?,
+                convert::short(&binding.routing_key, "routing key")?,
                 QueueBindOptions::default(),
-                FieldTable::default(),
+                binding.arguments.clone(),
             )
             .await
             .map_err(AmqpError::declare)?;
     }
 
-    if let Some(delay) = def.delay_config() {
-        declare_delay_backend(channel, delay, def.name()).await?;
+    if let Some(delay) = &spec.delay {
+        declare_delay_backend(channel, delay, &spec.name).await?;
     }
 
     Ok(())
@@ -118,11 +104,11 @@ async fn declare_delay_queue(
 ) -> Result<(), AmqpError> {
     let mut arguments = FieldTable::default();
     arguments.insert(
-        ShortString::from("x-dead-letter-exchange"),
+        ShortString::from(DEAD_LETTER_EXCHANGE),
         AMQPValue::LongString(String::new().into()),
     );
     arguments.insert(
-        ShortString::from("x-dead-letter-routing-key"),
+        ShortString::from(DEAD_LETTER_ROUTING_KEY),
         AMQPValue::LongString(origin.into()),
     );
     channel
