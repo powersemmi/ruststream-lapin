@@ -10,7 +10,7 @@ use bytes::Bytes;
 use lapin::options::{BasicPublishOptions, ConfirmSelectOptions};
 use lapin::{BasicProperties, Channel};
 use lapin::{Confirmation, PublisherConfirm};
-use ruststream::{HeaderMap, OutgoingMessage, Publisher, TransactionalPublisher};
+use ruststream::{HeaderMap, Lend, OutgoingMessage, Publisher, TransactionalPublisher};
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
 use crate::channel::ChannelCell;
@@ -33,7 +33,10 @@ pub(crate) struct Buffered {
 }
 
 impl Buffered {
-    pub(crate) fn new(msg: &OutgoingMessage<'_>, options: Option<&LapinPublishOptions>) -> Self {
+    pub(crate) fn new<Payload: AsRef<[u8]>>(
+        msg: &OutgoingMessage<'_, Payload>,
+        options: Option<&LapinPublishOptions>,
+    ) -> Self {
         Self {
             routing_key: msg.name().to_owned(),
             payload: Bytes::copy_from_slice(msg.payload()),
@@ -84,6 +87,9 @@ impl LapinPublisher {
 }
 
 impl Publisher for LapinPublisher {
+    /// `basic_publish` takes the payload as `&[u8]` and copies it into the frame it sends, so
+    /// this publisher reads the bytes and keeps nothing.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -256,6 +262,9 @@ fn confirmation_ok(confirmation: &Confirmation, routing_key: &str) -> Result<(),
 }
 
 impl Publisher for ConfirmsPublisher {
+    /// `basic_publish` takes the payload as `&[u8]` and copies it into the frame it sends, so
+    /// this publisher reads the bytes and keeps nothing.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -464,6 +473,9 @@ impl ServerTxPublisher {
 }
 
 impl Publisher for ServerTxPublisher {
+    /// `basic_publish` takes the payload as `&[u8]` and copies it into the frame it sends, so
+    /// this publisher reads the bytes and keeps nothing.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 

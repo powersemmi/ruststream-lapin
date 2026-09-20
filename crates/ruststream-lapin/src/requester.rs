@@ -12,7 +12,7 @@ use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
 use lapin::types::{FieldTable, ShortString};
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
-use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
+use ruststream::{Lend, OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
 use tokio::sync::oneshot;
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
@@ -251,6 +251,9 @@ async fn dispatch_replies(mut consumer: lapin::Consumer, pending: Weak<Pending>)
 }
 
 impl Publisher for LapinRequester {
+    /// `basic_publish` takes the payload as `&[u8]` and copies it into the frame it sends, so
+    /// this publisher reads the bytes and keeps nothing.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
