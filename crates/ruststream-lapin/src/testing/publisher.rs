@@ -186,7 +186,7 @@ impl Buffering {
     /// Buffers `msg` inside an open transaction, or routes it straight away.
     fn publish(
         &self,
-        msg: &OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_>,
         options: Option<&LapinPublishOptions>,
     ) -> Result<(), AmqpError> {
         // Checked before buffering, not only at the flush: the live publishers reject an
@@ -199,7 +199,7 @@ impl Buffering {
                 return Ok(());
             }
         }
-        self.route.send(msg, options)
+        self.route.send(&msg, options)
     }
 
     fn begin(&self, publisher: &str) -> Result<(), AmqpError> {
@@ -391,7 +391,7 @@ impl Publisher for ConfirmsTestPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.buffering.publish(&msg, options))
+        ready(self.buffering.publish(msg, options))
     }
 }
 
@@ -644,7 +644,7 @@ impl Publisher for ServerTxTestPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.buffering.publish(&msg, options))
+        ready(self.buffering.publish(msg, options))
     }
 }
 

@@ -36,24 +36,25 @@ pub(crate) struct Buffered {
 
 impl Buffered {
     /// A message a lending publisher buffered: the framework reuses that buffer for the next
-    /// message, so the bytes are copied out of it.
-    pub(crate) fn lent(msg: &OutgoingMessage<'_>, options: Option<&LapinPublishOptions>) -> Self {
+    /// message, so the bytes are copied out of it. The header map is the publish's own and is
+    /// taken with the rest of the message.
+    pub(crate) fn lent(msg: OutgoingMessage<'_>, options: Option<&LapinPublishOptions>) -> Self {
+        let (routing_key, payload, headers) = msg.into_parts();
         Self {
-            routing_key: msg.name().to_owned(),
-            payload: Bytes::copy_from_slice(msg.payload()),
-            headers: msg.headers().clone(),
+            routing_key: routing_key.to_owned(),
+            payload: Bytes::copy_from_slice(payload),
+            headers,
             options: options.copied().unwrap_or_default(),
         }
     }
 
-    /// A message a transaction was handed: the buffer is the transaction's to keep, so it is
-    /// taken as the framework wrote it.
+    /// A message a transaction was handed: the buffer is the transaction's to keep, so the
+    /// payload and the header map are taken as the framework wrote them.
     pub(crate) fn taken(msg: OutgoingFor<'_, Take>, options: Option<&LapinPublishOptions>) -> Self {
-        let routing_key = msg.name().to_owned();
-        let headers = msg.headers().clone();
+        let (routing_key, payload, headers) = msg.into_parts();
         Self {
-            routing_key,
-            payload: msg.into_payload().freeze(),
+            routing_key: routing_key.to_owned(),
+            payload: payload.freeze(),
             headers,
             options: options.copied().unwrap_or_default(),
         }
@@ -305,7 +306,7 @@ impl Publisher for ConfirmsPublisher {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push(Buffered::lent(&msg, options));
+                buffer.push(Buffered::lent(msg, options));
                 return Ok(());
             }
         }
