@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ruststream-lapin"]
+members = ["crates/ruststream-lapin", "crates/ruststream-lapin-bench"]
 # cargo-generate scaffolds: their sources carry `{{project-name}}` placeholders that are not valid
 # Rust/TOML until rendered, so they stay out of the workspace. The scaffold manifests are named
 # `Cargo.toml.liquid` on top of that: git-source package discovery ignores `exclude` and parses

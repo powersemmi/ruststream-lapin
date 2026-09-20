@@ -1842,6 +1842,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruststream-lapin-bench"
+version = "0.7.0"
+dependencies = [
+ "futures",
+ "lapin",
+ "ruststream",
+ "ruststream-lapin",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ruststream-macros"
 version = "0.7.0-rc.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
