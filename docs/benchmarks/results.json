@@ -13,7 +13,7 @@
     "memory_speed": "unknown",
     "os": "Linux 7.2.6-x64v3-xanmod1-1",
     "broker": "rabbitmq:4-management-alpine in Docker on localhost",
-    "round_trip": "50.7 us for one basic.qos answered by the server",
+    "round_trip": "55.0 us for one basic.qos answered by the server",
     "rustc": "1.98.1",
     "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
     "features": "ruststream-lapin default (none), ruststream macros,json",
@@ -23,25 +23,25 @@
     {
       "name": "Classic queue, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 373406,
+      "messages": 359633,
       "pairs": 11,
       "raw": {
-        "median": 57823,
-        "min": 54482,
-        "max": 58284
+        "median": 57112,
+        "min": 54714,
+        "max": 57845
       },
       "adapter": {
-        "median": 57382,
-        "min": 53414,
-        "max": 58358
+        "median": 56412,
+        "min": 54497,
+        "max": 57136
       },
       "framework": {
-        "median": 56020,
-        "min": 45664,
-        "max": 58183
+        "median": 54820,
+        "min": 52989,
+        "max": 55807
       },
-      "adapter_overhead_percent": 0.8,
-      "overhead_percent": 3.1,
+      "adapter_overhead_percent": 1.2,
+      "overhead_percent": 4.0,
       "adapter_verdict": "indistinguishable",
       "verdict": "indistinguishable",
       "broker_bound": false
@@ -49,25 +49,25 @@
     {
       "name": "Quorum queue, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 227285,
+      "messages": 223027,
       "pairs": 11,
       "raw": {
-        "median": 32839,
-        "min": 31595,
-        "max": 33419
+        "median": 32324,
+        "min": 31724,
+        "max": 32759
       },
       "adapter": {
-        "median": 33103,
-        "min": 32115,
-        "max": 33695
+        "median": 32507,
+        "min": 31412,
+        "max": 33210
       },
       "framework": {
-        "median": 32202,
-        "min": 31534,
-        "max": 33603
+        "median": 32340,
+        "min": 31402,
+        "max": 33323
       },
-      "adapter_overhead_percent": -0.8,
-      "overhead_percent": 1.9,
+      "adapter_overhead_percent": -0.6,
+      "overhead_percent": -0.1,
       "adapter_verdict": "indistinguishable",
       "verdict": "indistinguishable",
       "broker_bound": false
