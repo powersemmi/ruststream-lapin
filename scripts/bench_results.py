@@ -12,7 +12,8 @@ and `framework`; `adapter` and `adapter_overhead_percent` are this crate's own c
 
 The schema is the core's, declared at
 https://powersemmi.github.io/ruststream/latest/benchmarks/#publishing-results. This crate
-publishes the throughput table alone, so the document declares schema 1.
+publishes the throughput table alone, each loop as its best and worst round, so the document
+declares schema 3.
 
 The environment carries one figure the benchmark measured rather than the machine reported: the
 transport's round-trip time. It is what decides whether a row is marked `broker_bound`, so a
@@ -137,7 +138,7 @@ def main() -> int:
         return 2
     summary = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     document = {
-        "schema": 1,
+        "schema": 3,
         "crate": "ruststream-lapin",
         "crate_version": crate_version(),
         "core_version": core_version(),
