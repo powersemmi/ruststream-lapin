@@ -10,7 +10,9 @@ use bytes::Bytes;
 use lapin::options::{BasicPublishOptions, ConfirmSelectOptions};
 use lapin::{BasicProperties, Channel};
 use lapin::{Confirmation, PublisherConfirm};
-use ruststream::{HeaderMap, Lend, OutgoingMessage, Publisher, TransactionalPublisher};
+use ruststream::{
+    HeaderMap, Lend, OutgoingFor, OutgoingMessage, Publisher, Take, TransactionalPublisher,
+};
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
 use crate::channel::ChannelCell;
@@ -33,14 +35,26 @@ pub(crate) struct Buffered {
 }
 
 impl Buffered {
-    pub(crate) fn new<Payload: AsRef<[u8]>>(
-        msg: &OutgoingMessage<'_, Payload>,
-        options: Option<&LapinPublishOptions>,
-    ) -> Self {
+    /// A message a lending publisher buffered: the framework reuses that buffer for the next
+    /// message, so the bytes are copied out of it.
+    pub(crate) fn lent(msg: &OutgoingMessage<'_>, options: Option<&LapinPublishOptions>) -> Self {
         Self {
             routing_key: msg.name().to_owned(),
             payload: Bytes::copy_from_slice(msg.payload()),
             headers: msg.headers().clone(),
+            options: options.copied().unwrap_or_default(),
+        }
+    }
+
+    /// A message a transaction was handed: the buffer is the transaction's to keep, so it is
+    /// taken as the framework wrote it.
+    pub(crate) fn taken(msg: OutgoingFor<'_, Take>, options: Option<&LapinPublishOptions>) -> Self {
+        let routing_key = msg.name().to_owned();
+        let headers = msg.headers().clone();
+        Self {
+            routing_key,
+            payload: msg.into_payload().freeze(),
+            headers,
             options: options.copied().unwrap_or_default(),
         }
     }
@@ -291,7 +305,7 @@ impl Publisher for ConfirmsPublisher {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push(Buffered::new(&msg, options));
+                buffer.push(Buffered::lent(&msg, options));
                 return Ok(());
             }
         }
@@ -582,5 +596,30 @@ impl TransactionalPublisher for ServerTxPublisher {
         channel.tx_rollback().await.map_err(AmqpError::publish)?;
         self.set_open(false);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruststream::{BytesMut, OutgoingFor, OutgoingMessage, Take};
+
+    use super::Buffered;
+
+    /// Content equality cannot tell a hand-over from a copy, so the buffer the framework wrote is
+    /// identified by its address.
+    #[test]
+    fn a_buffered_message_keeps_the_buffer_the_framework_wrote() {
+        let payload = BytesMut::from(&br#"{"id":1}"#[..]);
+        let written = payload.as_ptr();
+        let msg: OutgoingFor<'_, Take> = OutgoingMessage::produced("orders", payload);
+
+        let buffered = Buffered::taken(msg, None);
+
+        assert_eq!(
+            buffered.payload.as_ptr(),
+            written,
+            "a transaction keeps the message until the commit, so it takes the buffer rather \
+             than copying out of it"
+        );
     }
 }

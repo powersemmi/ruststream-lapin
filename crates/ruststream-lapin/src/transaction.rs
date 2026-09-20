@@ -98,7 +98,7 @@ impl Transaction for ConfirmsTransaction {
         msg: OutgoingFor<'_, Take>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        self.buffered.push(Buffered::new(&msg, options));
+        self.buffered.push(Buffered::taken(msg, options));
         ready(Ok(()))
     }
 

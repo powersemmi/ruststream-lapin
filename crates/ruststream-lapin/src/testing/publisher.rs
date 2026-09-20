@@ -195,7 +195,7 @@ impl Buffering {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push(Buffered::new(msg, options));
+                buffer.push(Buffered::lent(msg, options));
                 return Ok(());
             }
         }
@@ -549,7 +549,7 @@ impl Transaction for ConfirmsTestTransaction {
                     .to_owned(),
             )));
         }
-        self.buffered.push(Buffered::new(&msg, options));
+        self.buffered.push(Buffered::taken(msg, options));
         ready(Ok(()))
     }
 
