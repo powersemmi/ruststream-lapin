@@ -1,9 +1,9 @@
 {
-  "schema": 1,
+  "schema": 3,
   "crate": "ruststream-lapin",
   "crate_version": "0.7.0",
-  "core_version": "0.7.0-rc.7",
-  "measured_at": "2026-09-20",
+  "core_version": "0.7.0-rc.9",
+  "measured_at": "2026-09-21",
   "environment": {
     "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
     "architecture": "x86_64",
@@ -13,7 +13,7 @@
     "memory_speed": "unknown",
     "os": "Linux 7.2.6-x64v3-xanmod1-1",
     "broker": "rabbitmq:4-management-alpine in Docker on localhost",
-    "round_trip": "55.0 us for one basic.qos answered by the server",
+    "round_trip": "50.3 us for one basic.qos answered by the server",
     "rustc": "1.98.1",
     "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
     "features": "ruststream-lapin default (none), ruststream macros,json",
@@ -23,25 +23,22 @@
     {
       "name": "Classic queue, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 359633,
-      "pairs": 11,
+      "messages": 333470,
+      "pairs": 3,
       "raw": {
-        "median": 57112,
-        "min": 54714,
-        "max": 57845
+        "best": 59268,
+        "worst": 58889
       },
       "adapter": {
-        "median": 56412,
-        "min": 54497,
-        "max": 57136
+        "best": 58773,
+        "worst": 57498
       },
       "framework": {
-        "median": 54820,
-        "min": 52989,
-        "max": 55807
+        "best": 58187,
+        "worst": 56986
       },
-      "adapter_overhead_percent": 1.2,
-      "overhead_percent": 4.0,
+      "adapter_overhead_percent": 0.8,
+      "overhead_percent": 1.8,
       "adapter_verdict": "indistinguishable",
       "verdict": "indistinguishable",
       "broker_bound": false
@@ -49,25 +46,22 @@
     {
       "name": "Quorum queue, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 223027,
-      "pairs": 11,
+      "messages": 238510,
+      "pairs": 3,
       "raw": {
-        "median": 32324,
-        "min": 31724,
-        "max": 32759
+        "best": 34004,
+        "worst": 32004
       },
       "adapter": {
-        "median": 32507,
-        "min": 31412,
-        "max": 33210
+        "best": 33151,
+        "worst": 31976
       },
       "framework": {
-        "median": 32340,
-        "min": 31402,
-        "max": 33323
+        "best": 33845,
+        "worst": 32264
       },
-      "adapter_overhead_percent": -0.6,
-      "overhead_percent": -0.1,
+      "adapter_overhead_percent": 2.5,
+      "overhead_percent": 0.5,
       "adapter_verdict": "indistinguishable",
       "verdict": "indistinguishable",
       "broker_bound": false
