@@ -79,11 +79,11 @@
       "name": "classic queue, JSON decode into a small struct, ack each",
       "messages": 1000,
       "framework": {
-        "instructions": 17937.3,
+        "instructions": 17924.8,
         "allocations": 16.0
       },
       "cold": {
-        "instructions": 392645,
+        "instructions": 392646,
         "allocations": 218
       },
       "gated": true
@@ -92,11 +92,11 @@
       "name": "classic queue, reply published through LapinPublish",
       "messages": 1000,
       "framework": {
-        "instructions": 26955.4,
+        "instructions": 27056.1,
         "allocations": 27.0
       },
       "cold": {
-        "instructions": 395091,
+        "instructions": 395099,
         "allocations": 220
       },
       "gated": true
@@ -105,11 +105,11 @@
       "name": "classic queue, batches of 64 assembled on the client",
       "messages": 1000,
       "framework": {
-        "instructions": 18193.0,
+        "instructions": 18176.1,
         "allocations": 16.3
       },
       "cold": {
-        "instructions": 399256,
+        "instructions": 398977,
         "allocations": 224
       },
       "gated": true
