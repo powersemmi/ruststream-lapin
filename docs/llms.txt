@@ -1,0 +1,36 @@
+# ruststream-lapin
+
+> `ruststream-lapin` is the RabbitMQ broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. It speaks AMQP 0.9.1 over the `lapin` client: a queue is destructive storage, and acknowledgement, requeue and dead-lettering are protocol frames, so a message is settled on the broker itself.
+
+A subscription consumes one queue through a descriptor: `RabbitQueue` (a classic queue, retries counted by the runtime) or `RabbitQuorumQueue` (a quorum queue, retries counted by the server), with bindings and prefetch; `#[subscriber("orders")]` consumes the classic queue `orders`. A routes file imports `ruststream_lapin::prelude::*`, which offers `LapinPublish` as `Publish`, `ConfirmsPublish` as `TransactionalPublish` and `LapinRequest` as `Request`. The AMQP properties of one message are its per-message settings. Two `cargo generate` templates, `templates/amqp-queue` and `templates/amqp-topic`, scaffold a service.
+
+This site holds the entry pages. The crate's guide is its overview on docs.rs, and the framework itself is documented on the RustStream site.
+
+## Site
+
+- [Home](https://powersemmi.github.io/ruststream-lapin/latest/): the transport model, the dependency lines, the two import vocabularies and a first service
+- [Benchmarks](https://powersemmi.github.io/ruststream-lapin/latest/benchmarks/): what this crate and the framework's runtime cost over the raw `lapin` client, and how to re-measure it with `just bench`
+
+## Guide
+
+- [Overview](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html): the transport and a first service
+- [Subscribing](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#subscribing): the classic and quorum queue descriptors, bindings and prefetch
+- [Settling a delivery](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#settling-a-delivery): the frame each handler outcome sends
+- [Capping the retries](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#capping-the-retries): the retry cap on each queue type and where a spent delivery goes
+- [Delayed redelivery](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#delayed-redelivery): a copy held by the runtime, or a wait on the broker in a TTL waiting queue or through the delayed-message-exchange plugin
+- [Batches](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#batches): batches assembled on the client
+- [Delivery metadata](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#delivery-metadata): the exchange, routing key, redelivered flag and delivery tag of a delivery
+- [Publishing](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#publishing): the publish policies and replies
+- [Per-message properties](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#per-message-properties): the AMQP properties of one publish
+- [Transactions](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#transactions): publisher confirms and server transactions
+- [Request and reply](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#request-and-reply): requests over RabbitMQ direct reply-to
+- [The prelude](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-prelude): what a routes file and a handler body import
+- [The AsyncAPI document](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-asyncapi-document): what the `asyncapi` feature reports
+- [Testing](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#testing): the in-process broker behind the `testing` feature, driven by `TestApp`
+- [Operations](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#operations): the connection URI, TLS, prefetch, topology declaration and the plugin features
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-lapin): the full rustdoc of the crate
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-lapin): the crate's repository and its templates
