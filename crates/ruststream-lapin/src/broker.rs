@@ -4,22 +4,41 @@
 //! [`Broker::connect`], and the connected form is the only value carrying a subscribe or publish
 //! surface. [`ConnectedBroker::shutdown`] consumes it in turn and returns the terminal witness.
 
+// Without the `testing` feature a connection link has one variant, so a `match` on it has a
+// single arm; the matches stay so that the in-process arm has its place when the feature is on.
+#![cfg_attr(
+    not(feature = "testing"),
+    allow(clippy::infallible_destructuring_match)
+)]
+
+#[cfg(feature = "testing")]
+use std::future::{Future, ready};
 use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use lapin::options::{BasicConsumeOptions, BasicQosOptions};
 use lapin::types::{FieldTable, ShortString};
+#[cfg(feature = "testing")]
+use lapin::uri::AMQPUri;
 use lapin::{Channel, ChannelState, Connection, ConnectionProperties, ConnectionState, ErrorKind};
+#[cfg(feature = "testing")]
+use ruststream::testing::{Coordinator, InProcess, TestableBroker};
 use ruststream::{
     AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
 };
+#[cfg(feature = "testing")]
+use ruststream::{OutgoingMessage, RawMessage};
 
 use crate::channel::ChannelCell;
 use crate::convert;
 use crate::delay::DelayContext;
 use crate::error::AmqpError;
+#[cfg(feature = "testing")]
+use crate::in_process::{self, Bus};
 use crate::publish_policy::{LapinPublish, LapinPublishPolicy};
+#[cfg(feature = "testing")]
+use crate::publish_step::LapinPublishOptions;
 use crate::queue::{QueueDescriptor, RabbitQueue, declared_arguments};
 use crate::requester::{LapinRequest, LapinRequester};
 use crate::subscriber::LapinSubscriber;
@@ -97,6 +116,24 @@ impl std::fmt::Debug for AmqpConnection {
             .finish_non_exhaustive()
     }
 }
+
+/// What a connected broker and every handle paired off it speak over: the live connection, or,
+/// under the `testing` feature, the in-process transport the test harness connected instead.
+///
+/// Without the feature there is one variant, so the type is the connection handle itself and
+/// every `match` on it is irrefutable: a production build carries no second transport and no
+/// branch to it.
+#[derive(Debug, Clone)]
+pub(crate) enum Link {
+    Amqp(Arc<AmqpConnection>),
+    #[cfg(feature = "testing")]
+    InProcess(Arc<Bus>),
+}
+
+// The zero-cost promise of the in-process mode, held by the compiler: a build without it gives the
+// link exactly the size of the connection handle it wraps.
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<Link>() == size_of::<Arc<AmqpConnection>>());
 
 /// A `RabbitMQ` broker backed by [`lapin`](https://docs.rs/lapin): configuration captured, no I/O
 /// performed yet.
@@ -198,13 +235,40 @@ impl Broker for LapinBroker {
             .map_err(AmqpError::connect)?;
 
         Ok(ConnectedLapinBroker {
-            conn: AmqpConnection::new(connection, publish_channel),
+            link: Link::Amqp(AmqpConnection::new(connection, publish_channel)),
             uri: self.uri,
             prefetch: self.prefetch,
             declare: self.declare,
         })
     }
 }
+
+/// The in-process mode: the connected form a test runs the production app against, carrying the
+/// in-process transport in place of the connection and every setting of this broker.
+///
+/// The URI is parsed as `connect` parses it, so a broker a service could not connect is not one a
+/// test can connect either.
+#[cfg(feature = "testing")]
+impl InProcess for LapinBroker {
+    fn connect_in_process(
+        self,
+    ) -> impl Future<Output = Result<Self::Connected, Self::Error>> + Send {
+        let connected = self
+            .uri
+            .parse::<AMQPUri>()
+            .map_err(|err| AmqpError::Connect(err.into()))
+            .map(|_| ConnectedLapinBroker {
+                link: Link::InProcess(Bus::new()),
+                uri: self.uri,
+                prefetch: self.prefetch,
+                declare: self.declare,
+            });
+        ready(connected)
+    }
+}
+
+#[cfg(feature = "testing")]
+ruststream::register_testable_broker!(LapinBroker);
 
 /// `DescribeServer` reports the configured AMQP address, which is what the `AsyncAPI` document
 /// records for the service.
@@ -225,15 +289,16 @@ impl DescribeServer for LapinBroker {
 /// subscribe after shutdown is a compile error for the owner of the handle.
 #[derive(Debug)]
 pub struct ConnectedLapinBroker {
-    conn: Arc<AmqpConnection>,
+    link: Link,
     uri: String,
     prefetch: Option<NonZeroU16>,
     declare: bool,
 }
 
 impl ConnectedLapinBroker {
-    pub(crate) fn connection(&self) -> &Arc<AmqpConnection> {
-        &self.conn
+    /// What every handle paired off this broker speaks over.
+    pub(crate) fn link(&self) -> &Link {
+        &self.link
     }
 
     /// The `AsyncAPI` server description of the connection this broker dialled.
@@ -255,13 +320,17 @@ impl ConnectedLapinBroker {
     /// channel or consumer cannot be opened (for example the queue does not exist and declaration
     /// was not opted into).
     pub async fn subscribe(&self, def: impl QueueDescriptor) -> Result<LapinSubscriber, AmqpError> {
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => return in_process::subscribe(bus, &def, self.declare),
+        };
         let spec = def.spec();
         // Before the channel: a declaration the queue cannot carry is the registration's mistake,
         // and the service should not reach a live consumer with it.
         def.check_retry(self.declare)?;
 
-        let channel = self
-            .conn
+        let channel = conn
             .live_connection(&spec.name)?
             .create_channel()
             .await
@@ -352,17 +421,20 @@ impl ConnectedBroker for ConnectedLapinBroker {
     ///
     /// Returns [`AmqpError::Connect`] when the close handshake fails.
     async fn shutdown(self) -> Result<Self::Closed, Self::Error> {
+        let conn = match self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                bus.close();
+                return Ok(ClosedLapinBroker { handshake: true });
+            }
+        };
         // Marked closed before the handshake: a publisher aliasing the connection must not slip
         // a message into a connection that is already going away.
-        self.conn.closed.store(true, Ordering::Release);
-        let handshake = self.conn.connection.status().connected();
+        conn.closed.store(true, Ordering::Release);
+        let handshake = conn.connection.status().connected();
         if handshake {
-            match self
-                .conn
-                .connection
-                .close(200, ShortString::from("OK"))
-                .await
-            {
+            match conn.connection.close(200, ShortString::from("OK")).await {
                 Ok(()) => {}
                 // A subscriber dropped just before the shutdown is still cancelling its consumer,
                 // and lapin refuses to close a channel it is already closing. The connection is
@@ -409,6 +481,59 @@ impl Subscribe for ConnectedLapinBroker {
 
 impl DefaultPublish for ConnectedLapinBroker {
     type Policy = LapinPublish;
+}
+
+/// The harness's view of the in-process transport: what it injects, what it reads back, and the
+/// coordinator it counts the in-flight deliveries with.
+///
+/// # Panics
+///
+/// `inject` and `published` panic on a broker connected with `connect`: the harness drives only
+/// the connection `connect_in_process` produced, and a live connection has no log to read and no
+/// synchronous way to take a message.
+#[cfg(feature = "testing")]
+impl TestableBroker for ConnectedLapinBroker {
+    fn install_coordinator(&self, coordinator: Coordinator) {
+        if let Link::InProcess(bus) = &self.link {
+            bus.install(coordinator);
+        }
+    }
+
+    fn inject(&self, message: OutgoingMessage<'_>) {
+        let bus = self.bus("inject");
+        // An external producer publishes on the default exchange, the name addressing the queue,
+        // with nothing but its headers to frame.
+        if let Err(err) = bus.publish(
+            "",
+            message.name(),
+            message.payload(),
+            message.headers(),
+            &LapinPublishOptions::default(),
+        ) {
+            panic!(
+                "the injected message to {:?} is not one the server takes: {err}",
+                message.name()
+            );
+        }
+    }
+
+    fn published(&self, name: &str) -> Vec<RawMessage> {
+        self.bus("published").published(name)
+    }
+}
+
+#[cfg(feature = "testing")]
+impl ConnectedLapinBroker {
+    /// The in-process transport, which is all the harness drives.
+    fn bus(&self, what: &str) -> &Arc<Bus> {
+        match &self.link {
+            Link::InProcess(bus) => bus,
+            Link::Amqp(_) => panic!(
+                "TestableBroker::{what} reached a broker connected with `connect`; the harness \
+                 drives the connection `connect_in_process` produces"
+            ),
+        }
+    }
 }
 
 /// Whether this error says the close is already under way rather than that it failed.

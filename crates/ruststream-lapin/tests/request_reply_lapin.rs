@@ -1,11 +1,11 @@
-//! Request/reply on the in-process transport: the RPC pair a service ships, mounted on the test
-//! broker with the same policies it mounts on `RabbitMQ`.
+//! Request/reply on the in-process transport: the RPC pair a service ships, run in process with
+//! the same policies it mounts on `RabbitMQ`.
 //!
-//! The stand-in reproduces the convention, not the transport: a private reply address per
-//! request, a generated correlation id, a reply that does not correlate dropped rather than
-//! resolving the call, and a timeout when nobody answers. What it cannot reproduce - direct
-//! reply-to being channel state the broker rewrites per request - is covered against a live
-//! server by `tests/request_reply_live_lapin.rs` and the request/reply conformance suite in
+//! The in-process transport reproduces the convention: a private reply address per request, a
+//! generated correlation id, a reply that does not correlate dropped rather than resolving the
+//! call, and a timeout when nobody answers. Direct reply-to being channel state the broker
+//! rewrites per request belongs to the server, and is covered against a live one by
+//! `tests/request_reply_live_lapin.rs` and the request/reply conformance suite in
 //! `tests/conformance_lapin.rs`.
 
 #![cfg(feature = "testing")]
@@ -14,21 +14,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ruststream::codec::{Codec, JsonCodec};
-use ruststream::testing::TestApp;
+use ruststream::testing::{InProcess, TestApp};
 use ruststream::{
-    Broker, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, OutgoingMessage, Publisher,
-    Subscriber,
+    ConnectedBroker, FromRef, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
 };
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::testing::LapinTestBroker;
 use ruststream_lapin::{AmqpError, LapinPublish, LapinRequest};
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URI: &str = "amqp://localhost:5672";
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(1);
 /// Short enough to keep the negative cases quick, long enough not to race a busy runner.
 const MISS_TIMEOUT: Duration = Duration::from_millis(200);
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Outgoing, Serialize)]
 struct Order {
     sku: String,
 }
@@ -109,7 +110,7 @@ async fn rpc_pair() -> (TestApp<RpcState>, Decisions) {
         .on_startup(
             move |()| async move { Ok::<_, std::convert::Infallible>(RpcState { decisions }) },
         )
-        .with_broker(LapinTestBroker::new(), |b| {
+        .with_broker(LapinBroker::new(URI), |b| {
             b.include(place_order)
                 .out(DefaultSlot, Request::default())
                 .build();
@@ -120,29 +121,27 @@ async fn rpc_pair() -> (TestApp<RpcState>, Decisions) {
     (TestApp::start(app).await.expect("start"), recorded)
 }
 
-// The definition of done for the capability: a handler bounded `Out<impl RequestReply>` mounts on
-// the stand-in through the production policy, and the call really resolves through a responder
+// The definition of done for the capability: a handler bounded `Out<impl RequestReply>` mounts in
+// process through the production policy, and the call really resolves through a responder
 // running in the same app.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_handler_binding_request_reply_mounts_and_gets_its_answer() {
     let (tb, decisions) = rpc_pair().await;
 
-    tb.broker::<LapinTestBroker>()
-        .publish(
-            "orders",
-            &Order {
-                sku: "widget".to_owned(),
-            },
-        )
+    tb.broker::<LapinBroker>()
+        .message(&Order {
+            sku: "widget".to_owned(),
+        })
+        .to("orders")
+        .publish()
         .await
         .expect("publish must drive the RPC round trip to quiescence");
-    tb.broker::<LapinTestBroker>()
-        .publish(
-            "orders",
-            &Order {
-                sku: "unobtainium".to_owned(),
-            },
-        )
+    tb.broker::<LapinBroker>()
+        .message(&Order {
+            sku: "unobtainium".to_owned(),
+        })
+        .to("orders")
+        .publish()
         .await
         .expect("publish must drive the RPC round trip to quiescence");
 
@@ -155,11 +154,11 @@ async fn a_handler_binding_request_reply_mounts_and_gets_its_answer() {
         vec!["accepted".to_owned(), "rejected".to_owned()],
         "each order is settled by the reply its own request received"
     );
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("orders")
         .assert_called(2)
         .settled(HandlerOutcome::ack());
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("inventory.check")
         .assert_called(2);
 
@@ -170,7 +169,10 @@ async fn a_handler_binding_request_reply_mounts_and_gets_its_answer() {
 // fails on its own deadline instead of hanging.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unanswered_request_times_out() {
-    let broker = LapinTestBroker::new().connect().await.expect("connect");
+    let broker = LapinBroker::new(URI)
+        .connect_in_process()
+        .await
+        .expect("connect");
     let requester = broker.requester(LapinRequest::default());
 
     let asked = requester
@@ -188,9 +190,12 @@ async fn an_unanswered_request_times_out() {
 // address without the id the request carried is not one, and the request keeps waiting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_that_does_not_correlate_is_dropped() {
-    let broker = LapinTestBroker::new().connect().await.expect("connect");
+    let broker = LapinBroker::new(URI)
+        .connect_in_process()
+        .await
+        .expect("connect");
     let mut responder = broker
-        .subscribe("inventory.check")
+        .subscribe(RabbitQueue::new("inventory.check"))
         .await
         .expect("subscribe");
     let publisher = broker.publisher(LapinPublish::default());
@@ -232,9 +237,12 @@ async fn a_reply_that_does_not_correlate_is_dropped() {
 // request; a responder that kept an address from an earlier question must not reach this one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn each_request_carries_its_own_reply_address() {
-    let broker = LapinTestBroker::new().connect().await.expect("connect");
+    let broker = LapinBroker::new(URI)
+        .connect_in_process()
+        .await
+        .expect("connect");
     let mut responder = broker
-        .subscribe("inventory.check")
+        .subscribe(RabbitQueue::new("inventory.check"))
         .await
         .expect("subscribe");
     let requester = broker.requester(LapinRequest::default());
@@ -290,7 +298,10 @@ async fn each_request_carries_its_own_reply_address() {
 // the shutdown.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn requesting_after_shutdown_errors() {
-    let broker = LapinTestBroker::new().connect().await.expect("connect");
+    let broker = LapinBroker::new(URI)
+        .connect_in_process()
+        .await
+        .expect("connect");
     let requester = broker.requester(LapinRequest::default());
     broker.shutdown().await.expect("shutdown");
 
@@ -304,7 +315,7 @@ async fn requesting_after_shutdown_errors() {
     );
 }
 
-/// Settles a delivery the test is done with; the in-process ack never fails.
+/// Settles a delivery the test is done with, on a connection that is still open.
 async fn ack(msg: impl IncomingMessage) {
     msg.ack().await.expect("ack");
 }

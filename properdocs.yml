@@ -1,5 +1,5 @@
 site_name: ruststream-lapin
-site_description: The RabbitMQ / AMQP 0.9.1 broker for RustStream - native acknowledgement, quorum queues, publisher confirms, direct reply-to, and an in-process test broker.
+site_description: The RabbitMQ / AMQP 0.9.1 broker for RustStream - native acknowledgement, quorum queues, publisher confirms, direct reply-to, and an in-process mode that runs the production app in tests.
 site_url: https://powersemmi.github.io/ruststream-lapin/
 repo_url: https://github.com/powersemmi/ruststream-lapin
 repo_name: powersemmi/ruststream-lapin

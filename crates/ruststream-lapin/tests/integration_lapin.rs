@@ -7,9 +7,9 @@
 //! AMQP_TEST_URL=amqp://127.0.0.1:5672 cargo test --workspace --all-features -- --test-threads=1
 //! ```
 //!
-//! These cover exactly what the in-process test broker does not simulate: declared topology and
-//! bindings, queue types, redelivery flags, dead-lettering, prefetch, and the split between the
-//! plain and transactional publish paths.
+//! These cover what the server itself does: declared topology and bindings, queue types,
+//! redelivery flags, dead-lettering, prefetch, and the split between the plain and transactional
+//! publish paths.
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;

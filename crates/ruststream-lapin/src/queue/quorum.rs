@@ -184,43 +184,45 @@ impl SubscriptionSource<ConnectedLapinBroker> for RabbitQuorumQueue {
     }
 }
 
-#[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedLapinTestBroker> for RabbitQuorumQueue {
-    type Subscriber = crate::testing::LapinTestSubscriber;
+#[cfg(test)]
+mod tests {
+    use lapin::types::{AMQPValue, ShortString};
+    use ruststream::{RetryDeclaration, SubscriptionSource, nonzero};
 
-    /// The copy path the live broker takes, so a registration that compiles against one compiles
-    /// against the other: the transport's stand-in counts the deliveries and carries a spent one
-    /// away the way the queue does.
-    type Copies = BrokerMoves;
+    use super::RabbitQuorumQueue;
+    use crate::broker::ConnectedLapinBroker;
+    use crate::queue::spec::declared_arguments;
 
-    fn name(&self) -> &str {
-        &self.spec.name
-    }
+    // What the mount site declared reaches the queue as topology: a delivery limit one short of
+    // the cap, and a dead-letter route to the destination on the default exchange.
+    #[test]
+    fn a_declaration_becomes_the_quorum_queues_arguments() {
+        let declaration = RetryDeclaration::new()
+            .with_max_attempts(nonzero!(3u32))
+            .with_dead_letter("orders.dead");
+        let queue = <RabbitQuorumQueue as SubscriptionSource<ConnectedLapinBroker>>::declare_retry(
+            RabbitQuorumQueue::new("orders.quorum"),
+            &declaration,
+        );
 
-    async fn subscribe(
-        self,
-        connected: &crate::testing::ConnectedLapinTestBroker,
-    ) -> Result<Self::Subscriber, AmqpError> {
-        connected.subscribe_to(&self).await
-    }
+        let arguments = declared_arguments(queue.spec(), Some(queue.retry()));
 
-    /// Recorded as the live descriptor records it, and applied the same way: the in-process stand
-    /// declares the queue it opens, so the arguments the declaration produces are what the
-    /// subscription behaves by.
-    fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
-        self.retry = declaration.clone();
-        self
-    }
-
-    /// The queue this subscription consumes, as the `amqp` binding names its settings.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        crate::bindings::queue_channel(&self.spec)
-    }
-
-    /// The consumer's own half: this crate acknowledges by hand on every subscription.
-    #[cfg(feature = "asyncapi")]
-    fn operation_bindings(&self) -> Bindings {
-        crate::bindings::consumer_operation()
+        let argument = |name: &str| arguments.inner().get(&ShortString::from(name)).cloned();
+        assert_eq!(
+            argument("x-queue-type"),
+            Some(AMQPValue::LongString("quorum".into()))
+        );
+        assert_eq!(
+            argument("x-delivery-limit"),
+            Some(AMQPValue::LongLongInt(2))
+        );
+        assert_eq!(
+            argument("x-dead-letter-exchange"),
+            Some(AMQPValue::LongString(String::new().into()))
+        );
+        assert_eq!(
+            argument("x-dead-letter-routing-key"),
+            Some(AMQPValue::LongString("orders.dead".into()))
+        );
     }
 }

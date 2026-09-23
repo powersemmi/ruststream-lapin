@@ -15,7 +15,6 @@ use ruststream::DescribeServer;
 use ruststream::asyncapi::build_spec;
 use ruststream::conformance::harness;
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::testing::LapinTestBroker;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -74,7 +73,7 @@ fn document() -> Value {
             "rabbit",
             LapinBroker::new("amqp://rabbit:5672").describe_server(),
         )
-        .with_broker(LapinTestBroker::new(), |b| {
+        .with_broker(LapinBroker::new("amqp://rabbit:5672"), |b| {
             b.include(check)
                 .max_attempts(nonzero!(3u32))
                 .dead_letter("inventory.dead")

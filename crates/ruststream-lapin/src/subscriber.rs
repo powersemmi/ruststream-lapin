@@ -4,12 +4,16 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+#[cfg(feature = "testing")]
+use futures::future::Either;
 use futures::{Stream, StreamExt};
 use lapin::{Channel, Consumer};
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
 
 use crate::delay::DelayContext;
 use crate::error::AmqpError;
+#[cfg(feature = "testing")]
+use crate::in_process::BusDeliveries;
 use crate::message::LapinMessage;
 
 /// A consumer on one queue, yielding [`LapinMessage`] deliveries.
@@ -38,13 +42,28 @@ impl LapinSubscriber {
         batch_wait: Duration,
         delay: Option<DelayContext>,
     ) -> Self {
-        let deliveries = Deliveries {
+        let deliveries = Deliveries::Amqp(AmqpDeliveries {
             _channel: channel,
             consumer,
             delay,
-        };
+        });
         Self {
             deliveries: BufferedSubscriber::new(deliveries).max_wait(batch_wait),
+            queue,
+        }
+    }
+
+    /// A subscriber on the in-process transport, batching on the client with the descriptor's
+    /// own deadline as the live subscriber does.
+    #[cfg(feature = "testing")]
+    pub(crate) fn in_process(
+        deliveries: BusDeliveries,
+        queue: String,
+        batch_wait: Duration,
+    ) -> Self {
+        Self {
+            deliveries: BufferedSubscriber::new(Deliveries::InProcess(deliveries))
+                .max_wait(batch_wait),
             queue,
         }
     }
@@ -104,8 +123,41 @@ impl BatchSubscriber for LapinSubscriber {
     }
 }
 
-/// The wire consumer, one `basic.deliver` at a time: everything above it batches on the client.
-struct Deliveries {
+/// One delivery at a time, from whichever transport the broker was connected to: everything above
+/// it batches on the client.
+///
+/// Without the `testing` feature the wire consumer is the only variant, so the type is the
+/// consumer and the `match` in [`stream`](Subscriber::stream) resolves at compile time.
+// The live consumer is the larger variant on purpose: it is the one a production build has, and
+// boxing it would put an allocation on the service's own path to shrink a test build.
+#[cfg_attr(feature = "testing", allow(clippy::large_enum_variant))]
+enum Deliveries {
+    Amqp(AmqpDeliveries),
+    #[cfg(feature = "testing")]
+    InProcess(BusDeliveries),
+}
+
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<Deliveries>() == size_of::<AmqpDeliveries>());
+
+impl Subscriber for Deliveries {
+    type Message = LapinMessage;
+    type Error = AmqpError;
+
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+        match self {
+            #[cfg(not(feature = "testing"))]
+            Self::Amqp(consumer) => consumer.stream(),
+            #[cfg(feature = "testing")]
+            Self::Amqp(consumer) => Either::Left(consumer.stream()),
+            #[cfg(feature = "testing")]
+            Self::InProcess(deliveries) => Either::Right(deliveries.stream()),
+        }
+    }
+}
+
+/// The wire consumer, one `basic.deliver` at a time.
+struct AmqpDeliveries {
     // Kept alive for the lifetime of the subscription: dropping the channel cancels the
     // consumer server-side.
     _channel: Channel,
@@ -115,11 +167,8 @@ struct Deliveries {
     delay: Option<DelayContext>,
 }
 
-impl Subscriber for Deliveries {
-    type Message = LapinMessage;
-    type Error = AmqpError;
-
-    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+impl AmqpDeliveries {
+    fn stream(&mut self) -> impl Stream<Item = Result<LapinMessage, AmqpError>> + Send + '_ {
         let delay = self.delay.clone();
         futures::stream::unfold(
             (&mut self.consumer, delay),

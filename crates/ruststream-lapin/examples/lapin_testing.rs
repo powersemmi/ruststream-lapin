@@ -1,7 +1,8 @@
-//! In-process unit-testing: the same handlers and descriptors, no `RabbitMQ` server.
+//! Testing the production app: the builder `main` runs, handed to `TestApp` unchanged, with no
+//! `RabbitMQ` server.
 //!
-//! The `testing` feature ships `LapinTestBroker`, an in-process stand-in for `RabbitMQ`. Build
-//! the app around it exactly as in production and hand it to `TestApp`. A publish through the
+//! The `testing` feature gives `LapinBroker` its in-process mode, which `TestApp::start` connects
+//! instead of the server, and the test addresses the broker by its own type. A publish through the
 //! harness returns once the handlers have settled, so the assertions after it never race them.
 //!
 //! ```text
@@ -10,12 +11,10 @@
 
 use ruststream::OutSlot;
 use ruststream::testing::TestApp;
-use ruststream_lapin::PRIORITY_HEADER;
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::testing::LapinTestBroker;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Payment {
     amount: u64,
 }
@@ -65,34 +64,44 @@ async fn receipt_for(
     HandlerOutcome::ack()
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() {
-    // --8<-- [start:testapp]
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        LapinTestBroker::new(),
+// --8<-- [start:app]
+/// The service's app, the one `main` runs against the broker's address.
+fn app() -> RustStream {
+    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        LapinBroker::new("amqp://localhost:5672"),
         |b| {
             b.include(accept);
             b.include(receipt_for)
                 .out(Receipts, Publish::default().priority(3))
                 .build();
         },
-    );
-    let tb = TestApp::start(app).await.expect("start");
+    )
+}
+// --8<-- [end:app]
 
-    tb.broker::<LapinTestBroker>()
-        .publish("payments", &Payment { amount: 100 })
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+async fn main() {
+    // --8<-- [start:testapp]
+    let tb = TestApp::start(app()).await.expect("start");
+
+    tb.broker::<LapinBroker>()
+        .message(&Payment { amount: 100 })
+        .to("payments")
+        .publish()
         .await
         .expect("publish drives the handler to quiescence");
 
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("payments")
         .assert_called_once()
         .with(&Payment { amount: 100 })
         .settled(HandlerOutcome::ack());
     // --8<-- [end:testapp]
 
-    tb.broker::<LapinTestBroker>()
-        .publish("payments.receipted", &Payment { amount: 5_000 })
+    tb.broker::<LapinBroker>()
+        .message(&Payment { amount: 5_000 })
+        .to("payments.receipted")
+        .publish()
         .await
         .expect("publish drives the handler to quiescence");
 
@@ -105,12 +114,12 @@ async fn main() {
         });
     // --8<-- [end:options]
 
-    // --8<-- [start:delivered]
-    tb.broker::<LapinTestBroker>()
+    // --8<-- [start:published]
+    tb.broker::<LapinBroker>()
         .published::<Receipt>("receipts")
         .assert_called_once()
-        .with_header(PRIORITY_HEADER, "9");
-    // --8<-- [end:delivered]
+        .with(&Receipt { amount: 5_000 });
+    // --8<-- [end:published]
 
     tb.shutdown().await.expect("shutdown");
 

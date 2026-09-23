@@ -1,5 +1,12 @@
 //! Request/reply over `RabbitMQ` direct reply-to (`amq.rabbitmq.reply-to`).
 
+// Without the `testing` feature a connection link has one variant, so a `match` on it has a
+// single arm; the matches stay so that the in-process arm has its place when the feature is on.
+#![cfg_attr(
+    not(feature = "testing"),
+    allow(clippy::infallible_destructuring_match)
+)]
+
 use std::collections::HashMap;
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,10 +22,12 @@ use ruststream::asyncapi::Bindings;
 use ruststream::{Lend, OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
 use tokio::sync::oneshot;
 
-use crate::broker::{AmqpConnection, ConnectedLapinBroker};
+use crate::broker::{AmqpConnection, ConnectedLapinBroker, Link};
 use crate::channel::{ChannelCell, Holds};
 use crate::convert;
 use crate::error::AmqpError;
+#[cfg(feature = "testing")]
+use crate::in_process;
 use crate::message::LapinMessage;
 use crate::publish_policy::{LapinPublishPolicy, PublishOptions, publish_policy_bindings};
 use crate::publish_step::LapinPublishOptions;
@@ -62,9 +71,9 @@ impl Default for LapinRequest {
 impl LapinRequest {
     /// What this policy hands the requester it pairs into.
     ///
-    /// The live requester takes the value by move at `bind`; this borrow is for the in-process
-    /// stand-in, which clones it, and for the document, which reads it.
-    #[cfg(any(feature = "testing", feature = "asyncapi"))]
+    /// The requester takes the value by move at `bind`; this borrow is for the document, which
+    /// reads it.
+    #[cfg(feature = "asyncapi")]
     pub(crate) const fn publish_options(&self) -> &PublishOptions {
         &self.0
     }
@@ -123,7 +132,7 @@ impl PublishPolicy<ConnectedLapinBroker> for LapinRequest {
 impl LapinPublishPolicy for LapinRequest {
     fn bind(self, connected: &ConnectedLapinBroker) -> Self::Live {
         LapinRequester {
-            conn: Arc::clone(connected.connection()),
+            link: connected.link().clone(),
             options: self.0,
             state: Arc::new(ChannelCell::new()),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -150,7 +159,7 @@ impl LapinPublishPolicy for LapinRequest {
 /// connection and reports [`AmqpError::Closed`] once the broker has shut down.
 #[derive(Debug, Clone)]
 pub struct LapinRequester {
-    conn: Arc<AmqpConnection>,
+    link: Link,
     options: PublishOptions,
     state: Arc<ChannelCell<ReqState>>,
     pending: Arc<Pending>,
@@ -181,11 +190,10 @@ impl LapinRequester {
     /// A channel-level error closes the channel and takes the reply consumer with it. The
     /// requests in flight on it are lost, which is what the per-request timeout is for; what the
     /// requester must not do is stop working for every later request too.
-    async fn state(&self, target: &str) -> Result<ReqState, AmqpError> {
+    async fn state(&self, conn: &AmqpConnection, target: &str) -> Result<ReqState, AmqpError> {
         self.state
             .get(|| async {
-                let channel = self
-                    .conn
+                let channel = conn
                     .live_connection(target)?
                     .create_channel()
                     .await
@@ -274,8 +282,21 @@ impl Publisher for LapinRequester {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
-        self.conn.ensure_live(msg.name())?;
-        let state = self.state(msg.name()).await?;
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                return bus.publish(
+                    &self.options.exchange,
+                    msg.name(),
+                    msg.payload(),
+                    msg.headers(),
+                    &self.options.resolve(options),
+                );
+            }
+        };
+        conn.ensure_live(msg.name())?;
+        let state = self.state(conn, msg.name()).await?;
         let properties =
             convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
         let _confirm = state
@@ -313,8 +334,15 @@ impl RequestReply for LapinRequester {
         msg: OutgoingMessage<'_>,
         timeout: Duration,
     ) -> Result<Self::Reply, Self::Error> {
-        self.conn.ensure_live(msg.name())?;
-        let state = self.state(msg.name()).await?;
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                return in_process::request(bus, &self.options, msg, timeout).await;
+            }
+        };
+        conn.ensure_live(msg.name())?;
+        let state = self.state(conn, msg.name()).await?;
 
         let correlation_id = format!("rs-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();

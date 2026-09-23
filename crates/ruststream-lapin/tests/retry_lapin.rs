@@ -16,18 +16,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
-use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::runtime::RETRY_COUNT_HEADER;
-use ruststream::testing::TestApp;
+use ruststream::testing::{InProcess, TestApp, TestError};
 use ruststream::{
-    Broker, ConnectedBroker, FromRef, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    ConnectedBroker, FromRef, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
     SubscriptionSource,
 };
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::testing::{
-    ConnectedLapinTestBroker, LapinTestBroker, LapinTestMessage, LapinTestSubscriber,
-};
+use ruststream_lapin::{ConnectedLapinBroker, LapinMessage, LapinSubscriber};
 use serde::{Deserialize, Serialize};
+
+mod live;
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URI: &str = "amqp://localhost:5672";
 
 /// Long enough that nothing comes back until the test advances the clock itself.
 const RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -39,7 +41,7 @@ const ATTEMPTS: u32 = 3;
 /// queue of that name.
 const DEAD: &str = "orders.dead";
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Outgoing, Serialize, Deserialize)]
 struct Order {
     id: u64,
 }
@@ -77,8 +79,10 @@ async fn never_ready_on_a_waiting_queue(order: &Order) -> HandlerOutcome {
 
 /// Runs one registration down to its cap: the first delivery, then one more per elapsed delay.
 async fn exhaust<S: Send + Sync + 'static>(tb: &TestApp<S>, queue: &str, order: &Order) {
-    tb.broker::<LapinTestBroker>()
-        .publish(queue, order)
+    tb.broker::<LapinBroker>()
+        .message(order)
+        .to(queue)
+        .publish()
         .await
         .expect("publish drives the first delivery to quiescence");
     for _ in 1..ATTEMPTS {
@@ -92,7 +96,7 @@ async fn exhaust<S: Send + Sync + 'static>(tb: &TestApp<S>, queue: &str, order: 
 #[tokio::test(start_paused = true)]
 async fn a_declared_cap_ends_a_retry_loop_on_a_descriptor() {
     let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(never_ready)
                 .max_attempts(nonzero!(ATTEMPTS))
                 .dead_letter(DEAD);
@@ -101,10 +105,10 @@ async fn a_declared_cap_ends_a_retry_loop_on_a_descriptor() {
 
     exhaust(&tb, "orders.capped", &Order { id: 1 }).await;
 
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("orders.capped")
         .assert_called(ATTEMPTS as usize);
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .published::<Order>(DEAD)
         .assert_called_once()
         .decoded_as::<Order>()
@@ -117,7 +121,7 @@ async fn a_declared_cap_ends_a_retry_loop_on_a_descriptor() {
 #[tokio::test(start_paused = true)]
 async fn a_declared_cap_ends_a_retry_loop_on_a_bare_queue_name() {
     let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(never_ready_by_name)
                 .max_attempts(nonzero!(ATTEMPTS))
                 .dead_letter(DEAD);
@@ -126,10 +130,10 @@ async fn a_declared_cap_ends_a_retry_loop_on_a_bare_queue_name() {
 
     exhaust(&tb, "orders.capped.by-name", &Order { id: 2 }).await;
 
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("orders.capped.by-name")
         .assert_called(ATTEMPTS as usize);
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .published::<Order>(DEAD)
         .assert_called_once()
         .decoded_as::<Order>()
@@ -143,96 +147,96 @@ async fn a_declared_cap_ends_a_retry_loop_on_a_bare_queue_name() {
 #[tokio::test(start_paused = true)]
 async fn a_waiting_queue_keeps_the_delayed_copy_off_the_service() {
     let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(never_ready_on_a_waiting_queue);
         });
     let tb = TestApp::start(app).await.expect("start");
 
-    tb.broker::<LapinTestBroker>()
-        .publish("orders.waiting", &Order { id: 3 })
+    tb.broker::<LapinBroker>()
+        .message(&Order { id: 3 })
+        .to("orders.waiting")
+        .publish()
         .await
         .expect("publish drives the first delivery to quiescence");
     tb.advance(RETRY_DELAY)
         .await
         .expect("the waiting queue releases the copy");
 
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("orders.waiting")
         .assert_called(2);
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .published::<Order>("orders.waiting")
         .assert_called_once();
 
     tb.shutdown().await.expect("shutdown");
 }
 
+/// Takes whatever reaches the dead-letter queue, so a test sees what the queue carried there.
+#[subscriber("orders.dead")]
+async fn bury(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
+}
+
 // A quorum queue ends its own retry loop: the cap and the destination the mount site declared are
 // the queue's arguments, so the deliveries run out and the message leaves for the dead-letter
-// queue with nothing published by the service.
+// queue with nothing published by the service. The queue has those arguments only on a broker
+// that declares it, which is the broker this service is built on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_quorum_queue_ends_the_loop_itself() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
-            b.include(never_ready_on_a_quorum_queue)
-                .max_attempts(nonzero!(ATTEMPTS))
-                .dead_letter(DEAD);
-        });
+    let broker = LapinBroker::new(URI).declare_topology(true);
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        b.include(never_ready_on_a_quorum_queue)
+            .max_attempts(nonzero!(ATTEMPTS))
+            .dead_letter(DEAD);
+        b.include(bury);
+    });
     let tb = TestApp::start(app).await.expect("start");
 
-    tb.broker::<LapinTestBroker>()
-        .publish("orders.quorum", &Order { id: 7 })
+    tb.broker::<LapinBroker>()
+        .message(&Order { id: 7 })
+        .to("orders.quorum")
+        .publish()
         .await
         .expect("publish drives the loop to quiescence");
 
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("orders.quorum")
         .assert_called(ATTEMPTS as usize);
-    tb.broker::<LapinTestBroker>()
-        .published::<Order>(DEAD)
+    // The queue moved the message, and the service published nothing: the dead letter is read
+    // where it arrived.
+    tb.broker::<LapinBroker>()
+        .subscriber(DEAD)
         .assert_called_once()
-        .decoded_as::<Order>()
         .with(&Order { id: 7 });
+    tb.broker::<LapinBroker>()
+        .published::<Order>(DEAD)
+        .assert_not_called();
 
     tb.shutdown().await.expect("shutdown");
 }
 
-// What the mount site declared reaches a quorum queue as topology: the queue is asked for a
-// delivery limit one short of the cap, and for a dead-letter route to the destination on the
-// default exchange.
+// The same registration on a broker that declares nothing does not start: the queue on the server
+// carries whatever arguments its owner gave it, so a cap declared here would apply nowhere. The
+// in-process mode reads the broker's own setting, so the start fails in a test where it fails on
+// the server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_declaration_becomes_the_quorum_queues_arguments() {
-    // A clone of the broker shares its transport, so the test reads what the app declared on it.
-    let stand = LapinTestBroker::new();
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(stand.clone(), |b| {
-        b.include(never_ready_on_a_quorum_queue)
-            .max_attempts(nonzero!(ATTEMPTS))
-            .dead_letter(DEAD);
-    });
-    let tb = TestApp::start(app).await.expect("start");
+async fn a_quorum_declaration_on_a_broker_that_declares_nothing_refuses_to_start() {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
+            b.include(never_ready_on_a_quorum_queue)
+                .max_attempts(nonzero!(ATTEMPTS))
+                .dead_letter(DEAD);
+        });
 
-    let arguments = stand
-        .declared_arguments("orders.quorum")
-        .expect("the subscription declared its queue");
-    assert_eq!(
-        argument(&arguments, "x-queue-type").as_deref(),
-        Some("quorum")
-    );
-    assert_eq!(
-        arguments
-            .inner()
-            .get(&ShortString::from("x-delivery-limit")),
-        Some(&AMQPValue::LongLongInt(i64::from(ATTEMPTS) - 1))
-    );
-    assert_eq!(
-        argument(&arguments, "x-dead-letter-exchange").as_deref(),
-        Some("")
-    );
-    assert_eq!(
-        argument(&arguments, "x-dead-letter-routing-key").as_deref(),
-        Some(DEAD)
-    );
-
-    tb.shutdown().await.expect("shutdown");
+    match TestApp::start(app).await {
+        Err(TestError::Subscribe(source)) => {
+            let message = source.to_string();
+            assert!(message.contains("declare_topology(true)"), "{message}");
+        }
+        other => panic!("expected the start refused, got {:?}", other.map(|_| ())),
+    }
 }
 
 // Half a declaration is refused before the subscription opens: a quorum queue carries a spent
@@ -241,7 +245,7 @@ async fn a_declaration_becomes_the_quorum_queues_arguments() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn half_a_declaration_refuses_to_start() {
     let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(never_ready_on_a_quorum_queue)
                 .max_attempts(nonzero!(ATTEMPTS));
         });
@@ -254,22 +258,10 @@ async fn half_a_declaration_refuses_to_start() {
     assert!(message.contains("dead_letter"), "{message}");
 }
 
-/// One text argument of the declaration.
-fn argument(arguments: &FieldTable, name: &str) -> Option<String> {
-    match arguments.inner().get(&ShortString::from(name))? {
-        AMQPValue::LongString(value) => Some(value.to_string()),
-        AMQPValue::ShortString(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
 /// Subscribes to `def` and publishes one message to it.
-async fn subscribe_and_publish<S>(
-    connected: &ConnectedLapinTestBroker,
-    def: S,
-) -> LapinTestSubscriber
+async fn subscribe_and_publish<S>(connected: &ConnectedLapinBroker, def: S) -> LapinSubscriber
 where
-    S: SubscriptionSource<ConnectedLapinTestBroker, Subscriber = LapinTestSubscriber>,
+    S: SubscriptionSource<ConnectedLapinBroker, Subscriber = LapinSubscriber>,
 {
     let queue = def.name().to_owned();
     let subscriber = def
@@ -285,7 +277,7 @@ where
 }
 
 /// The next delivery on `subscriber`. The stream borrows it, so each call takes its own.
-async fn next(subscriber: &mut LapinTestSubscriber) -> LapinTestMessage {
+async fn next(subscriber: &mut LapinSubscriber) -> LapinMessage {
     Box::pin(subscriber.stream())
         .next()
         .await
@@ -297,7 +289,10 @@ async fn next(subscriber: &mut LapinTestSubscriber) -> LapinTestMessage {
 // has come, and the framework's own header is the whole count there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_classic_delivery_carries_no_count() {
-    let connected = LapinTestBroker::new().connect().await.expect("connect");
+    let connected = LapinBroker::new(URI)
+        .connect_in_process()
+        .await
+        .expect("connect");
 
     let mut subscriber =
         subscribe_and_publish(&connected, RabbitQueue::new("orders.uncounted")).await;
@@ -314,7 +309,10 @@ async fn a_classic_delivery_carries_no_count() {
 // rejection, so the redelivery reports the second of the message's deliveries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_quorum_delivery_counts_the_deliveries_it_has_spent() {
-    let connected = LapinTestBroker::new().connect().await.expect("connect");
+    let connected = LapinBroker::new(URI)
+        .connect_in_process()
+        .await
+        .expect("connect");
 
     let mut subscriber =
         subscribe_and_publish(&connected, RabbitQuorumQueue::new("orders.counted")).await;
@@ -365,7 +363,7 @@ async fn every_copy_the_waiting_queue_releases_counts_one_more_attempt() {
             let seen = seen;
             async move { Ok::<_, std::convert::Infallible>(seen) }
         })
-        .with_broker(LapinTestBroker::new(), |b| {
+        .with_broker(LapinBroker::new(URI), |b| {
             b.include(record_the_count);
         });
     let tb = TestApp::start(app).await.expect("start");
@@ -386,7 +384,7 @@ async fn every_copy_the_waiting_queue_releases_counts_one_more_attempt() {
 #[tokio::test(start_paused = true)]
 async fn a_declared_cap_ends_a_delayed_retry_loop() {
     let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(never_ready_on_a_waiting_queue)
                 .max_attempts(nonzero!(ATTEMPTS))
                 .dead_letter(DEAD);
@@ -395,14 +393,90 @@ async fn a_declared_cap_ends_a_delayed_retry_loop() {
 
     exhaust(&tb, "orders.waiting", &Order { id: 6 }).await;
 
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("orders.waiting")
         .assert_called(ATTEMPTS as usize);
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .published::<Order>(DEAD)
         .assert_called_once()
         .decoded_as::<Order>()
         .with(&Order { id: 6 });
 
     tb.shutdown().await.expect("shutdown");
+}
+
+// --- One test body, in process and against a live broker. ---
+
+/// Long enough for the waiting queue on a live server to hold the copy, short enough for a live run.
+const WAITED: Duration = Duration::from_secs(1);
+
+/// Asks for the first delivery back after [`WAITED`], and acknowledges the copy the waiting queue
+/// releases, which carries the framework's retry count.
+#[subscriber(RabbitQueue::new("orders.dual").auto_delete(true).delay(Delay::dlx_ttl()))]
+async fn defer_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = order.id;
+    if ctx.headers().get_str(RETRY_COUNT_HEADER).is_none() {
+        return HandlerOutcome::retry_after(WAITED);
+    }
+    HandlerOutcome::ack()
+}
+
+/// The app `main` runs, on the broker it is handed: the production builder, unchanged in either
+/// mode.
+fn dual_app(broker: LapinBroker) -> RustStream {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        broker.declare_topology(true),
+        |b| {
+            b.include(defer_once);
+        },
+    )
+}
+
+/// The body both modes run: the first delivery asks to come back, the waiting queue holds the
+/// copy for the delay, and the copy is handled and acknowledged.
+async fn a_delayed_redelivery_comes_back(tb: TestApp<()>) {
+    tb.broker::<LapinBroker>()
+        .message(&Order { id: 42 })
+        .to("orders.dual")
+        .publish()
+        .await
+        .expect("publish drives the first delivery to its settlement");
+    tb.broker::<LapinBroker>()
+        .subscriber("orders.dual")
+        .assert_called_once()
+        .settled(HandlerOutcome::retry_after(WAITED));
+
+    tb.advance(WAITED)
+        .await
+        .expect("the waiting queue releases the copy");
+
+    tb.broker::<LapinBroker>()
+        .subscriber("orders.dual")
+        .assert_called(2)
+        .settled(HandlerOutcome::ack());
+    tb.broker::<LapinBroker>()
+        .published::<Order>("orders.dual")
+        .assert_called_once()
+        .with(&Order { id: 42 });
+
+    tb.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_delayed_redelivery_comes_back_in_process() {
+    let tb = TestApp::start(dual_app(LapinBroker::new(URI)))
+        .await
+        .expect("start");
+    a_delayed_redelivery_comes_back(tb).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delayed_redelivery_comes_back_live() {
+    let Some(url) = live::url("AMQP_TEST_URL") else {
+        return;
+    };
+    let tb = TestApp::start_live(dual_app(LapinBroker::new(url)))
+        .await
+        .expect("start against the stand");
+    a_delayed_redelivery_comes_back(tb).await;
 }
