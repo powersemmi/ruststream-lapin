@@ -12,9 +12,9 @@
 
 ## 数字 { #the-numbers }
 
-三个交错轮次中的最佳值，括号里是最差的一轮。越大越好。
+三个交错轮次中的最佳值，括号里是中位的一轮。越大越好。
 
-<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载公布的结果...", "scenario": "场景", "raw": "裸客户端", "adapter": "本 crate", "framework": "完整服务", "adapterOverhead": "本 crate 相对裸客户端", "overhead": "完整服务相对裸客户端", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "machine": "机器", "os": "操作系统", "broker": "Broker", "roundTrip": "往返时延", "build": "构建", "versions": "版本", "measured": "测量于", "unavailable": "读不到结果。它们公布在 {url}。", "unknownSchema": "公布的结果声明的 schema 是 {schema}，这一页不渲染它。"}'></div>
+<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载公布的结果...", "scenario": "场景", "raw": "裸客户端", "adapter": "本 crate", "framework": "完整服务", "adapterOverhead": "本 crate 相对裸客户端", "overhead": "完整服务相对裸客户端", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "machine": "机器", "os": "操作系统", "broker": "Broker", "roundTrip": "往返时延", "build": "构建", "versions": "版本", "measured": "测量于", "instructions": "每条消息的指令数", "allocations": "每条消息的内存分配次数", "cold": "冷启动（指令 / 分配）", "unavailable": "读不到结果。它们公布在 {url}。", "unknownSchema": "公布的结果声明的 schema 是 {schema}，这一页不渲染它。"}'></div>
 
 表格由浏览器从上一次运行写下的文档读出，所以这一页上没有任何会过期的副本。
 
@@ -42,6 +42,29 @@
 同一次运行的机器可读形式在
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-lapin/latest/benchmarks/results.json)，
 框架的站点用它拼出跨 Broker 的汇总表。
+
+## crate 自身的代码 { #the-crates-own-code }
+
+<div id="benchmark-code"></div>
+
+第二张表是一条消息在代码里的开销，是数出来的，不是计时得来的：指令数由 callgrind 统计，内存分配
+次数由 DHAT 统计。每个场景都是用户会写的那种服务，跑在 `LapinBroker` 上，连到 docker compose 环境
+里的节点。服务在启动时声明一个经典队列，用和上面的对比相同的预取窗口来消费它，并且跑在单线程的
+tokio 运行时上。队列由另一个线程在服务处理任何消息之前填好，填充要等节点确认了每一条消息才结束。
+
+被统计的是服务线程上的一切：框架的分发、编解码器、本 crate 的代码，以及 `lapin` 客户端在这个线程上
+做的工作。`lapin` 在自己的线程上读写套接字，那个线程不计入。每一行的内存分配大多来自客户端：每一次
+确认、每一次发布，都会在服务线程上创建 promise 和一个内部任务。
+
+指令数和分配次数都是稳态下每条消息的值：1000 次投递的运行和 2000 次投递的运行之间的斜率。最后一列
+是启动服务并处理第一次投递一次性付出的开销：建立连接、打开 channel、声明队列、注册消费者。这些数字
+是绝对值，框架自身的开销也算在内；框架单独的开销由核心库在它的
+[基准测试页面](https://powersemmi.github.io/ruststream/latest/zh/benchmarks/)上公布。
+
+真实的节点按自己的节奏应答，所以服务线程等待套接字的次数每次运行都不一样。四次运行中，每条消息的
+指令数相差最多百分之五，内存分配每次运行最多相差十三个块，所以每个场景的分配下限比它测到的最大值高出千分之一。
+`just bench-code` 在分配次数超过这个下限时失败，加上 `--baseline=main` 时，指令数多出百分之五以上也
+算失败；改变开销的合并请求要附上自己的数字。
 
 ## 机器 { #the-machine }
 
@@ -77,5 +100,13 @@ just bench
 ```
 
 这条 recipe 从 `docker-compose.test.yml` 起停节点，跑完两个场景，然后把测到的结果写回
-`docs/benchmarks/results.json`。它要花一刻钟左右，并且需要整台机器。消息条数不是固定的：一次试探运行
+`docs/benchmarks/results.json`。它要花几分钟，并且需要整台机器。消息条数不是固定的：一次试探运行
 会把它定下来，使得每一次被测量的运行在所在机器上都不短于五秒。
+
+```bash
+just bench-code
+```
+
+这条 recipe 从 `docker-compose.test.yml` 起停节点，在 valgrind 下统计代码表，并重写同一份文档里的
+`code` 部分。它要花不到一分钟，需要 valgrind 和基准测试运行器：
+`cargo install --locked gungraun-runner --version =0.19.4`。
