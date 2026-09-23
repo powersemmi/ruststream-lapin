@@ -613,14 +613,14 @@ pub fn app() -> RustStream {
         })
 }
 
-pub async fn accepts_a_payment() {
-    let tb = TestApp::start(app()).await.expect("start");
+pub async fn accepts_a_payment() -> Result<(), Box<dyn std::error::Error>> {
+    let tb = TestApp::start(app()).await?;
 
+    // The publish returns once the handler it woke has settled.
     tb.broker::<LapinBroker>()
         .message(&Payment { amount: 100 })
         .publish()
-        .await
-        .expect("publish drives the handler to quiescence");
+        .await?;
 
     tb.broker::<LapinBroker>()
         .subscriber("payments")
@@ -628,7 +628,8 @@ pub async fn accepts_a_payment() {
         .with(&Payment { amount: 100 })
         .settled(HandlerOutcome::ack());
 
-    tb.shutdown().await.expect("shutdown");
+    tb.shutdown().await?;
+    Ok(())
 }
 # }
 # fn main() {}
