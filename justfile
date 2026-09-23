@@ -7,8 +7,12 @@ default: check
 
 check:
     cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
-    cargo check --workspace --all-targets --all-features
+    # The benchmark package is left out of the all-features legs on purpose: it is built with the
+    # feature set a service ships, and the framework's harness feature is a compile error in it.
+    # Its own leg follows.
+    cargo clippy --workspace --exclude ruststream-lapin-bench --all-targets --all-features -- -D warnings
+    cargo clippy -p ruststream-lapin-bench --all-targets -- -D warnings
+    cargo check --workspace --exclude ruststream-lapin-bench --all-targets --all-features
     cargo check --workspace --no-default-features
     # The build a service that only generates its document makes: `asyncapi` without `testing`.
     # Neither of the two legs above has that combination, and a binding hook reaching an accessor
@@ -52,6 +56,22 @@ test-plugins: plugins-up
     RUSTSTREAM_REQUIRE_LIVE=1 \
         cargo test -p ruststream-lapin --features plugin-consistent-hash,plugin-dme \
         --test plugins_lapin -- --test-threads=1
+
+# What this crate, and then the runtime above it, cost over the lapin client they wrap: two
+# scenarios, each run three times over (the raw client, this crate's own consumer and publisher,
+# the whole service), against the stand the tests use. On demand only - it takes a quarter of an
+# hour and it wants the machine to itself. The page it feeds is docs/benchmarks.md.
+bench *ARGS: brokers-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just brokers-down' EXIT
+    mkdir -p target
+    # RUSTFLAGS is cleared so the numbers are not tied to this machine's CPU: a binary built with
+    # `-C target-cpu=native` cannot be reproduced anywhere else.
+    RUSTFLAGS="" AMQP_TEST_URL=amqp://127.0.0.1:5672 \
+    RUSTSTREAM_BENCH_OUT="$PWD/target/bench-paired.json" \
+        cargo bench -p ruststream-lapin-bench --bench paired {{ ARGS }}
+    python3 scripts/bench_results.py target/bench-paired.json docs/benchmarks/results.json
 
 fmt:
     cargo fmt --all

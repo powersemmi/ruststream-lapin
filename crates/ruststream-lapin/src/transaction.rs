@@ -8,7 +8,7 @@
 
 use std::future::{Future, ready};
 
-use ruststream::{OutgoingMessage, OwnedTransactions, Transaction};
+use ruststream::{OutgoingFor, OwnedTransactions, Take, Transaction};
 use tracing::warn;
 
 use crate::error::AmqpError;
@@ -78,6 +78,9 @@ impl Drop for ConfirmsTransaction {
 }
 
 impl Transaction for ConfirmsTransaction {
+    /// A buffered message is kept until the commit, so the transaction takes the buffer the
+    /// framework wrote instead of copying out of one it may only read.
+    type Payload = Take;
     type Error = AmqpError;
     /// The publisher's own settings: a buffered message becomes an ordinary publish at the
     /// commit, so it honours exactly what one outside the transaction does.
@@ -92,10 +95,10 @@ impl Transaction for ConfirmsTransaction {
     /// rejected frame surfaces at the commit, which is the visibility point.
     fn publish(
         &mut self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingFor<'_, Take>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        self.buffered.push(Buffered::new(&msg, options));
+        self.buffered.push(Buffered::taken(msg, options));
         ready(Ok(()))
     }
 

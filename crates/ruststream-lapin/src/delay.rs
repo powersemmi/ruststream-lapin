@@ -20,8 +20,8 @@ use bytes::Bytes;
 use lapin::Channel;
 use lapin::options::BasicPublishOptions;
 use lapin::types::ShortString;
-use ruststream::HeaderMap;
 use ruststream::runtime::RETRY_COUNT_HEADER;
+use ruststream::{HeaderMap, Str};
 
 use crate::convert;
 use crate::error::AmqpError;
@@ -234,7 +234,7 @@ fn counted_again(headers: &HeaderMap) -> HeaderMap {
         .unwrap_or(0);
     let mut headers = headers.clone();
     headers.insert(
-        RETRY_COUNT_HEADER,
+        Str::from_static(RETRY_COUNT_HEADER),
         Bytes::from(spent.saturating_add(1).to_string()),
     );
     headers

@@ -1,0 +1,70 @@
+{
+  "schema": 3,
+  "crate": "ruststream-lapin",
+  "crate_version": "0.7.0",
+  "core_version": "0.7.0-rc.9",
+  "measured_at": "2026-09-21",
+  "environment": {
+    "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
+    "architecture": "x86_64",
+    "cpu_frequency": "427-5912 MHz",
+    "cores": "12 physical, 24 logical",
+    "memory": "62.4 GiB",
+    "memory_speed": "unknown",
+    "os": "Linux 7.2.6-x64v3-xanmod1-1",
+    "broker": "rabbitmq:4-management-alpine in Docker on localhost",
+    "round_trip": "50.3 us for one basic.qos answered by the server",
+    "rustc": "1.98.1",
+    "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
+    "features": "ruststream-lapin default (none), ruststream macros,json",
+    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
+  },
+  "scenarios": [
+    {
+      "name": "Classic queue, 512 B JSON, ack each",
+      "unit": "msg/s",
+      "messages": 333470,
+      "pairs": 3,
+      "raw": {
+        "best": 59268,
+        "worst": 58889
+      },
+      "adapter": {
+        "best": 58773,
+        "worst": 57498
+      },
+      "framework": {
+        "best": 58187,
+        "worst": 56986
+      },
+      "adapter_overhead_percent": 0.8,
+      "overhead_percent": 1.8,
+      "adapter_verdict": "indistinguishable",
+      "verdict": "indistinguishable",
+      "broker_bound": false
+    },
+    {
+      "name": "Quorum queue, 512 B JSON, ack each",
+      "unit": "msg/s",
+      "messages": 238510,
+      "pairs": 3,
+      "raw": {
+        "best": 34004,
+        "worst": 32004
+      },
+      "adapter": {
+        "best": 33151,
+        "worst": 31976
+      },
+      "framework": {
+        "best": 33845,
+        "worst": 32264
+      },
+      "adapter_overhead_percent": 2.5,
+      "overhead_percent": 0.5,
+      "adapter_verdict": "indistinguishable",
+      "verdict": "indistinguishable",
+      "broker_bound": false
+    }
+  ]
+}

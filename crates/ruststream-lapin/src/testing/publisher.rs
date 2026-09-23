@@ -19,8 +19,8 @@ use bytes::Bytes;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{
-    HeaderMap, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy, Publisher,
-    Transaction, TransactionalPublisher,
+    HeaderMap, Lend, OutgoingFor, OutgoingMessage, OwnedTransactions, PairError, PublishPolicy,
+    Publisher, Take, Transaction, TransactionalPublisher,
 };
 use tracing::warn;
 
@@ -186,7 +186,7 @@ impl Buffering {
     /// Buffers `msg` inside an open transaction, or routes it straight away.
     fn publish(
         &self,
-        msg: &OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_>,
         options: Option<&LapinPublishOptions>,
     ) -> Result<(), AmqpError> {
         // Checked before buffering, not only at the flush: the live publishers reject an
@@ -195,11 +195,11 @@ impl Buffering {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push(Buffered::new(msg, options));
+                buffer.push(Buffered::lent(msg, options));
                 return Ok(());
             }
         }
-        self.route.send(msg, options)
+        self.route.send(&msg, options)
     }
 
     fn begin(&self, publisher: &str) -> Result<(), AmqpError> {
@@ -288,6 +288,9 @@ pub struct LapinTestPublisher {
 }
 
 impl Publisher for LapinTestPublisher {
+    /// The live publisher's form, so a test exercises the publish path a service gets in
+    /// production.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -372,6 +375,8 @@ pub struct ConfirmsTestPublisher {
 const CONFIRMS: &str = "confirms test publisher";
 
 impl Publisher for ConfirmsTestPublisher {
+    /// The live publisher's form.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -386,7 +391,7 @@ impl Publisher for ConfirmsTestPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.buffering.publish(&msg, options))
+        ready(self.buffering.publish(msg, options))
     }
 }
 
@@ -521,6 +526,8 @@ impl Drop for ConfirmsTestTransaction {
 }
 
 impl Transaction for ConfirmsTestTransaction {
+    /// The live transaction's form.
+    type Payload = Take;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -533,7 +540,7 @@ impl Transaction for ConfirmsTestTransaction {
     /// live transaction also makes before the broker would.
     fn publish(
         &mut self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingFor<'_, Take>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         if msg.name().is_empty() {
@@ -542,7 +549,7 @@ impl Transaction for ConfirmsTestTransaction {
                     .to_owned(),
             )));
         }
-        self.buffered.push(Buffered::new(&msg, options));
+        self.buffered.push(Buffered::taken(msg, options));
         ready(Ok(()))
     }
 
@@ -621,6 +628,8 @@ pub struct ServerTxTestPublisher {
 const SERVER_TX: &str = "server-transactional test publisher";
 
 impl Publisher for ServerTxTestPublisher {
+    /// The live publisher's form.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -635,7 +644,7 @@ impl Publisher for ServerTxTestPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.buffering.publish(&msg, options))
+        ready(self.buffering.publish(msg, options))
     }
 }
 

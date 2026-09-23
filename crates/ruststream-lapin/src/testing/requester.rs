@@ -6,7 +6,7 @@ use std::time::Duration;
 
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
-use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
+use ruststream::{Lend, OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
 use tokio::time::{Instant, timeout_at};
 use tracing::debug;
 
@@ -138,6 +138,8 @@ pub struct LapinTestRequester {
 }
 
 impl Publisher for LapinTestRequester {
+    /// The live requester's form.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 

@@ -14,7 +14,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use lapin::BasicProperties;
 use lapin::types::{AMQPValue, FieldTable, ShortString};
-use ruststream::HeaderMap;
+use ruststream::{HeaderMap, Str};
 
 use crate::error::AmqpError;
 use crate::publish_step::{EXPIRATION_HEADER, LapinPublishOptions, PRIORITY_HEADER};
@@ -142,34 +142,37 @@ pub(crate) fn headers_from_properties(properties: &BasicProperties) -> HeaderMap
 
     if let Some(value) = properties.content_type() {
         headers.insert(
-            "content-type",
+            Str::from_static("content-type"),
             Bytes::copy_from_slice(value.as_str().as_bytes()),
         );
     }
     if let Some(value) = properties.correlation_id() {
         headers.insert(
-            "correlation-id",
+            Str::from_static("correlation-id"),
             Bytes::copy_from_slice(value.as_str().as_bytes()),
         );
     }
     if let Some(value) = properties.reply_to() {
         headers.insert(
-            "reply-to",
+            Str::from_static("reply-to"),
             Bytes::copy_from_slice(value.as_str().as_bytes()),
         );
     }
     if let Some(value) = properties.message_id() {
         headers.insert(
-            "message-id",
+            Str::from_static("message-id"),
             Bytes::copy_from_slice(value.as_str().as_bytes()),
         );
     }
     if let Some(value) = properties.priority() {
-        headers.insert(PRIORITY_HEADER, Bytes::from(value.to_string()));
+        headers.insert(
+            Str::from_static(PRIORITY_HEADER),
+            Bytes::from(value.to_string()),
+        );
     }
     if let Some(value) = properties.expiration() {
         headers.insert(
-            EXPIRATION_HEADER,
+            Str::from_static(EXPIRATION_HEADER),
             Bytes::copy_from_slice(value.as_str().as_bytes()),
         );
     }

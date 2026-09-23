@@ -1,5 +1,6 @@
 //! The responder half of the direct reply-to convention, packaged as a publish transform.
 
+use ruststream::Str;
 use ruststream::runtime::{ForReply, Names, Outgoing, PublishContext, PublishTransform};
 
 /// Redirects each reply of a `#[subscriber(.., publish(..))]` handler to the requester's
@@ -67,12 +68,17 @@ impl<C, Options> PublishTransform<ForReply<C>, Options> for DirectReplyTo {
         _options: &mut Option<Options>,
         cx: &PublishContext<'_, C>,
     ) {
-        if let Some(reply_to) = cx.headers().reply_to() {
-            out.set_name(reply_to.to_owned());
+        // Both fields travel as the buffers the delivery already holds: the reply takes a
+        // reference count on the request's bytes instead of copying them per message. A reply-to
+        // that is not UTF-8 is not an address, and falls through to the mount site's name.
+        if let Some(reply_to) = cx.headers().get_shared("reply-to")
+            && let Ok(name) = Str::try_from(reply_to)
+        {
+            out.set_name(name);
         }
-        if let Some(correlation_id) = cx.headers().correlation_id() {
+        if let Some(correlation_id) = cx.headers().get_shared("correlation-id") {
             out.headers_mut()
-                .insert("correlation-id", correlation_id.as_bytes().to_vec());
+                .insert(Str::from_static("correlation-id"), correlation_id);
         }
     }
 }

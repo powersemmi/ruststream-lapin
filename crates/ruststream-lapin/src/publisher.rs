@@ -10,7 +10,9 @@ use bytes::Bytes;
 use lapin::options::{BasicPublishOptions, ConfirmSelectOptions};
 use lapin::{BasicProperties, Channel};
 use lapin::{Confirmation, PublisherConfirm};
-use ruststream::{HeaderMap, OutgoingMessage, Publisher, TransactionalPublisher};
+use ruststream::{
+    HeaderMap, Lend, OutgoingFor, OutgoingMessage, Publisher, Take, TransactionalPublisher,
+};
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker};
 use crate::channel::ChannelCell;
@@ -33,11 +35,27 @@ pub(crate) struct Buffered {
 }
 
 impl Buffered {
-    pub(crate) fn new(msg: &OutgoingMessage<'_>, options: Option<&LapinPublishOptions>) -> Self {
+    /// A message a lending publisher buffered: the framework reuses that buffer for the next
+    /// message, so the bytes are copied out of it. The header map is the publish's own and is
+    /// taken with the rest of the message.
+    pub(crate) fn lent(msg: OutgoingMessage<'_>, options: Option<&LapinPublishOptions>) -> Self {
+        let (routing_key, payload, headers) = msg.into_parts();
         Self {
-            routing_key: msg.name().to_owned(),
-            payload: Bytes::copy_from_slice(msg.payload()),
-            headers: msg.headers().clone(),
+            routing_key: routing_key.to_owned(),
+            payload: Bytes::copy_from_slice(payload),
+            headers,
+            options: options.copied().unwrap_or_default(),
+        }
+    }
+
+    /// A message a transaction was handed: the buffer is the transaction's to keep, so the
+    /// payload and the header map are taken as the framework wrote them.
+    pub(crate) fn taken(msg: OutgoingFor<'_, Take>, options: Option<&LapinPublishOptions>) -> Self {
+        let (routing_key, payload, headers) = msg.into_parts();
+        Self {
+            routing_key: routing_key.to_owned(),
+            payload: payload.freeze(),
+            headers,
             options: options.copied().unwrap_or_default(),
         }
     }
@@ -84,6 +102,9 @@ impl LapinPublisher {
 }
 
 impl Publisher for LapinPublisher {
+    /// `basic_publish` takes the payload as `&[u8]` and copies it into the frame it sends, so
+    /// this publisher reads the bytes and keeps nothing.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -256,6 +277,9 @@ fn confirmation_ok(confirmation: &Confirmation, routing_key: &str) -> Result<(),
 }
 
 impl Publisher for ConfirmsPublisher {
+    /// `basic_publish` takes the payload as `&[u8]` and copies it into the frame it sends, so
+    /// this publisher reads the bytes and keeps nothing.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -282,7 +306,7 @@ impl Publisher for ConfirmsPublisher {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
-                buffer.push(Buffered::new(&msg, options));
+                buffer.push(Buffered::lent(msg, options));
                 return Ok(());
             }
         }
@@ -464,6 +488,9 @@ impl ServerTxPublisher {
 }
 
 impl Publisher for ServerTxPublisher {
+    /// `basic_publish` takes the payload as `&[u8]` and copies it into the frame it sends, so
+    /// this publisher reads the bytes and keeps nothing.
+    type Payload = Lend;
     type Error = AmqpError;
     type Options = LapinPublishOptions;
 
@@ -570,5 +597,30 @@ impl TransactionalPublisher for ServerTxPublisher {
         channel.tx_rollback().await.map_err(AmqpError::publish)?;
         self.set_open(false);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruststream::{BytesMut, OutgoingFor, OutgoingMessage, Take};
+
+    use super::Buffered;
+
+    /// Content equality cannot tell a hand-over from a copy, so the buffer the framework wrote is
+    /// identified by its address.
+    #[test]
+    fn a_buffered_message_keeps_the_buffer_the_framework_wrote() {
+        let payload = BytesMut::from(&br#"{"id":1}"#[..]);
+        let written = payload.as_ptr();
+        let msg: OutgoingFor<'_, Take> = OutgoingMessage::produced("orders", payload);
+
+        let buffered = Buffered::taken(msg, None);
+
+        assert_eq!(
+            buffered.payload.as_ptr(),
+            written,
+            "a transaction keeps the message until the commit, so it takes the buffer rather \
+             than copying out of it"
+        );
     }
 }
