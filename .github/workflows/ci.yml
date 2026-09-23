@@ -70,12 +70,13 @@ jobs:
     name: Lint and checks
     needs: changes
     # One runner for every check outside the build job: the dependency graph, spelling, the
-    # workflows, formatting, lints, the scaffolds, each feature alone and minimal versions. Not path-gated as a
-    # whole: advisories arrive over time, not only with manifest changes, so `cargo deny` runs on
-    # every pull request, and so do the spelling and workflow scans, which read the whole tree.
-    # The Rust steps run when the Rust sources changed, the scaffolds when they or the crate did. Each check runs whatever the one before
-    # it did, so a red formatting step hides no later verdict. Minimal versions rewrites the lock
-    # file and the manifests for good, so it comes last.
+    # workflows, formatting, lints, the scaffolds, each feature alone and minimal versions. Not
+    # path-gated as a whole: advisories arrive over time, not only with manifest changes, so
+    # `cargo deny` runs on every pull request, and so do the spelling and workflow scans, which
+    # read the whole tree. The Rust steps run when the Rust sources changed, the scaffolds when
+    # they or the crate did. Each check runs whatever the one before it did, so a red formatting
+    # step hides no later verdict. Minimal versions rewrites the lock file and the manifests for
+    # good, so it comes last.
     runs-on: ubuntu-latest
     env:
       RUST_CHANGED: ${{ needs.changes.outputs.rust }}
