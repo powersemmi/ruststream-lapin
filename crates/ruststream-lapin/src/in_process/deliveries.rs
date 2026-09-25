@@ -283,8 +283,10 @@ impl Settlement {
             // Under the harness the timer belongs to the coordinator, so `TestApp::advance` fires
             // it deterministically instead of the test waiting on a wall clock.
             Some(coordinator) => coordinator.schedule_redelivery(delay, redeliver),
+            // On the runtime the broker connected on, not the settling caller's: a handler on a
+            // dedicated thread settles from a runtime that may stop before the delay is out.
             None => {
-                tokio::spawn(async move {
+                self.bus.runtime().spawn(async move {
                     tokio::time::sleep(delay).await;
                     redeliver();
                 });
