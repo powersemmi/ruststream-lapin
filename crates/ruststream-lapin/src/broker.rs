@@ -29,6 +29,7 @@ use ruststream::{
 };
 #[cfg(feature = "testing")]
 use ruststream::{OutgoingMessage, RawMessage};
+use tokio::runtime::Handle;
 
 use crate::channel::ChannelCell;
 use crate::convert;
@@ -60,15 +61,24 @@ pub(crate) struct AmqpConnection {
     connection: Connection,
     publish_channel: ChannelCell<Channel>,
     closed: AtomicBool,
+    /// The runtime `connect` ran on. Every task the broker starts runs here, such as a
+    /// requester's reply dispatcher, whichever thread makes the request that starts it.
+    runtime: Handle,
 }
 
 impl AmqpConnection {
-    fn new(connection: Connection, publish_channel: Channel) -> Arc<Self> {
+    fn new(connection: Connection, publish_channel: Channel, runtime: Handle) -> Arc<Self> {
         Arc::new(Self {
             connection,
             publish_channel: ChannelCell::holding(publish_channel),
             closed: AtomicBool::new(false),
+            runtime,
         })
+    }
+
+    /// The runtime the broker connected on.
+    pub(crate) const fn runtime(&self) -> &Handle {
+        &self.runtime
     }
 
     /// The connection, or [`AmqpError::Closed`] once the broker has shut down.
@@ -235,7 +245,11 @@ impl Broker for LapinBroker {
             .map_err(AmqpError::connect)?;
 
         Ok(ConnectedLapinBroker {
-            link: Link::Amqp(AmqpConnection::new(connection, publish_channel)),
+            link: Link::Amqp(AmqpConnection::new(
+                connection,
+                publish_channel,
+                Handle::current(),
+            )),
             uri: self.uri,
             prefetch: self.prefetch,
             declare: self.declare,
@@ -258,7 +272,7 @@ impl InProcess for LapinBroker {
             .parse::<AMQPUri>()
             .map_err(|err| AmqpError::Connect(err.into()))
             .map(|_| ConnectedLapinBroker {
-                link: Link::InProcess(Bus::new()),
+                link: Link::InProcess(Bus::new(Handle::current())),
                 uri: self.uri,
                 prefetch: self.prefetch,
                 declare: self.declare,

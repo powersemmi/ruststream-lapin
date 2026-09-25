@@ -452,7 +452,9 @@ the recovery path.
 [`LapinRequest`] pairs into [`LapinRequester`], which implements `RequestReply` over `RabbitMQ`
 [direct reply-to](https://www.rabbitmq.com/docs/direct-reply-to). Every request goes out with
 `reply-to` set to the `amq.rabbitmq.reply-to` pseudo-queue and a generated `correlation-id`, and
-the correlated reply resolves the call. Requests are transient by default - a request nobody is
+the correlated reply resolves the call. The replies are read by one task per requester, started
+by its first request on the runtime the broker connected on, so a handler on a dedicated thread may
+make that request from a runtime that stops afterwards. Requests are transient by default - a request nobody is
 waiting for after the timeout gains nothing from surviving a restart - and
 [`persistent(true)`](LapinRequest::persistent) opts back in.
 

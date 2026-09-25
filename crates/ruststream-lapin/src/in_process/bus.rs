@@ -10,6 +10,7 @@ use lapin::types::{FieldTable, ShortString};
 use lapin::{BasicProperties, ExchangeKind};
 use ruststream::testing::Coordinator;
 use ruststream::{HeaderMap, RawMessage};
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use super::deliveries::QueueBehaviour;
@@ -160,17 +161,26 @@ pub(crate) struct Bus {
     /// like the server that rewrites the direct reply-to address, so two requesters on one
     /// connection are never handed the same address.
     inbox_seq: AtomicU64,
+    /// The runtime the broker connected on, which a delayed redelivery waits on.
+    runtime: Handle,
 }
 
 impl Bus {
-    pub(crate) fn new() -> Arc<Self> {
+    pub(crate) fn new(runtime: Handle) -> Arc<Self> {
         Arc::new(Self {
             routes: Mutex::new(Routes::default()),
             next_consumer: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             coordinator: OnceLock::new(),
             inbox_seq: AtomicU64::new(0),
+            runtime,
         })
+    }
+
+    /// The runtime the broker connected on: a task the transport starts on its own behalf runs
+    /// there, whichever thread settles the delivery that asked for it.
+    pub(crate) const fn runtime(&self) -> &Handle {
+        &self.runtime
     }
 
     fn routes(&self) -> MutexGuard<'_, Routes> {
