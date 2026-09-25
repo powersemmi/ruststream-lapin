@@ -330,7 +330,14 @@ impl Bus {
     /// Routes `delivery` through `exchange` under `routing_key` without logging it: how a queue
     /// dead-letters a message, which is the server's move and not a publish of the service.
     pub(crate) fn reroute(&self, exchange: &str, routing_key: &str, delivery: &BusDelivery) {
-        let queues = self.routes().targets(exchange, routing_key, None);
+        // A headers exchange matches the dead-lettered message's own header table.
+        let properties =
+            convert::properties_for_publish(&delivery.headers, &LapinPublishOptions::default())
+                .ok();
+        let table = properties
+            .as_ref()
+            .and_then(|properties| properties.headers().as_ref());
+        let queues = self.routes().targets(exchange, routing_key, table);
         for queue in queues {
             self.deliver(
                 &queue,
@@ -351,12 +358,35 @@ impl Bus {
     /// A successful hand-over is reported to the coordinator, so the harness's in-flight count
     /// stays balanced against the delivery's release.
     pub(crate) fn deliver(&self, queue: &str, delivery: BusDelivery) {
-        let sender = self.routes().next_consumer(queue);
-        if let Some(sender) = sender
-            && sender.send(delivery).is_ok()
-            && let Some(coordinator) = self.coordinator.get()
-        {
+        let Some(sender) = self.routes().next_consumer(queue) else {
+            return;
+        };
+        // Counted before the send: a consumer on another task may settle the delivery, and
+        // release its count, before `send` returns here.
+        let coordinator = self.coordinator.get();
+        if let Some(coordinator) = coordinator {
             coordinator.enqueued();
+        }
+        if sender.send(delivery).is_err()
+            && let Some(coordinator) = coordinator
+        {
+            coordinator.consumed();
+        }
+    }
+
+    /// Puts back what a cancelled consumer had been handed and never read, as the server
+    /// requeues a closing consumer's deliveries: the next consumer of the queue receives it,
+    /// marked redelivered. Its count moves with it.
+    pub(crate) fn requeue_unread(&self, queue: &str, delivery: BusDelivery) {
+        self.deliver(
+            queue,
+            BusDelivery {
+                redelivered: true,
+                ..delivery
+            },
+        );
+        if let Some(coordinator) = self.coordinator.get() {
+            coordinator.consumed();
         }
     }
 

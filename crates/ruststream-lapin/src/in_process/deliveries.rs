@@ -94,6 +94,12 @@ impl BusDeliveries {
 impl Drop for BusDeliveries {
     fn drop(&mut self) {
         self.bus.cancel(self.id);
+        // Handed to this consumer and never read: back to the queue, as the server requeues
+        // what a closing consumer had not acknowledged.
+        self.receiver.close();
+        while let Ok(delivery) = self.receiver.try_recv() {
+            self.bus.requeue_unread(&self.queue, delivery);
+        }
     }
 }
 

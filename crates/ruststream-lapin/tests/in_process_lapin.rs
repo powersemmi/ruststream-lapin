@@ -173,6 +173,76 @@ async fn competing_consumers_share_the_deliveries() {
     assert_eq!(next_payload(&mut second_stream).await, b"m4");
 }
 
+// A consumer that closes with deliveries it never read hands them back to the queue, as the
+// server requeues what a closing consumer had not acknowledged: a sibling receives them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closing_consumer_hands_its_unread_deliveries_back() {
+    let broker = connected().await;
+    let mut staying = broker
+        .subscribe(RabbitQueue::new("handed-back"))
+        .await
+        .expect("subscribe staying");
+    let leaving = broker
+        .subscribe(RabbitQueue::new("handed-back"))
+        .await
+        .expect("subscribe leaving");
+    let publisher = broker.publisher(LapinPublish::default());
+    for payload in [b"m1".as_slice(), b"m2"] {
+        publisher
+            .publish(OutgoingMessage::new("handed-back", payload), None)
+            .await
+            .expect("publish");
+    }
+    drop(leaving);
+
+    let mut stream = Box::pin(staying.stream());
+    assert_eq!(next_payload(&mut stream).await, b"m1");
+    assert_eq!(next_payload(&mut stream).await, b"m2");
+}
+
+// A queue that dead-letters to a headers exchange is matched on the rejected message's own
+// header table, as the server matches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_letter_to_a_headers_exchange_matches_the_message_headers() {
+    let broker = connected().await;
+    let mut arguments = FieldTable::default();
+    arguments.insert("x-match".into(), AMQPValue::LongString("all".into()));
+    arguments.insert("region".into(), AMQPValue::LongString("eu".into()));
+    let mut parked = broker
+        .subscribe(RabbitQueue::new("parked.eu").bind_with(
+            RabbitExchange::headers("dead-by-region"),
+            "",
+            arguments,
+        ))
+        .await
+        .expect("subscribe parked");
+    let mut work = broker
+        .subscribe(RabbitQueue::new("work").dead_letter_exchange("dead-by-region"))
+        .await
+        .expect("subscribe work");
+    let mut headers = HeaderMap::new();
+    headers.insert("region", "eu");
+    broker
+        .publisher(LapinPublish::default())
+        .publish(
+            OutgoingMessage::new("work", b"rejected").with_headers(headers),
+            None,
+        )
+        .await
+        .expect("publish");
+
+    let rejected = tokio::time::timeout(WAIT, Box::pin(work.stream()).next())
+        .await
+        .expect("a delivery within the wait")
+        .expect("the stream has one")
+        .expect("delivery ok");
+    rejected.nack(false).await.expect("reject");
+    assert_eq!(
+        delivered(&mut parked).await.as_deref(),
+        Some(&b"rejected"[..])
+    );
+}
+
 // A requeue goes back through the queue rather than to the consumer that rejected it, so the
 // redelivery can land on a sibling - which is what a server does, and what makes a retry test
 // with competing consumers mean anything.
