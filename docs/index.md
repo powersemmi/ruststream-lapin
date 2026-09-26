@@ -18,11 +18,11 @@ the only value carrying a subscribe or publish surface.
 
 A handler body names capabilities: `Out<impl Publisher>`, `Out<impl TransactionalPublisher>`,
 `Out<impl RequestReply>`. It imports the framework's prelude alone, which is what keeps one
-handler mountable on a real broker and on the in-process test broker. One body imports this
-crate's prelude too: one that adjusts an
+handler mountable under whichever publish policy the routes file pairs it with. One body imports
+this crate's prelude too: one that adjusts an
 [AMQP property][properties] for a single message. It names the
 settings type rather than a publisher type - `Out<impl Publisher<Options = LapinPublishOptions>>` -
-so the handler stays mountable on both.
+so the handler still names no publisher.
 
 A routes file names values and imports `ruststream_lapin::prelude::*`, which brings the
 framework's prelude with it. It adds the family's uniform mount-site names: `Publish`,
@@ -87,7 +87,7 @@ The crate documents itself on docs.rs, and that overview is the guide:
   replies and transactions.
 - [Request/reply][request-reply] - RPC over direct reply-to.
 - [The AsyncAPI document][documenting] - the AMQP bindings a service reports about itself.
-- [Testing][testing] - the in-process test broker under the `TestApp` harness.
+- [Testing][testing] - the production app under the `TestApp` harness, in process or against a live broker.
 - [Operations][operations] - TLS, connection settings, opt-in declaration, known gaps.
 
 Installation, the tutorial and the other brokers are on the RustStream site:

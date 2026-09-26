@@ -26,7 +26,7 @@ This site holds the entry pages. The crate's guide is its overview on docs.rs, a
 - [Request and reply](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#request-and-reply): requests over RabbitMQ direct reply-to
 - [The prelude](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-prelude): what a routes file and a handler body import
 - [The AsyncAPI document](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#the-asyncapi-document): what the `asyncapi` feature reports
-- [Testing](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#testing): the in-process broker behind the `testing` feature, driven by `TestApp`
+- [Testing](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#testing): the production app under `TestApp`, `LapinBroker` in process behind the `testing` feature or against a live RabbitMQ
 - [Operations](https://docs.rs/ruststream-lapin/latest/ruststream_lapin/index.html#operations): the connection URI, TLS, prefetch, topology declaration and the plugin features
 
 ## Optional

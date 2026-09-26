@@ -577,21 +577,22 @@ subscription or the destination and nothing of what travels over it.
 
 # Testing
 
-The `testing` feature ships [`LapinTestBroker`](testing::LapinTestBroker), an in-process transport
-that follows the same ladder as the real broker and runs the same handlers, descriptors and mount
-sites. It routes by exact queue name on the default-exchange model and records every publish. Build
-the app around it exactly as the real one and hand it to the framework's `TestApp` harness, whose
-usage is the core's: <https://docs.rs/ruststream/latest/ruststream/testing/index.html>.
+A test runs the service's own app: the builder `main` runs, on [`LapinBroker`], handed to the
+framework's `TestApp` harness unchanged. With the `testing` feature in `[dev-dependencies]`,
+`TestApp::start` connects the broker in process instead of dialling the server, and the test
+addresses it by its production type, `tb.broker::<LapinBroker>()`. `TestApp::start_live` runs the
+same test body against a running `RabbitMQ`. The harness's usage is the core's:
+<https://docs.rs/ruststream/latest/ruststream/testing/index.html>.
 
 ```
 # #[cfg(feature = "testing")]
 # mod demo {
 use ruststream::testing::TestApp;
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::testing::LapinTestBroker;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
+#[outgoing(name = "payments")]
 struct Payment {
     amount: u64,
 }
@@ -604,42 +605,60 @@ async fn accept(payment: &Payment) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-pub async fn accepts_a_payment() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0"))
-        .with_broker(LapinTestBroker::new(), |b| {
+/// The app `main` runs.
+pub fn app() -> RustStream {
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(LapinBroker::new("amqp://rabbit:5672"), |b| {
             b.include(accept);
-        });
-    let tb = TestApp::start(app).await.expect("start");
+        })
+}
 
-    tb.broker::<LapinTestBroker>()
-        .publish("payments", &Payment { amount: 100 })
-        .await
-        .expect("publish drives the handler to quiescence");
+pub async fn accepts_a_payment() -> Result<(), Box<dyn std::error::Error>> {
+    let tb = TestApp::start(app()).await?;
 
-    tb.broker::<LapinTestBroker>()
+    // The publish returns once the handler it woke has settled.
+    tb.broker::<LapinBroker>()
+        .message(&Payment { amount: 100 })
+        .publish()
+        .await?;
+
+    tb.broker::<LapinBroker>()
         .subscriber("payments")
         .assert_called_once()
         .with(&Payment { amount: 100 })
         .settled(HandlerOutcome::ack());
 
-    tb.shutdown().await.expect("shutdown");
+    tb.shutdown().await?;
+    Ok(())
 }
 # }
 # fn main() {}
 ```
 
-Every publish policy of this crate pairs against the test broker too, producing the stand-in for
-the publisher it produces on a server with exactly the same capabilities. So the routes file does
-not change, and the parity cuts both ways: a handler bounded `Out<impl TransactionalPublisher>`
-mounted on `Publish` fails to compile against the test broker exactly as it fails against a server.
+In process, the broker's connected form carries an in-process transport in place of the
+connection, and so do its subscribers, its publishers and its deliveries: the descriptors and
+publish policies of the routes file are the production ones, and a mount that does not compile
+against the server does not compile in process either. The transport has no settings of its own.
+It reads the broker's: [`declare_topology`](LapinBroker::declare_topology) decides whether a
+subscription declares its queue and whether a quorum queue can take a mount site's retry
+declaration, exactly as on the server.
 
-The transport models routing and consumers, not storage, and the [`testing`] module states what
-follows from that on each type. A message published to a queue nobody consumes is dropped;
-prefetch withholds nothing; dead-lettering, exchanges and bindings need the server's routing table;
-confirms and channel transactions reproduce the client-side halves only; direct reply-to cannot
-lose a reply with a connection; and a quorum queue's delivery count stays absent, because no
-handler under the harness abandons a delivery. Exercise those against a real server: the crate's
-integration tests do, gated on `AMQP_TEST_URL`.
+It never succeeds where the server fails. A publish is framed by the same conversion a live one
+goes through, so a name or a header the protocol cannot carry is refused; a declaration the server
+refuses (a transient queue that is not exclusive, a binding on the default exchange, a queue
+declared again with other settings, a quorum queue with a priority) is refused; and a delivery
+settled after its connection closed reports the closed channel. The default exchange and the
+direct, topic, fanout and headers exchanges route through the bindings the descriptors describe;
+competing consumers share a queue; a requeue goes back through the queue; a quorum queue counts
+deliveries and dead-letters a spent one through its route; a waiting queue releases a delayed
+copy; and direct reply-to gives every request an address of its own.
+
+What only a server has belongs to the live mode, over the same test body: a queue's storage while
+nobody consumes it (in process a message no consumer takes is dropped), the prefetch window,
+publisher confirms, the atomicity of a server transaction, a plugin exchange's routing, and the
+topology a service expects to find without declaring it (in process every queue a subscription
+names is there). The crate's live suites run against the stand in `docker-compose.test.yml`
+(`just test-brokers`).
 
 # Operations
 

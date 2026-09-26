@@ -15,10 +15,10 @@ serde = { version = "1", features = ["derive"] }
 `ConnectedLapinBroker`，只有它带着订阅和发布的表面。
 
 处理器主体点名能力：`Out<impl Publisher>`、`Out<impl TransactionalPublisher>`、
-`Out<impl RequestReply>`。它只导入框架的 prelude，正因如此，同一个处理器既挂得上真实 Broker，也
-挂得上进程内测试 Broker。有一种主体也导入本 crate 的 prelude：为单条消息调整某项
+`Out<impl RequestReply>`。它只导入框架的 prelude，正因如此，路由文件给它配哪种发布策略，同一个
+处理器都挂得上。有一种主体也导入本 crate 的 prelude：为单条消息调整某项
 [AMQP 属性][properties]的那种。它点名的是设置类型而不是发布者类型
-（`Out<impl Publisher<Options = LapinPublishOptions>>`），所以处理器照样两边都挂得上。
+（`Out<impl Publisher<Options = LapinPublishOptions>>`），所以处理器照样不点名发布者。
 
 路由文件点名值，导入 `ruststream_lapin::prelude::*`，框架的 prelude 随之一起进来。它再加上整个
 家族统一的挂载点名字：`Publish`、`TransactionalPublish` 和 `Request`，分别是 `LapinPublish`、
@@ -78,7 +78,7 @@ crate 在 docs.rs 上给自己写文档，那份概览就是指南：
 - [发布][publishing] - 路由模型、策略、单条消息的 AMQP 属性、回复和事务。
 - [请求与回复][request-reply] - 基于 direct reply-to 的 RPC。
 - [AsyncAPI 文档][documenting] - 服务对自己报告的 AMQP 绑定。
-- [测试][testing] - `TestApp` 测试套件下的进程内测试 Broker。
+- [测试][testing] - `TestApp` 测试套件下的生产应用，在进程内运行，或对着运行中的 Broker。
 - [运维][operations] - TLS、连接设置、按需声明和已知缺口。
 
 安装、教程和其他 Broker 在 RustStream 站点上：
