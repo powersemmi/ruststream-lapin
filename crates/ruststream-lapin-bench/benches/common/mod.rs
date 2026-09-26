@@ -72,8 +72,9 @@ compile_error!(
 );
 
 /// The queue every scenario delivers on: a routing key on the default exchange names it. A handler
-/// names it in its own `#[subscriber(..)]` attribute, which takes a literal.
-pub const INPUT: &str = "orders";
+/// names it in its own `#[subscriber(..)]` attribute, which takes a literal. A run deletes it
+/// first, so the name is one no service owns.
+pub const INPUT: &str = "ruststream-bench.orders";
 
 /// The node the compose stand publishes, unless `AMQP_TEST_URL` names another one.
 const DEFAULT_URL: &str = "amqp://127.0.0.1:5672";
