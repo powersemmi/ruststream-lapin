@@ -19,7 +19,7 @@ use common::{Latch, MESSAGES, Order, Pending};
 use gungraun::{library_benchmark, library_benchmark_group, main};
 use ruststream::prelude::*;
 
-#[subscriber("orders")]
+#[subscriber("ruststream-bench.orders")]
 async fn consume(orders: &[Order], ctx: &mut Context<'_, (), Latch>) -> HandlerOutcome {
     for order in orders {
         black_box((order.id, order.quantity));
