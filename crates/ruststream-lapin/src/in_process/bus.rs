@@ -12,10 +12,11 @@ use ruststream::testing::Coordinator;
 use ruststream::{HeaderMap, RawMessage};
 use tokio::sync::mpsc;
 
+use super::deliveries::QueueBehaviour;
 use super::matching::{headers_match, topic_matches};
 use crate::convert;
 use crate::error::AmqpError;
-use crate::publish_step::LapinPublishOptions;
+use crate::publish_step::{EXPIRATION_HEADER, LapinPublishOptions, PRIORITY_HEADER};
 use crate::queue::{QueueKind, QueueSpec};
 
 /// The one queue argument a quorum queue refuses outright, which a server answers with
@@ -330,10 +331,14 @@ impl Bus {
     /// Routes `delivery` through `exchange` under `routing_key` without logging it: how a queue
     /// dead-letters a message, which is the server's move and not a publish of the service.
     pub(crate) fn reroute(&self, exchange: &str, routing_key: &str, delivery: &BusDelivery) {
-        // A headers exchange matches the dead-lettered message's own header table.
+        // A headers exchange matches the dead-lettered message's own header table. The priority
+        // and the expiration a delivery reports as headers are native properties on the server,
+        // not entries of that table, so they match no binding.
+        let mut own = delivery.headers.clone();
+        own.remove(PRIORITY_HEADER);
+        own.remove(EXPIRATION_HEADER);
         let properties =
-            convert::properties_for_publish(&delivery.headers, &LapinPublishOptions::default())
-                .ok();
+            convert::properties_for_publish(&own, &LapinPublishOptions::default()).ok();
         let table = properties
             .as_ref()
             .and_then(|properties| properties.headers().as_ref());
@@ -375,16 +380,27 @@ impl Bus {
     }
 
     /// Puts back what a cancelled consumer had been handed and never read, as the server
-    /// requeues a closing consumer's deliveries: the next consumer of the queue receives it,
-    /// marked redelivered. Its count moves with it.
-    pub(crate) fn requeue_unread(&self, queue: &str, delivery: BusDelivery) {
-        self.deliver(
-            queue,
-            BusDelivery {
-                redelivered: true,
-                ..delivery
-            },
-        );
+    /// returns a closing consumer's deliveries: the next consumer of the queue receives it,
+    /// marked redelivered. A queue that counts deliveries counts this return as one, and a
+    /// message past the delivery limit takes the dead-letter route instead. Its count moves
+    /// with it.
+    pub(crate) fn requeue_unread(
+        &self,
+        queue: &str,
+        mut delivery: BusDelivery,
+        behaviour: &QueueBehaviour,
+    ) {
+        if behaviour.spend(&mut delivery) {
+            behaviour.dead_letter(self, &delivery);
+        } else {
+            self.deliver(
+                queue,
+                BusDelivery {
+                    redelivered: true,
+                    ..delivery
+                },
+            );
+        }
         if let Some(coordinator) = self.coordinator.get() {
             coordinator.consumed();
         }

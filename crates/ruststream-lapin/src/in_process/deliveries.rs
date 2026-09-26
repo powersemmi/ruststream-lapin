@@ -55,6 +55,32 @@ impl QueueBehaviour {
     }
 }
 
+impl QueueBehaviour {
+    /// Spends one of `delivery`'s deliveries as it returns to the queue, on a queue that counts
+    /// them: whether it has now spent more than the delivery limit, and so takes the dead-letter
+    /// route instead of coming back.
+    pub(crate) fn spend(&self, delivery: &mut BusDelivery) -> bool {
+        if !self.counts {
+            return false;
+        }
+        let spent = delivery.returns.unwrap_or(0).saturating_add(1);
+        if self.delivery_limit.is_some_and(|limit| spent > limit) {
+            return true;
+        }
+        delivery.returns = Some(spent);
+        false
+    }
+
+    /// Routes `delivery` the way the queue dead-letters, when it names a route.
+    pub(crate) fn dead_letter(&self, bus: &Bus, delivery: &BusDelivery) {
+        let Some((exchange, routing_key)) = &self.dead_letter else {
+            return;
+        };
+        let routing_key = routing_key.as_deref().unwrap_or(&delivery.routing_key);
+        bus.reroute(exchange, routing_key, delivery);
+    }
+}
+
 /// One text argument of a declaration.
 fn argument(arguments: &FieldTable, name: &str) -> Option<String> {
     match arguments.inner().get(&ShortString::from(name))? {
@@ -98,7 +124,8 @@ impl Drop for BusDeliveries {
         // what a closing consumer had not acknowledged.
         self.receiver.close();
         while let Ok(delivery) = self.receiver.try_recv() {
-            self.bus.requeue_unread(&self.queue, delivery);
+            self.bus
+                .requeue_unread(&self.queue, delivery, &self.behaviour);
         }
     }
 }
@@ -209,17 +236,9 @@ impl Settlement {
             self.dead_letter(&delivery);
             return Ok(());
         }
-        if self.behaviour.counts {
-            let spent = delivery.returns.unwrap_or(0).saturating_add(1);
-            if self
-                .behaviour
-                .delivery_limit
-                .is_some_and(|limit| spent > limit)
-            {
-                self.dead_letter(&delivery);
-                return Ok(());
-            }
-            delivery.returns = Some(spent);
+        if self.behaviour.spend(&mut delivery) {
+            self.dead_letter(&delivery);
+            return Ok(());
         }
         delivery.redelivered = true;
         self.bus.deliver(&self.queue, delivery);
@@ -277,11 +296,7 @@ impl Settlement {
     /// Sends a rejected or spent delivery where the queue's dead-letter route sends it, or lets it
     /// go when the queue names none, as a server does.
     fn dead_letter(&self, delivery: &BusDelivery) {
-        let Some((exchange, routing_key)) = &self.behaviour.dead_letter else {
-            return;
-        };
-        let routing_key = routing_key.as_deref().unwrap_or(&delivery.routing_key);
-        self.bus.reroute(exchange, routing_key, delivery);
+        self.behaviour.dead_letter(&self.bus, delivery);
     }
 }
 

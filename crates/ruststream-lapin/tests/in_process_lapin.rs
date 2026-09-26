@@ -200,6 +200,91 @@ async fn a_closing_consumer_hands_its_unread_deliveries_back() {
     assert_eq!(next_payload(&mut stream).await, b"m2");
 }
 
+// A quorum queue counts the return of a closing consumer's unread delivery as a delivery spent,
+// as the server does: the next consumer reads the count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closing_consumer_spends_a_quorum_delivery() {
+    let broker = declaring().await;
+    let queue = || RabbitQuorumQueue::new("spent.counted").delivery_limit(5);
+    let leaving = broker.subscribe(queue()).await.expect("subscribe leaving");
+    let mut staying = broker.subscribe(queue()).await.expect("subscribe staying");
+    broker
+        .publisher(LapinPublish::default())
+        .publish(OutgoingMessage::new("spent.counted", b"m1"), None)
+        .await
+        .expect("publish");
+    drop(leaving);
+
+    let returned = tokio::time::timeout(WAIT, Box::pin(staying.stream()).next())
+        .await
+        .expect("a delivery within the wait")
+        .expect("the stream has one")
+        .expect("delivery ok");
+    assert_eq!(returned.redelivery_count(), Some(2));
+}
+
+// A message whose return takes it past the quorum queue's delivery limit is dead-lettered
+// instead of coming back, whether a reject or a closing consumer returned it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closing_consumer_dead_letters_a_spent_quorum_delivery() {
+    let broker = declaring().await;
+    let mut parked = broker
+        .subscribe(RabbitQueue::new("spent.parked").bind(RabbitExchange::fanout("spent.dead"), ""))
+        .await
+        .expect("subscribe parked");
+    let queue = || {
+        RabbitQuorumQueue::new("spent.limited")
+            .delivery_limit(0)
+            .dead_letter_exchange("spent.dead")
+    };
+    let leaving = broker.subscribe(queue()).await.expect("subscribe leaving");
+    let mut staying = broker.subscribe(queue()).await.expect("subscribe staying");
+    broker
+        .publisher(LapinPublish::default())
+        .publish(OutgoingMessage::new("spent.limited", b"m1"), None)
+        .await
+        .expect("publish");
+    drop(leaving);
+
+    assert_eq!(delivered(&mut parked).await.as_deref(), Some(&b"m1"[..]));
+    assert_eq!(delivered(&mut staying).await, None);
+}
+
+// A dead-lettered message's native priority is a property on the server, not an entry of its
+// header table, so a headers binding on the header a delivery reports it under does not match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_letter_does_not_route_on_its_native_priority() {
+    let broker = connected().await;
+    let mut arguments = FieldTable::default();
+    arguments.insert("x-match".into(), AMQPValue::LongString("all".into()));
+    arguments.insert("amqp-priority".into(), AMQPValue::LongString("7".into()));
+    let mut parked = broker
+        .subscribe(RabbitQueue::new("parked.priority").bind_with(
+            RabbitExchange::headers("dead-by-priority"),
+            "",
+            arguments,
+        ))
+        .await
+        .expect("subscribe parked");
+    let mut work = broker
+        .subscribe(RabbitQueue::new("prioritised").dead_letter_exchange("dead-by-priority"))
+        .await
+        .expect("subscribe work");
+    broker
+        .publisher(LapinPublish::default().priority(7))
+        .publish(OutgoingMessage::new("prioritised", b"rejected"), None)
+        .await
+        .expect("publish");
+
+    let rejected = tokio::time::timeout(WAIT, Box::pin(work.stream()).next())
+        .await
+        .expect("a delivery within the wait")
+        .expect("the stream has one")
+        .expect("delivery ok");
+    rejected.nack(false).await.expect("reject");
+    assert_eq!(delivered(&mut parked).await, None);
+}
+
 // A queue that dead-letters to a headers exchange is matched on the rejected message's own
 // header table, as the server matches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
