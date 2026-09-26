@@ -212,9 +212,12 @@ impl LapinRequester {
                     .map_err(AmqpError::request)?;
 
                 // The task exits when the channel closes (consumer stream ends) or when every
-                // requester clone is gone (Weak upgrade fails on the next reply).
+                // requester clone is gone (Weak upgrade fails on the next reply). It runs on the
+                // runtime the broker connected on: the request that starts it may come from a
+                // handler on a dedicated thread, whose runtime may stop while later requests
+                // still wait on this dispatcher.
                 let pending = Arc::downgrade(&self.pending);
-                tokio::spawn(dispatch_replies(consumer, pending));
+                conn.runtime().spawn(dispatch_replies(consumer, pending));
 
                 Ok(ReqState { channel })
             })
