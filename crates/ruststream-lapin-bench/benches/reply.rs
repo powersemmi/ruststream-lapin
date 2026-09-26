@@ -27,7 +27,7 @@ struct Confirmation {
     id: u64,
 }
 
-#[subscriber("orders", publish)]
+#[subscriber("ruststream-bench.orders", publish)]
 async fn confirm(order: &Order, ctx: &mut Context<'_, (), Latch>) -> Confirmation {
     ctx.state().arrived();
     Confirmation {
