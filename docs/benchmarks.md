@@ -14,9 +14,9 @@ this page publishes what it produced here.
 
 ## The numbers
 
-The best of three interleaved rounds, with the slowest round in parentheses. Higher is better.
+The best of three interleaved rounds, with the median round in parentheses. Higher is better.
 
-<div id="benchmark-results" data-benchmark-labels='{"loading": "Loading the published results...", "scenario": "Scenario", "raw": "Raw client", "adapter": "This crate", "framework": "Full service", "adapterOverhead": "This crate over raw", "overhead": "Full service over raw", "indistinguishable": "indistinguishable", "brokerBound": "broker-bound", "machine": "Machine", "os": "OS", "broker": "Broker", "roundTrip": "Round trip", "build": "Build", "versions": "Versions", "measured": "Measured", "unavailable": "No results could be read. They are published at {url}.", "unknownSchema": "The published results declare schema {schema}, which this page does not render."}'></div>
+<div id="benchmark-results" data-benchmark-labels='{"loading": "Loading the published results...", "scenario": "Scenario", "raw": "Raw client", "adapter": "This crate", "framework": "Full service", "adapterOverhead": "This crate over raw", "overhead": "Full service over raw", "indistinguishable": "indistinguishable", "brokerBound": "broker-bound", "machine": "Machine", "os": "OS", "broker": "Broker", "roundTrip": "Round trip", "build": "Build", "versions": "Versions", "measured": "Measured", "codeMeasured": "Code costs measured", "codeUnpublished": "This results document carries no code costs.", "instructions": "Instructions per message", "allocations": "Allocations per message", "cold": "Cold start (instructions / allocations)", "unavailable": "No results could be read. They are published at {url}.", "unknownSchema": "The published results declare schema {schema}, which this page does not render."}'></div>
 
 The table is read in your browser from the document the last run wrote, so nothing on this page is
 a copy that could have gone stale.
@@ -52,6 +52,36 @@ returns, and the prefetch window spreads that wait over every message in it.
 The machine-readable form of the same run, which the framework's site reads to build its
 cross-broker table, is at
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-lapin/latest/benchmarks/results.json).
+
+## The crate's own code
+
+<div id="benchmark-code"></div>
+
+The second table is a message's cost in code, counted rather than timed: instructions under
+callgrind and allocations under DHAT. Each scenario is the service a user writes on `LapinBroker`,
+connected to the node of the compose stand. The service declares a classic queue at start,
+consumes it with the prefetch window of the comparison above, and runs on a single-threaded tokio
+runtime. The queue is filled from another thread before the service handles anything, and the
+fill waits until the node has confirmed every message.
+
+What is counted is everything on the service's thread: the framework's dispatch, the codec, this
+crate's code, and the work the `lapin` client does on that thread. `lapin` reads and writes the
+socket on a thread of its own, and that thread is not counted. Most of a row's allocations are the
+client's: every acknowledgement and every publish creates promises and an internal task on the
+service's thread.
+
+Instructions and allocations are per message in the steady state: the slope between a run of 1000
+deliveries and a run of 2000. The last column is what starting the service and taking the first
+delivery cost once: connecting, opening the channels, declaring the queue and registering the
+consumer. The numbers are absolute, the framework's own cost included; the core publishes that
+cost alone on its [benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/).
+
+A real node answers in its own time, so how often the service's thread waits for the socket changes
+from run to run. Across four runs the instructions per message moved by up to five percent and the
+allocations by at most thirteen blocks a run, so a scenario's allocation floor sits a tenth of a
+percent above the highest count it produced. `just bench-code` fails on an allocation above that
+floor, and with `--baseline=main` on more than five percent more instructions, and a pull request
+that changes the cost cites its numbers.
 
 ## The machine
 
@@ -91,6 +121,15 @@ just bench
 ```
 
 The recipe starts the node from `docker-compose.test.yml`, runs both scenarios, stops it again and
-rewrites `docs/benchmarks/results.json` with what it measured. It takes a quarter of an hour and
-wants the machine to itself. The message count is not fixed: a probe run sets it so that every measured
-run lasts at least five seconds on whatever machine it is taken on.
+rewrites `docs/benchmarks/results.json` with what it measured. It takes a few minutes and wants the
+machine to itself. The message count is not fixed: a probe run sets it so that every measured run
+lasts at least five seconds on whatever machine it is taken on.
+
+```bash
+just bench-code
+```
+
+The recipe starts the node from `docker-compose.test.yml`, counts the code table under valgrind,
+stops the node again and rewrites the `code` section of the same document. It takes under a minute
+and needs valgrind and the benchmark runner:
+`cargo install --locked gungraun-runner --version =0.19.4`.
