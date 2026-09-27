@@ -63,6 +63,11 @@ fn conformance_queue(name: &str) -> RabbitQueue {
     RabbitQueue::new(name).auto_delete(true)
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_in_process_mode_passes_conformance_suite() {
+    harness::run_suite(|| LapinBroker::new(URI)).await;
+}
+
 // The ladder in process, the redelivery address included: the in-process mode answers with the
 // queue name exactly as the live one does, so a suite run without a server already catches an
 // answer that reaches nothing.

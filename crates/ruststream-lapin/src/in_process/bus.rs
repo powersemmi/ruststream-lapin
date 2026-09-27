@@ -113,6 +113,20 @@ impl Routes {
         Some(consumers[index].sender.clone())
     }
 
+    /// Which of `queue`'s consumers the next delivery goes to, as an index into them in the order
+    /// they opened, without advancing the rotation; `None` when the queue has no consumer.
+    fn next_turn(&self, queue: &str) -> Option<usize> {
+        let consumers = self
+            .consumers
+            .values()
+            .filter(|consumer| consumer.queue == queue)
+            .count();
+        if consumers == 0 {
+            return None;
+        }
+        Some(self.dispatched.get(queue).copied().unwrap_or_default() % consumers)
+    }
+
     /// The queues a message published to `exchange` under `routing_key` reaches, each once.
     ///
     /// The default exchange routes to the queue of the routing key's name. Every other exchange
@@ -419,6 +433,13 @@ impl Bus {
         if let Some(coordinator) = self.coordinator.get() {
             coordinator.consumed();
         }
+    }
+
+    /// Which of `queue`'s consumers, counted in the order they opened, the next message
+    /// published to it on the default exchange reaches: the one the rotation serves next, or
+    /// none when the queue has no consumer and the message is dropped.
+    pub(crate) fn next_consumer_of(&self, queue: &str) -> Option<usize> {
+        self.routes().next_turn(queue)
     }
 
     /// Every message published under `routing_key`, in publish order.
