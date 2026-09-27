@@ -652,15 +652,16 @@ refuses (a transient queue that is not exclusive, a binding on the default excha
 declared again with other settings, a quorum queue with a priority) is refused; and a delivery
 settled after its connection closed reports the closed channel. The default exchange and the
 direct, topic, fanout and headers exchanges route through the bindings the descriptors describe;
-competing consumers share a queue; a requeue goes back through the queue; a quorum queue counts
-deliveries and dead-letters a spent one through its route; a waiting queue releases a delayed
-copy; and direct reply-to gives every request an address of its own.
+competing consumers share a queue; a requeue goes back through the queue; a queue keeps what
+reaches it while nobody consumes it, from its first subscription on, and a consumer that closes
+returns what it handed out and nobody settled; a quorum queue counts deliveries and dead-letters a
+spent one through its route; a waiting queue releases a delayed copy; and direct reply-to gives
+every request an address of its own.
 
-What only a server has belongs to the live mode, over the same test body: a queue's storage while
-nobody consumes it (in process a message no consumer takes is dropped), the prefetch window,
-publisher confirms, the atomicity of a server transaction, a plugin exchange's routing, and the
-topology a service expects to find without declaring it (in process every queue a subscription
-names is there). The crate's live suites run against the stand in `docker-compose.test.yml`
+What only a server has belongs to the live mode, over the same test body: the prefetch window,
+publisher confirms, the atomicity of a server transaction, a plugin exchange's routing, a queue
+two connections share, and the topology a service expects to find without declaring it (in
+process every queue a subscription names is there). The crate's live suites run against the stand in `docker-compose.test.yml`
 (`just test-brokers`).
 
 # Operations

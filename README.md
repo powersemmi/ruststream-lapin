@@ -188,9 +188,9 @@ tb.broker::<LapinBroker>()
 ```
 
 The in-process mode reads the broker's own settings and refuses what the server refuses.
-`TestApp::start_live(app())` runs the same test against a running RabbitMQ, which is where a
-queue's storage, prefetch, publisher confirms and server transactions are exercised
-(`just test-brokers`).
+`TestApp::start_live(app())` runs the same test against a running RabbitMQ, which is where
+prefetch, publisher confirms, server transactions and queues shared between connections are
+exercised (`just test-brokers`).
 
 ## Scaffold a service
 

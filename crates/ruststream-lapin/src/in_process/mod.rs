@@ -12,12 +12,14 @@
 //!
 //! What it models: the default exchange and the direct, topic, fanout and headers exchanges
 //! through the bindings the service's descriptors describe; competing consumers; acknowledgement,
-//! rejection and requeue; a quorum queue's delivery count, delivery limit and dead-letter route;
-//! the waiting queue of a native delayed redelivery; and direct reply-to. What belongs to the
-//! server and is left to the live mode: a queue's storage while it has no consumer (a message no
-//! consumer takes is dropped here), the prefetch window, publisher confirms, the atomicity of a
-//! server transaction, a plugin exchange's routing, and a topology the service expects to find
-//! but did not declare (a subscription here finds every queue it names).
+//! rejection and requeue; a queue that keeps what reaches it while it has no consumer, from the
+//! first subscription to it on, until an auto-delete queue loses its last consumer; the return
+//! of what a closing consumer handed out and nobody settled; a quorum queue's delivery count,
+//! delivery limit and dead-letter route; the waiting queue of a native delayed redelivery; and
+//! direct reply-to. What belongs to the server and is left to the live mode: the prefetch window,
+//! publisher confirms, the atomicity of a server transaction, a plugin exchange's routing, a
+//! queue shared between two connections, and a topology the service expects to find but did not
+//! declare (a subscription here finds every queue it names).
 
 mod bus;
 mod deliveries;
@@ -74,7 +76,7 @@ pub(crate) fn subscribe(
     bus.describe(spec, &arguments, declares)?;
     let behaviour = QueueBehaviour::of(spec, &arguments);
     Ok(LapinSubscriber::in_process(
-        BusDeliveries::open(bus, spec.name.clone(), behaviour),
+        BusDeliveries::open(bus, spec.name.clone(), spec.auto_delete, behaviour),
         spec.name.clone(),
         spec.batch_wait,
     ))

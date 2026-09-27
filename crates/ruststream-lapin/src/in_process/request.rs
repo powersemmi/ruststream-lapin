@@ -103,7 +103,7 @@ pub(crate) async fn request(
             return Err(AmqpError::closed(&inbox.address));
         };
         if delivery.headers.correlation_id() == Some(inbox.correlation_id.as_str()) {
-            let settlement = Settlement::no_ack(&inbox.bus, inbox.address.clone());
+            let settlement = Settlement::of_reply(&inbox.bus, inbox.address.clone());
             return Ok(LapinMessage::in_process(delivery, tag, settlement));
         }
         tag += 1;
