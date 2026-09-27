@@ -647,10 +647,11 @@ subscription declares its queue and whether a quorum queue can take a mount site
 declaration, exactly as on the server.
 
 It never succeeds where the server fails. A publish is framed by the same conversion a live one
-goes through, so a name or a header the protocol cannot carry is refused; a declaration the server
-refuses (a transient queue that is not exclusive, a binding on the default exchange, a queue
-declared again with other settings, a quorum queue with a priority) is refused; and a delivery
-settled after its connection closed reports the closed channel. The default exchange and the
+goes through, so a name or a header the protocol cannot carry is refused, and so is a body over
+the server's default `max_message_size` of 16 MiB; a declaration the server refuses (a transient
+queue that is not exclusive, a binding on the default exchange, a queue declared again with other
+settings, a quorum queue with a priority) is refused; and a delivery settled after its connection
+closed reports the closed channel. The default exchange and the
 direct, topic, fanout and headers exchanges route through the bindings the descriptors describe;
 competing consumers share a queue; a requeue goes back through the queue; a queue keeps what
 reaches it while nobody consumes it, from its first subscription on, and a consumer that closes

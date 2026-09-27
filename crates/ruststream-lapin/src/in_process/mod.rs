@@ -7,8 +7,9 @@
 //! run against it unchanged. It has no configuration of its own: it reads the production broker's
 //! settings, and it frames a publish with the same conversion a live publish goes through. It
 //! never succeeds where a server fails. A publish, an acknowledgement or a subscription the server
-//! refuses (a name the protocol cannot carry, a header it cannot frame, a declaration it refuses, a
-//! handle outliving its connection) is refused here with the same error.
+//! refuses (a name the protocol cannot carry, a header it cannot frame, a body over the server's
+//! default `max_message_size` of 16 MiB, a declaration it refuses, a handle outliving its
+//! connection) is refused here with the same error.
 //!
 //! What it models: the default exchange and the direct, topic, fanout and headers exchanges
 //! through the bindings the service's descriptors describe; competing consumers; acknowledgement,
