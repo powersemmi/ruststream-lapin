@@ -389,16 +389,7 @@ impl Bus {
         options: &LapinPublishOptions,
     ) -> Result<(), AmqpError> {
         let properties = self.check(exchange, routing_key, headers, options)?;
-        if payload.len() > MAX_MESSAGE_SIZE {
-            return Err(AmqpError::Publish(
-                format!(
-                    "a message body of {} bytes to {routing_key:?} is over the server's \
-                     max_message_size of {MAX_MESSAGE_SIZE} bytes",
-                    payload.len()
-                )
-                .into(),
-            ));
-        }
+        Self::check_size(routing_key, payload.len())?;
         let payload = Bytes::copy_from_slice(payload);
         let queues =
             {
@@ -418,6 +409,25 @@ impl Bus {
         };
         for queue in queues {
             self.deliver(&queue, delivery.clone());
+        }
+        Ok(())
+    }
+
+    /// Refuses a body over the server's `max_message_size`, as the server refuses it when the
+    /// message reaches it: at the publish, or at the commit of a transaction that staged it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmqpError::Publish`] for a body over the limit.
+    pub(crate) fn check_size(routing_key: &str, len: usize) -> Result<(), AmqpError> {
+        if len > MAX_MESSAGE_SIZE {
+            return Err(AmqpError::Publish(
+                format!(
+                    "a message body of {len} bytes to {routing_key:?} is over the server's \
+                     max_message_size of {MAX_MESSAGE_SIZE} bytes"
+                )
+                .into(),
+            ));
         }
         Ok(())
     }

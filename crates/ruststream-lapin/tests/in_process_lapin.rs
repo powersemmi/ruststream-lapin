@@ -1425,3 +1425,43 @@ async fn a_headers_exchange_routes_on_the_binding_arguments() {
     assert_eq!(delivered(&mut eu).await.as_deref(), Some(&b"eu"[..]));
     assert_eq!(delivered(&mut eu).await, None);
 }
+
+/// One byte over `RabbitMQ`'s default `max_message_size`.
+const OVERSIZED: usize = 16 * 1024 * 1024 + 1;
+
+// The server refuses a body over its `max_message_size`, and the in-process transport refuses the
+// same body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_body_over_the_servers_limit_is_refused() {
+    let broker = connected().await;
+    let publisher = broker.publisher(LapinPublish::default().confirms());
+    let big = vec![0u8; OVERSIZED];
+
+    let refused = publisher
+        .publish(OutgoingMessage::new("oversized", &big), None)
+        .await;
+    assert!(matches!(refused, Err(AmqpError::Publish(_))), "{refused:?}");
+    let observed = expect_published(&broker, "oversized", 1, Duration::from_millis(50)).await;
+    assert!(observed.is_empty(), "a refused body is not published");
+}
+
+// A server transaction takes an oversized body in and refuses the commit, which then publishes
+// none of the transaction: the messages staged beside it are lost with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transaction_with_an_oversized_body_commits_nothing() {
+    let broker = connected().await;
+    let publisher = broker.publisher(LapinPublish::default().server_tx());
+    let big = vec![0u8; OVERSIZED];
+
+    publisher.begin_transaction().await.expect("begin");
+    for payload in [b"small".as_slice(), &big, b"after"] {
+        publisher
+            .publish(OutgoingMessage::new("tx.oversized", payload), None)
+            .await
+            .expect("the server stages the body and refuses it at the commit");
+    }
+    let refused = publisher.commit().await;
+    assert!(matches!(refused, Err(AmqpError::Publish(_))), "{refused:?}");
+    let observed = expect_published(&broker, "tx.oversized", 1, Duration::from_millis(50)).await;
+    assert!(observed.is_empty(), "a refused commit publishes nothing");
+}

@@ -25,6 +25,8 @@ use crate::broker::{AmqpConnection, ConnectedLapinBroker, Link};
 use crate::channel::ChannelCell;
 use crate::convert;
 use crate::error::AmqpError;
+#[cfg(feature = "testing")]
+use crate::in_process::Bus;
 use crate::publish_policy::PublishOptions;
 use crate::publish_step::LapinPublishOptions;
 
@@ -660,6 +662,11 @@ impl TransactionalPublisher for ServerTxPublisher {
                         .expect("staged transaction mutex poisoned"),
                 );
                 self.set_open(false);
+                // The server takes an oversized body into the transaction and refuses the commit,
+                // which then publishes none of it.
+                for entry in &staged {
+                    Bus::check_size(&entry.routing_key, entry.payload.len())?;
+                }
                 // The commit makes the whole transaction visible at once, as `tx.commit` does.
                 return self.options.flush_in_process(bus, &staged);
             }
