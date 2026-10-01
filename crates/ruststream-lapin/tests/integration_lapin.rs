@@ -1530,3 +1530,41 @@ async fn publish_steps_reach_the_native_amqp_properties() {
         .await
         .expect("inspect close");
 }
+
+// A server transaction takes an oversized body in and refuses the commit, which then publishes
+// none of the transaction. The in-process transport holds to the same answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transaction_with_an_oversized_body_commits_nothing() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("tx.oversized");
+    let broker = LapinBroker::new(url)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+    let mut subscriber = broker
+        .subscribe(transient_queue(&queue))
+        .await
+        .expect("subscribe");
+    let publisher = broker.publisher(LapinPublish::default().server_tx());
+    let big = vec![0u8; 16 * 1024 * 1024 + 1];
+
+    publisher.begin_transaction().await.expect("begin");
+    for payload in [b"small".as_slice(), &big, b"after"] {
+        publisher
+            .publish(OutgoingMessage::new(&queue, payload), None)
+            .await
+            .expect("the server stages the body and refuses it at the commit");
+    }
+    let refused = publisher.commit().await;
+    assert!(matches!(refused, Err(AmqpError::Publish(_))), "{refused:?}");
+    let mut stream = Box::pin(subscriber.stream());
+    assert!(
+        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        "a refused commit publishes nothing",
+    );
+
+    drop(stream);
+    drop(subscriber);
+    broker.shutdown().await.expect("shutdown");
+}

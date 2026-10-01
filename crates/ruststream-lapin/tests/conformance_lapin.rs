@@ -413,8 +413,15 @@ async fn in_process_refuses_like_the_server() {
     let conflict = unique_subject("conformance.conflict");
     in_process::refuses_like_the_server(
         || live_broker(&url),
-        |connected| connected.publisher(LapinPublish::default()),
+        // The confirming publisher, because the server's refusal of a body over its limit is an
+        // answer to the publish only a confirm carries.
+        |connected| connected.publisher(LapinPublish::default().confirms()),
         [
+            // The server's `max_message_size`, 16 MiB unless the deployment sets another.
+            Refusal::PayloadOver {
+                name: unique_subject("conformance.payload"),
+                limit: 16 * 1024 * 1024,
+            },
             // A routing key is a short string: 255 bytes at most.
             Refusal::Publish {
                 name: over_short.clone(),

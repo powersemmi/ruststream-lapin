@@ -20,6 +20,11 @@ use crate::error::AmqpError;
 use crate::publish_step::{EXPIRATION_HEADER, LapinPublishOptions, PRIORITY_HEADER};
 use crate::queue::{QueueKind, QueueSpec};
 
+/// The largest message body a server accepts: `RabbitMQ`'s `max_message_size`, 16 MiB unless the
+/// operator changed it. A publish over it closes the channel, and a confirming publisher reports
+/// the refusal.
+const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 /// The one queue argument a quorum queue refuses outright, which a server answers with
 /// `PRECONDITION_FAILED` at declaration.
 const MAX_PRIORITY: &str = "x-max-priority";
@@ -372,8 +377,9 @@ impl Bus {
     ///
     /// # Errors
     ///
-    /// Returns [`AmqpError::Closed`] once the connection has shut down, and
-    /// [`AmqpError::InvalidOptions`] for a name or a header the protocol cannot carry.
+    /// Returns [`AmqpError::Closed`] once the connection has shut down,
+    /// [`AmqpError::InvalidOptions`] for a name or a header the protocol cannot carry, and
+    /// [`AmqpError::Publish`] for a body over the server's `max_message_size`.
     pub(crate) fn publish(
         &self,
         exchange: &str,
@@ -383,6 +389,7 @@ impl Bus {
         options: &LapinPublishOptions,
     ) -> Result<(), AmqpError> {
         let properties = self.check(exchange, routing_key, headers, options)?;
+        Self::check_size(routing_key, payload.len())?;
         let payload = Bytes::copy_from_slice(payload);
         let queues =
             {
@@ -402,6 +409,25 @@ impl Bus {
         };
         for queue in queues {
             self.deliver(&queue, delivery.clone());
+        }
+        Ok(())
+    }
+
+    /// Refuses a body over the server's `max_message_size`, as the server refuses it when the
+    /// message reaches it: at the publish, or at the commit of a transaction that staged it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AmqpError::Publish`] for a body over the limit.
+    pub(crate) fn check_size(routing_key: &str, len: usize) -> Result<(), AmqpError> {
+        if len > MAX_MESSAGE_SIZE {
+            return Err(AmqpError::Publish(
+                format!(
+                    "a message body of {len} bytes to {routing_key:?} is over the server's \
+                     max_message_size of {MAX_MESSAGE_SIZE} bytes"
+                )
+                .into(),
+            ));
         }
         Ok(())
     }
