@@ -22,7 +22,8 @@ use ruststream::subscriber;
 use ruststream::testing::{InProcess, TestApp, expect_published};
 use ruststream::{
     AckError, BatchSubscriber, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, Outgoing,
-    OutgoingMessage, Partitioned, Publisher, Subscriber, TransactionalPublisher, nonzero,
+    OutgoingMessage, Partitioned, Publisher, RawMessage, Subscriber, TransactionalPublisher,
+    nonzero,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
@@ -640,7 +641,11 @@ async fn transaction_buffers_until_commit() {
 
     // Nothing is visible before commit.
     let observed = expect_published(&broker, "tx", 1, Duration::from_millis(50)).await;
-    assert!(observed.is_empty(), "buffered messages must not be visible");
+    assert_eq!(
+        observed,
+        Vec::<RawMessage>::new(),
+        "buffered messages must not be visible"
+    );
 
     publisher.commit().await.expect("commit");
 
@@ -662,7 +667,11 @@ async fn transaction_abort_discards_buffer() {
     publisher.abort().await.expect("abort");
 
     let observed = expect_published(&broker, "tx", 1, Duration::from_millis(50)).await;
-    assert!(observed.is_empty(), "aborted messages must be discarded");
+    assert_eq!(
+        observed,
+        Vec::<RawMessage>::new(),
+        "aborted messages must be discarded"
+    );
 }
 
 // The owned kind through the framework's typed sugar: `owned_transaction()` opens one transaction
@@ -1442,7 +1451,11 @@ async fn a_body_over_the_servers_limit_is_refused() {
         .await;
     assert!(matches!(refused, Err(AmqpError::Publish(_))), "{refused:?}");
     let observed = expect_published(&broker, "oversized", 1, Duration::from_millis(50)).await;
-    assert!(observed.is_empty(), "a refused body is not published");
+    assert_eq!(
+        observed,
+        Vec::<RawMessage>::new(),
+        "a refused body is not published"
+    );
 }
 
 // A server transaction takes an oversized body in and refuses the commit, which then publishes
@@ -1463,5 +1476,9 @@ async fn a_transaction_with_an_oversized_body_commits_nothing() {
     let refused = publisher.commit().await;
     assert!(matches!(refused, Err(AmqpError::Publish(_))), "{refused:?}");
     let observed = expect_published(&broker, "tx.oversized", 1, Duration::from_millis(50)).await;
-    assert!(observed.is_empty(), "a refused commit publishes nothing");
+    assert_eq!(
+        observed,
+        Vec::<RawMessage>::new(),
+        "a refused commit publishes nothing"
+    );
 }
