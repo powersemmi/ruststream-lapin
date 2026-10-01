@@ -250,6 +250,46 @@ async fn a_closing_consumer_dead_letters_a_spent_quorum_delivery() {
     assert_eq!(delivered(&mut staying).await, None);
 }
 
+// A quorum queue declared without `x-delivery-limit` takes RabbitMQ 4's default of 20 returns:
+// a message requeued on every delivery is handed out 21 times, then dead-lettered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quorum_queue_without_a_limit_takes_the_servers_default() {
+    let broker = declaring().await;
+    let mut parked = broker
+        .subscribe(
+            RabbitQueue::new("default.parked").bind(RabbitExchange::fanout("default.dead"), ""),
+        )
+        .await
+        .expect("subscribe parked");
+    let mut looping = broker
+        .subscribe(RabbitQuorumQueue::new("default.limited").dead_letter_exchange("default.dead"))
+        .await
+        .expect("subscribe looping");
+    broker
+        .publisher(LapinPublish::default())
+        .publish(OutgoingMessage::new("default.limited", b"m1"), None)
+        .await
+        .expect("publish");
+
+    // Bounded, so a queue that never carries the message away fails the count instead of
+    // looping.
+    let mut deliveries = 0;
+    let mut stream = Box::pin(looping.stream());
+    while deliveries < 30
+        && let Ok(Some(delivery)) =
+            tokio::time::timeout(Duration::from_millis(50), stream.next()).await
+    {
+        deliveries += 1;
+        delivery
+            .expect("delivery ok")
+            .nack(true)
+            .await
+            .expect("requeue");
+    }
+    assert_eq!(deliveries, 21);
+    assert_eq!(delivered(&mut parked).await.as_deref(), Some(&b"m1"[..]));
+}
+
 // A dead-lettered message's native priority is a property on the server, not an entry of its
 // header table, so a headers binding on the header a delivery reports it under does not match.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -373,7 +373,12 @@ impl Bus {
     /// A successful hand-over is reported to the coordinator, so the harness's in-flight count
     /// stays balanced against the delivery's release.
     pub(crate) fn deliver(&self, queue: &str, delivery: BusDelivery) {
-        let Some(sender) = self.routes().next_consumer(queue) else {
+        // The send runs under the routes lock. A closing consumer cancels under it and then
+        // drains its channel back to the queue, so a delivery either reaches a consumer that
+        // will return it or is routed past one that is gone; it is never sent into a closed
+        // channel. An unbounded send never blocks, so holding the lock costs no wait.
+        let mut routes = self.routes();
+        let Some(sender) = routes.next_consumer(queue) else {
             return;
         };
         // Counted before the send: a consumer on another task may settle the delivery, and
@@ -382,9 +387,9 @@ impl Bus {
         if let Some(coordinator) = coordinator {
             coordinator.enqueued();
         }
-        if sender.send(delivery).is_err()
-            && let Some(coordinator) = coordinator
-        {
+        let sent = sender.send(delivery).is_ok();
+        drop(routes);
+        if !sent && let Some(coordinator) = coordinator {
             coordinator.consumed();
         }
     }

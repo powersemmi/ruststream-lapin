@@ -18,6 +18,9 @@ use crate::queue::{
     DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, DELIVERY_LIMIT, QueueKind, QueueSpec,
 };
 
+/// The `x-delivery-limit` `RabbitMQ` 4 gives a quorum queue declared without one.
+const QUORUM_DEFAULT_DELIVERY_LIMIT: u64 = 20;
+
 /// What a queue does with the deliveries it hands out, read off the arguments its declaration
 /// produced the way a server reads them off the queue.
 #[derive(Debug, Clone, Default)]
@@ -43,10 +46,12 @@ impl QueueBehaviour {
             counts,
             delivery_limit: counts
                 .then(|| {
+                    // A quorum queue declared without the argument takes the server's default
+                    // limit; a negative one is RabbitMQ's spelling of "unlimited".
                     arguments
                         .inner()
                         .get(&ShortString::from(DELIVERY_LIMIT))
-                        .and_then(convert::counter)
+                        .map_or(Some(QUORUM_DEFAULT_DELIVERY_LIMIT), convert::counter)
                 })
                 .flatten(),
             dead_letter: argument(arguments, DEAD_LETTER_EXCHANGE)

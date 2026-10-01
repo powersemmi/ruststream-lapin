@@ -236,6 +236,58 @@ async fn the_queues_own_delivery_limit_spends_one_delivery_more_than_it_counts()
     delete_queues(&url, &[&queue, &dead]).await;
 }
 
+// A quorum queue declared without a limit takes the server's default of 20 returns, so a message
+// requeued on every delivery is handed out 21 times and then carried to the dead-letter route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quorum_queue_without_a_limit_takes_the_servers_default() {
+    let Some(url) = amqp_url() else { return };
+    let queue = unique("defaulted");
+    let dead = unique("defaulted.dead");
+    let connected = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+
+    let mut graveyard = connected
+        .subscribe(RabbitQueue::new(&dead))
+        .await
+        .expect("the dead-letter queue has to exist before a message is sent there");
+    let mut subscriber = connected
+        .subscribe(
+            RabbitQuorumQueue::new(&queue)
+                .dead_letter_exchange("")
+                .dead_letter_routing_key(&dead),
+        )
+        .await
+        .expect("subscribe declares the queue");
+
+    publish(&connected, &queue, b"looping").await;
+
+    let mut stream = Box::pin(subscriber.stream());
+    for attempt in 1..=21u64 {
+        let delivery = next(&mut stream).await;
+        assert_eq!(delivery.payload(), b"looping", "attempt {attempt}");
+        delivery.nack(true).await.expect("the handler asks again");
+    }
+    assert!(
+        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        "twenty returns are twenty-one deliveries, so there must be no twenty-second",
+    );
+
+    let mut dead_stream = Box::pin(graveyard.stream());
+    let carried = next(&mut dead_stream).await;
+    assert_eq!(carried.payload(), b"looping");
+    carried.ack().await.expect("ack");
+
+    drop(dead_stream);
+    drop(stream);
+    drop(subscriber);
+    drop(graveyard);
+    connected.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[&queue, &dead]).await;
+}
+
 /// How many messages `queue` holds, as the server counts them.
 async fn ready_messages(url: &str, queue: &str) -> u32 {
     let probe = lapin::Connection::connect(url, lapin::ConnectionProperties::default())
