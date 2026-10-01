@@ -2,7 +2,8 @@
 //! queue-name routing on the production broker connected in process; `lifecycle` proves the ladder
 //! (synchronous construction, consuming `connect`, subscribe through the crate's own descriptor,
 //! publish, ack, consuming `shutdown`, and a pre-shutdown publisher erroring afterwards) through
-//! the real `LapinBroker`; `redelivery_address` holds both subscription forms to the address they
+//! the real `LapinBroker`, and `shutdown_flushes` that a shutdown hands back what the service took
+//! and did not settle; `redelivery_address` holds both subscription forms to the address they
 //! report, since a queue addresses its own redeliveries; `broker_moves` holds a quorum queue to the
 //! delivery limit and dead-letter route it applies itself; the message-shape suites hold a key to
 //! its order, the publish options to the policy they resolve over, and the generated document to
@@ -26,7 +27,8 @@ use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::helpers::unique_subject;
 use ruststream::conformance::in_process::{self, Refusal};
 use ruststream::conformance::message_shape::{self, OptionCases};
-use ruststream::conformance::{capabilities, harness, retry};
+use ruststream::conformance::{capabilities, harness, lifecycle, retry};
+use ruststream::testing::Backlog;
 use ruststream::{Bytes, HeaderMap, IncomingMessage, Name};
 use ruststream_lapin::{
     ConnectedLapinBroker, EXPIRATION_HEADER, LapinBroker, LapinMessage, LapinPublish,
@@ -180,7 +182,7 @@ async fn in_process_passes_batches() {
 async fn reports_a_redelivery_address_that_arrives() {
     let Some(url) = amqp_url() else { return };
     harness::redelivery_address(
-        || LapinBroker::new(url.clone()).declare_topology(true),
+        move || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
         |connected| connected.publisher(LapinPublish::default()),
     )
@@ -192,7 +194,7 @@ async fn reports_a_redelivery_address_that_arrives() {
 async fn reports_a_redelivery_address_that_arrives_by_name() {
     let Some(url) = amqp_url() else { return };
     harness::redelivery_address(
-        || LapinBroker::new(url.clone()).declare_topology(true),
+        move || LapinBroker::new(url.clone()).declare_topology(true),
         |name| Name::new(name.to_owned()),
         |connected| connected.publisher(LapinPublish::default()),
     )
@@ -206,7 +208,7 @@ async fn reports_a_redelivery_address_that_arrives_by_name() {
 async fn passes_batches() {
     let Some(url) = amqp_url() else { return };
     capabilities::batches(
-        || LapinBroker::new(url.clone()).declare_topology(true),
+        move || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
         |connected| connected.publisher(LapinPublish::default()),
     )
@@ -218,7 +220,7 @@ async fn passes_batches() {
 async fn passes_transactions_with_confirms() {
     let Some(url) = amqp_url() else { return };
     capabilities::transactions(
-        || LapinBroker::new(url.clone()).declare_topology(true),
+        move || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
         |connected| connected.publisher(LapinPublish::default().confirms()),
     )
@@ -232,7 +234,7 @@ async fn passes_transactions_with_confirms() {
 async fn passes_owned_transactions_with_confirms() {
     let Some(url) = amqp_url() else { return };
     capabilities::owned_transactions(
-        || LapinBroker::new(url.clone()).declare_topology(true),
+        move || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
         |connected| connected.publisher(LapinPublish::default().confirms()),
     )
@@ -244,7 +246,7 @@ async fn passes_owned_transactions_with_confirms() {
 async fn passes_transactions_with_server_tx() {
     let Some(url) = amqp_url() else { return };
     capabilities::transactions(
-        || LapinBroker::new(url.clone()).declare_topology(true),
+        move || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
         |connected| connected.publisher(LapinPublish::default().server_tx()),
     )
@@ -256,7 +258,7 @@ async fn passes_transactions_with_server_tx() {
 async fn passes_request_reply() {
     let Some(url) = amqp_url() else { return };
     capabilities::request_reply(
-        || LapinBroker::new(url.clone()).declare_topology(true),
+        move || LapinBroker::new(url.clone()).declare_topology(true),
         conformance_queue,
         |connected| connected.requester(LapinRequest::default()),
         |connected| connected.publisher(LapinPublish::default()),
@@ -469,4 +471,47 @@ fn the_server_address_carries_no_credentials() {
         |addrs| LapinBroker::new(addrs[0]),
         "amqp",
     );
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_lifecycle_by_name() {
+    let Some(url) = amqp_url() else { return };
+    harness::lifecycle(
+        move || LapinBroker::new(url.clone()).declare_topology(true),
+        |name| Name::new(name.to_owned()),
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+// `make_source` / `make_publisher` must stay closures: their bounds are higher-ranked
+// (`Fn(&str) -> _` / `Fn(&C) -> _`), so a bare method path - which binds one concrete lifetime -
+// would not type-check.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_lifecycle() {
+    let Some(url) = amqp_url() else { return };
+    harness::lifecycle(
+        move || LapinBroker::new(url.clone()).declare_topology(true),
+        conformance_queue,
+        |connected| connected.publisher(LapinPublish::default()),
+    )
+    .await;
+}
+
+// A shutdown hands back what the service took and did not settle, and keeps what it settled: a
+// second connection finds the one and not the other. The queue outlives the first connection, as
+// a service's own queue does.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passes_shutdown_flushes() {
+    let Some(url) = amqp_url() else { return };
+    lifecycle::shutdown_flushes(
+        move || live_broker(&url),
+        lasting_queue,
+        |connected| connected.publisher(LapinPublish::default().confirms()),
+        Backlog::Delivered,
+    )
+    .await;
 }
