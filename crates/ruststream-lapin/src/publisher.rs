@@ -3,6 +3,13 @@
 //! Each of them exists only from a [`ConnectedLapinBroker`], so it always has a connection; the
 //! declaration half (what to publish and how) lives in [`crate::publish_policy`].
 
+// Without the `testing` feature a connection link has one variant, so a `match` on it has a
+// single arm; the matches stay so that the in-process arm has its place when the feature is on.
+#![cfg_attr(
+    not(feature = "testing"),
+    allow(clippy::infallible_destructuring_match)
+)]
+
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
@@ -14,7 +21,7 @@ use ruststream::{
     HeaderMap, Lend, OutgoingFor, OutgoingMessage, Publisher, Take, TransactionalPublisher,
 };
 
-use crate::broker::{AmqpConnection, ConnectedLapinBroker};
+use crate::broker::{AmqpConnection, ConnectedLapinBroker, Link};
 use crate::channel::ChannelCell;
 use crate::convert;
 use crate::error::AmqpError;
@@ -88,14 +95,14 @@ pub(crate) async fn do_publish(
 /// reports [`AmqpError::Closed`] instead of silently succeeding against a dead connection.
 #[derive(Debug, Clone)]
 pub struct LapinPublisher {
-    conn: Arc<AmqpConnection>,
+    link: Link,
     options: PublishOptions,
 }
 
 impl LapinPublisher {
     pub(crate) fn new(connected: &ConnectedLapinBroker, options: PublishOptions) -> Self {
         Self {
-            conn: Arc::clone(connected.connection()),
+            link: connected.link().clone(),
             options,
         }
     }
@@ -126,7 +133,20 @@ impl Publisher for LapinPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
-        let channel = self.conn.live_publish_channel(msg.name()).await?;
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                return bus.publish(
+                    &self.options.exchange,
+                    msg.name(),
+                    msg.payload(),
+                    msg.headers(),
+                    &self.options.resolve(options),
+                );
+            }
+        };
+        let channel = conn.live_publish_channel(msg.name()).await?;
         let properties =
             convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
         // Without confirm_select on the channel the returned confirm resolves to NotRequested;
@@ -165,7 +185,7 @@ impl Publisher for LapinPublisher {
 /// reports [`AmqpError::Closed`].
 #[derive(Debug, Clone)]
 pub struct ConfirmsPublisher {
-    conn: Arc<AmqpConnection>,
+    link: Link,
     options: PublishOptions,
     channel: Arc<ChannelCell<Channel>>,
     txn: Arc<Mutex<Option<Vec<Buffered>>>>,
@@ -174,7 +194,7 @@ pub struct ConfirmsPublisher {
 impl ConfirmsPublisher {
     pub(crate) fn new(connected: &ConnectedLapinBroker, options: PublishOptions) -> Self {
         Self {
-            conn: Arc::clone(connected.connection()),
+            link: connected.link().clone(),
             options,
             channel: Arc::new(ChannelCell::new()),
             txn: Arc::new(Mutex::new(None)),
@@ -187,11 +207,10 @@ impl ConfirmsPublisher {
     /// [`LapinPublishPolicy`]), and a publisher that never publishes should hold no channel. Why
     /// again: a rejected publish closes the channel, and a publisher that kept the dead one would
     /// never send anything through this handle again.
-    async fn channel(&self, target: &str) -> Result<Channel, AmqpError> {
+    async fn channel(&self, conn: &AmqpConnection, target: &str) -> Result<Channel, AmqpError> {
         self.channel
             .get(|| async {
-                let channel = self
-                    .conn
+                let channel = conn
                     .live_connection(target)?
                     .create_channel()
                     .await
@@ -217,8 +236,13 @@ impl ConfirmsPublisher {
         let Some(first) = buffered.first() else {
             return Ok(());
         };
-        self.conn.ensure_live(&first.routing_key)?;
-        let channel = self.channel(&first.routing_key).await?;
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => return self.options.flush_in_process(bus, buffered),
+        };
+        conn.ensure_live(&first.routing_key)?;
+        let channel = self.channel(conn, &first.routing_key).await?;
 
         let mut confirms = Vec::with_capacity(buffered.len());
         for entry in buffered {
@@ -250,8 +274,21 @@ impl ConfirmsPublisher {
         headers: &HeaderMap,
         options: Option<&LapinPublishOptions>,
     ) -> Result<(), AmqpError> {
-        self.conn.ensure_live(routing_key)?;
-        let channel = self.channel(routing_key).await?;
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                return bus.publish(
+                    &self.options.exchange,
+                    routing_key,
+                    payload,
+                    headers,
+                    &self.options.resolve(options),
+                );
+            }
+        };
+        conn.ensure_live(routing_key)?;
+        let channel = self.channel(conn, routing_key).await?;
         let properties = convert::properties_for_publish(headers, &self.options.resolve(options))?;
         let confirm = do_publish(
             &channel,
@@ -364,9 +401,14 @@ impl TransactionalPublisher for ConfirmsPublisher {
             return Ok(());
         }
 
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => return self.options.flush_in_process(bus, &buffered),
+        };
         let target = buffered[0].routing_key.as_str();
-        self.conn.ensure_live(target)?;
-        let channel = self.channel(target).await?;
+        conn.ensure_live(target)?;
+        let channel = self.channel(conn, target).await?;
         let mut confirms = Vec::with_capacity(buffered.len());
         for entry in &buffered {
             let properties = convert::properties_for_publish(
@@ -431,19 +473,24 @@ impl TransactionalPublisher for ConfirmsPublisher {
 /// reports [`AmqpError::Closed`].
 #[derive(Debug, Clone)]
 pub struct ServerTxPublisher {
-    conn: Arc<AmqpConnection>,
+    link: Link,
     options: PublishOptions,
     channel: Arc<ChannelCell<Channel>>,
     open: Arc<Mutex<bool>>,
+    /// The in-process stand for the messages a server stages inside the channel transaction.
+    #[cfg(feature = "testing")]
+    staged: Arc<Mutex<Vec<Buffered>>>,
 }
 
 impl ServerTxPublisher {
     pub(crate) fn new(connected: &ConnectedLapinBroker, options: PublishOptions) -> Self {
         Self {
-            conn: Arc::clone(connected.connection()),
+            link: connected.link().clone(),
             options,
             channel: Arc::new(ChannelCell::new()),
             open: Arc::new(Mutex::new(false)),
+            #[cfg(feature = "testing")]
+            staged: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -454,7 +501,7 @@ impl ServerTxPublisher {
     /// lives in the channel, so a fresh one would commit nothing and report success for the
     /// publishes it never carried. Outside a transaction there is no such state, and a dead
     /// channel is replaced like any other publisher's.
-    async fn tx_channel(&self, target: &str) -> Result<Channel, AmqpError> {
+    async fn tx_channel(&self, conn: &AmqpConnection, target: &str) -> Result<Channel, AmqpError> {
         if self.is_open() {
             return self.channel.held().ok_or_else(|| {
                 AmqpError::Transaction(
@@ -466,8 +513,7 @@ impl ServerTxPublisher {
         }
         self.channel
             .get(|| async {
-                let channel = self
-                    .conn
+                let channel = conn
                     .live_connection(target)?
                     .create_channel()
                     .await
@@ -512,15 +558,38 @@ impl Publisher for ServerTxPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                let resolved = self.options.resolve(options);
+                if !self.is_open() {
+                    return bus.publish(
+                        &self.options.exchange,
+                        msg.name(),
+                        msg.payload(),
+                        msg.headers(),
+                        &resolved,
+                    );
+                }
+                // The frame is checked as the server checks it when it stages the message.
+                bus.check(&self.options.exchange, msg.name(), msg.headers(), &resolved)?;
+                self.staged
+                    .lock()
+                    .expect("staged transaction mutex poisoned")
+                    .push(Buffered::lent(msg, options));
+                return Ok(());
+            }
+        };
         let properties =
             convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
         // The transaction is channel state, so an open one is published into the channel that
         // holds it; outside one the connection's shared channel carries the message.
         let channel = if self.is_open() {
-            self.conn.ensure_live(msg.name())?;
-            self.tx_channel(msg.name()).await?.clone()
+            conn.ensure_live(msg.name())?;
+            self.tx_channel(conn, msg.name()).await?.clone()
         } else {
-            self.conn.live_publish_channel(msg.name()).await?
+            conn.live_publish_channel(msg.name()).await?
         };
         let _confirm = do_publish(
             &channel,
@@ -554,8 +623,14 @@ impl TransactionalPublisher for ServerTxPublisher {
                     .to_owned(),
             ));
         }
-        self.conn.ensure_live(TX_TARGET)?;
-        self.tx_channel(TX_TARGET).await?;
+        match &self.link {
+            Link::Amqp(conn) => {
+                conn.ensure_live(TX_TARGET)?;
+                self.tx_channel(conn, TX_TARGET).await?;
+            }
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => bus.ensure_live(TX_TARGET)?,
+        }
         self.set_open(true);
         Ok(())
     }
@@ -573,8 +648,24 @@ impl TransactionalPublisher for ServerTxPublisher {
                 "commit with no open transaction on this server-transactional publisher".to_owned(),
             ));
         }
-        self.conn.ensure_live(TX_TARGET)?;
-        let channel = self.tx_channel(TX_TARGET).await?;
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                bus.ensure_live(TX_TARGET)?;
+                let staged = std::mem::take(
+                    &mut *self
+                        .staged
+                        .lock()
+                        .expect("staged transaction mutex poisoned"),
+                );
+                self.set_open(false);
+                // The commit makes the whole transaction visible at once, as `tx.commit` does.
+                return self.options.flush_in_process(bus, &staged);
+            }
+        };
+        conn.ensure_live(TX_TARGET)?;
+        let channel = self.tx_channel(conn, TX_TARGET).await?;
         channel.tx_commit().await.map_err(AmqpError::publish)?;
         self.set_open(false);
         Ok(())
@@ -592,8 +683,21 @@ impl TransactionalPublisher for ServerTxPublisher {
                 "abort with no open transaction on this server-transactional publisher".to_owned(),
             ));
         }
-        self.conn.ensure_live(TX_TARGET)?;
-        let channel = self.tx_channel(TX_TARGET).await?;
+        let conn = match &self.link {
+            Link::Amqp(conn) => conn,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                bus.ensure_live(TX_TARGET)?;
+                self.staged
+                    .lock()
+                    .expect("staged transaction mutex poisoned")
+                    .clear();
+                self.set_open(false);
+                return Ok(());
+            }
+        };
+        conn.ensure_live(TX_TARGET)?;
+        let channel = self.tx_channel(conn, TX_TARGET).await?;
         channel.tx_rollback().await.map_err(AmqpError::publish)?;
         self.set_open(false);
         Ok(())

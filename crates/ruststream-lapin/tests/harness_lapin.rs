@@ -3,11 +3,13 @@
 //!
 //! A step is a position on the publish builder, not a wrapper around the publisher, so
 //! `tb.out::<Marker>()` sees the message either way. What the step asked for is read back with
-//! `with_options`, and what the mount site fixed is read off the delivery, where the transport
-//! reports it under the header a real delivery reports it under.
+//! `with_options`, and what reached the broker is read off the delivery a consumer gets, which
+//! reports the priority under the header a live delivery reports it under.
 
 #![cfg(feature = "testing")]
 
+use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ruststream::runtime::Out;
@@ -15,10 +17,12 @@ use ruststream::testing::TestApp;
 use ruststream::{OutSlot, Outgoing};
 use ruststream_lapin::PRIORITY_HEADER;
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::testing::LapinTestBroker;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URI: &str = "amqp://localhost:5672";
+
+#[derive(Debug, Outgoing, Serialize, Deserialize)]
 struct Order {
     id: u64,
     expedited: bool,
@@ -61,25 +65,55 @@ async fn ship(
     HandlerOutcome::ack()
 }
 
-/// Starts the app, delivers one order, and hands back the running harness.
-async fn deliver(order: &Order) -> TestApp<()> {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinTestBroker::new(), |b| {
+/// The priority each shipment delivery reported, in delivery order.
+#[derive(Clone, Default)]
+struct Priorities(Arc<Mutex<Vec<Option<String>>>>);
+
+impl Priorities {
+    fn seen(&self) -> Vec<Option<String>> {
+        self.0.lock().expect("priorities mutex poisoned").clone()
+    }
+}
+
+/// The consumer of the shipments: it records the priority its delivery reports.
+#[subscriber("shipments")]
+async fn receive(shipment: &Shipment, ctx: &mut Context<'_, (), Priorities>) -> HandlerOutcome {
+    let _ = shipment.order_id;
+    let priority = ctx.headers().get_str(PRIORITY_HEADER).map(str::to_owned);
+    ctx.state()
+        .0
+        .lock()
+        .expect("priorities mutex poisoned")
+        .push(priority);
+    HandlerOutcome::ack()
+}
+
+/// Starts the app, delivers one order, and hands back the running harness with what the
+/// shipments consumer saw.
+async fn deliver(order: &Order) -> (TestApp<Priorities>, Priorities) {
+    let priorities = Priorities::default();
+    let seen = priorities.clone();
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .on_startup(async move |()| Ok::<_, Infallible>(priorities))
+        .with_broker(LapinBroker::new(URI), |b| {
             b.include(ship)
                 .out(Shipments, Publish::default().priority(MOUNTED_PRIORITY))
                 .build();
+            b.include(receive);
         });
     let tb = TestApp::start(app).await.expect("start");
-    tb.broker::<LapinTestBroker>()
-        .publish("orders", order)
+    tb.broker::<LapinBroker>()
+        .message(order)
+        .to("orders")
+        .publish()
         .await
         .expect("publish drives the handler to quiescence");
-    tb
+    (tb, seen)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stepped_slot_publish_stays_attributed_and_carries_what_the_step_asked_for() {
-    let tb = deliver(&Order {
+    let (tb, priorities) = deliver(&Order {
         id: 7,
         expedited: true,
     })
@@ -98,17 +132,14 @@ async fn a_stepped_slot_publish_stays_attributed_and_carries_what_the_step_asked
         .with(&Shipment { order_id: 7 });
 
     // The delivery carries the resolved property, which is where a consumer reads it.
-    tb.broker::<LapinTestBroker>()
-        .published::<Shipment>("shipments")
-        .assert_called_once()
-        .with_header(PRIORITY_HEADER, "9");
+    assert_eq!(priorities.seen(), vec![Some("9".to_owned())]);
 
     tb.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_plain_slot_publish_takes_the_priority_the_mount_site_fixed() {
-    let tb = deliver(&Order {
+    let (tb, priorities) = deliver(&Order {
         id: 1,
         expedited: false,
     })
@@ -120,10 +151,7 @@ async fn a_plain_slot_publish_takes_the_priority_the_mount_site_fixed() {
         .decoded_as::<Shipment>()
         .with(&Shipment { order_id: 1 });
 
-    tb.broker::<LapinTestBroker>()
-        .published::<Shipment>("shipments")
-        .assert_called_once()
-        .with_header(PRIORITY_HEADER, MOUNTED_PRIORITY.to_string());
+    assert_eq!(priorities.seen(), vec![Some(MOUNTED_PRIORITY.to_string())]);
 
     tb.shutdown().await.expect("shutdown");
 }

@@ -11,6 +11,8 @@ use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
 
 use crate::convert;
 use crate::delay::DelayContext;
+#[cfg(feature = "testing")]
+use crate::in_process::{BusDelivery, Settlement};
 
 /// Header carrying a message's partition key, read by [`Partitioned`] for keyed worker lanes.
 ///
@@ -57,6 +59,10 @@ pub struct LapinMessage {
     returns: Option<u64>,
     acker: Option<Acker>,
     delay: Option<DelayContext>,
+    /// How a delivery of the in-process transport settles, in place of the acker a live one
+    /// carries. The field is there only with the `testing` feature.
+    #[cfg(feature = "testing")]
+    in_process: Option<Box<Settlement>>,
 }
 
 impl LapinMessage {
@@ -72,6 +78,38 @@ impl LapinMessage {
             returns: returns_of(&delivery.properties),
             acker: Some(delivery.acker),
             delay,
+            #[cfg(feature = "testing")]
+            in_process: None,
+        }
+    }
+
+    /// A delivery of the in-process transport, reporting what a live one reports.
+    #[cfg(feature = "testing")]
+    pub(crate) fn in_process(delivery: BusDelivery, delivery_tag: u64, settle: Settlement) -> Self {
+        Self {
+            payload: delivery.payload,
+            headers: delivery.headers,
+            exchange: delivery.exchange,
+            routing_key: delivery.routing_key,
+            redelivered: delivery.redelivered,
+            delivery_tag,
+            returns: delivery.returns,
+            acker: None,
+            delay: None,
+            in_process: Some(Box::new(settle)),
+        }
+    }
+
+    /// The delivery as the in-process transport routes it again, for a requeue or a redelivery.
+    #[cfg(feature = "testing")]
+    fn into_bus_delivery(self) -> BusDelivery {
+        BusDelivery {
+            payload: self.payload,
+            headers: self.headers,
+            exchange: self.exchange,
+            routing_key: self.routing_key,
+            redelivered: self.redelivered,
+            returns: self.returns,
         }
     }
 
@@ -147,7 +185,14 @@ impl IncomingMessage for LapinMessage {
     ///
     /// Not cancel safe: dropping the future after the frame was queued may still acknowledge the
     /// message on the broker.
-    async fn ack(self) -> Result<(), AckError> {
+    async fn ack(
+        // The binding is mutated only to take the in-process settlement out.
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut))] mut self,
+    ) -> Result<(), AckError> {
+        #[cfg(feature = "testing")]
+        if let Some(settle) = self.in_process.take() {
+            return settle.ack();
+        }
         self.settle(
             |acker| async move { acker.ack(BasicAckOptions::default()).await },
             "basic.ack",
@@ -173,7 +218,15 @@ impl IncomingMessage for LapinMessage {
     ///
     /// Not cancel safe: dropping the future after the frame was queued may still settle the
     /// message on the broker.
-    async fn nack(self, requeue: bool) -> Result<(), AckError> {
+    async fn nack(
+        // The binding is mutated only to take the in-process settlement out.
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut))] mut self,
+        requeue: bool,
+    ) -> Result<(), AckError> {
+        #[cfg(feature = "testing")]
+        if let Some(settle) = self.in_process.take() {
+            return settle.reject(self.into_bus_delivery(), requeue);
+        }
         self.settle(
             |acker| async move { acker.reject(BasicRejectOptions { requeue }).await },
             "basic.reject",
@@ -210,6 +263,10 @@ impl IncomingMessage for LapinMessage {
     /// `true` only when the subscription set [`RabbitQueue::delay`](crate::RabbitQueue::delay);
     /// otherwise the runtime uses its broker-agnostic deferred re-publish.
     fn supports_nack_after(&self) -> bool {
+        #[cfg(feature = "testing")]
+        if let Some(settle) = &self.in_process {
+            return settle.delays();
+        }
         self.delay.is_some()
     }
 
@@ -233,6 +290,10 @@ impl IncomingMessage for LapinMessage {
     /// Not cancel safe: dropping the future may leave the delayed copy published, the original
     /// acked, or both.
     async fn nack_after(mut self, delay: Duration) -> Result<(), AckError> {
+        #[cfg(feature = "testing")]
+        if let Some(settle) = self.in_process.take() {
+            return settle.nack_after(self.into_bus_delivery(), delay);
+        }
         let Some(context) = self.delay.take() else {
             return Err(AckError::Unsupported);
         };

@@ -4,29 +4,30 @@
 //! What the attribute writes for a service, a broker crate has to make available to a hand-written
 //! definition too: the descriptor is the subscription source, the crate's typed per-delivery
 //! context is the body's `C` axis, and an injected slot publishes through the policy the include
-//! site attaches. The `#[subscriber]` cases live in `tests/testing_core.rs`.
+//! site attaches. The `#[subscriber]` cases live in `tests/in_process_lapin.rs`.
 
 #![cfg(feature = "testing")]
-
-use std::time::Duration;
 
 use ruststream::prelude::*;
 // The payload schemas the generated document reports: the manual path asks its message types for
 // them at the mount, where the attribute path captures them on its own. The derive is the core's
 // own re-export, so this test needs no schemars of its own to keep in step with it.
+use ruststream::Outgoing;
 #[cfg(feature = "asyncapi")]
 use ruststream::schemars::JsonSchema;
-use ruststream::testing::{TestApp, expect_published};
-use ruststream::{Broker, ConnectedBroker, Outgoing};
+use ruststream::testing::TestApp;
 use ruststream_lapin::context::AmqpContext;
 use ruststream_lapin::context::keys::RoutingKey;
-use ruststream_lapin::testing::LapinTestBroker;
-use ruststream_lapin::{LapinPublish, RabbitQueue};
+use ruststream_lapin::{LapinBroker, LapinPublish, RabbitQueue};
+
 use serde::{Deserialize, Serialize};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URI: &str = "amqp://localhost:5672";
 
 #[cfg_attr(feature = "asyncapi", derive(JsonSchema))]
 #[cfg_attr(feature = "asyncapi", schemars(crate = "ruststream::schemars"))]
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Outgoing)]
 struct Order {
     id: u64,
 }
@@ -76,34 +77,32 @@ where
 // per-delivery context resolves against the delivery the descriptor's subscription yields.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_handle_body_mounts_on_the_queue_descriptor() {
-    let broker = LapinTestBroker::new();
-    let probe = broker.clone().connect().await.expect("connect");
-
-    let app = RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(RabbitQueue::new("orders"), Audit).build())
-            .out(DefaultSlot, LapinPublish::default())
-            .build();
-    });
+    let app =
+        RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
+            b.include(subscriber(RabbitQueue::new("orders"), Audit).build())
+                .out(DefaultSlot, LapinPublish::default())
+                .build();
+        });
     let tb = TestApp::start(app).await.expect("start");
 
-    tb.broker::<LapinTestBroker>()
-        .publish("orders", &Order { id: 7 })
+    tb.broker::<LapinBroker>()
+        .message(&Order { id: 7 })
+        .to("orders")
+        .publish()
         .await
         .expect("publish drives the handler to quiescence");
 
-    let audited = expect_published(&probe, "orders.audit", 1, Duration::from_secs(1)).await;
-    assert_eq!(audited.len(), 1, "the slot publish reaches the transport");
-    assert_eq!(
-        audited[0].payload(),
-        br#"{"id":7,"via":"orders"}"#.as_slice(),
-        "the body reads the delivery's routing key off the typed context"
-    );
+    // The body reads the delivery's routing key off the typed context, and the slot publish
+    // reaches the transport.
+    tb.broker::<LapinBroker>()
+        .published::<()>("orders.audit")
+        .assert_called_once()
+        .with_raw(br#"{"id":7,"via":"orders"}"#);
 
-    tb.broker::<LapinTestBroker>()
+    tb.broker::<LapinBroker>()
         .subscriber("orders")
         .assert_called_once()
         .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("shutdown");
-    probe.shutdown().await.expect("probe shutdown");
 }

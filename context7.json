@@ -9,6 +9,6 @@
     "Create nothing on the broker unless the service owns its topology: `LapinBroker::declare_topology(true)` is the opt-in, and a mount-site retry cap reaches a quorum queue's arguments only through it.",
     "Answer an RPC request by mounting `.out_reply(policy).transform(DirectReplyTo)` over a reply type that declares no `#[outgoing(name = \"..\")]`; the `publish(\"..\")` clause is the address a request without a `reply-to` header falls back to.",
     "Pair `.batch(n)` with a prefetch of at least `n` and tune `.batch_wait(..)`: AMQP pushes one delivery at a time, so the batch is assembled on the client.",
-    "Test with `ruststream::testing::TestApp` over `ruststream_lapin::testing::LapinTestBroker` (feature `testing`), which routes by queue name only, so exchanges, bindings, dead-lettering, prefetch, confirms and a quorum delivery count need a real server."
+    "Test the production app: with feature `testing`, hand the builder `main` runs to `ruststream::testing::TestApp::start`, which connects `LapinBroker` in process, and address it as `tb.broker::<LapinBroker>()`; `TestApp::start_live` runs the same test against a real RabbitMQ, which is where a queue's storage, prefetch, publisher confirms and server transactions are exercised."
   ]
 }

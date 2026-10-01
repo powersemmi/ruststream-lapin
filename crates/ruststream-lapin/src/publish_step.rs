@@ -111,9 +111,9 @@ impl LapinPublishOptions {
 /// The AMQP basic properties, as steps on the publish builder.
 ///
 /// A step adjusts one field for one message and hands the builder back, so a publish reads as one
-/// chain. It reaches every publish surface this crate ships - a live publisher, an
-/// [`Out`](ruststream::runtime::Out) slot inside a handler, a transaction scope, the in-process
-/// test publisher - because it is bounded on the options type rather than on a publisher type.
+/// chain. It reaches every publish surface this crate ships - a publisher, an
+/// [`Out`](ruststream::runtime::Out) slot inside a handler, a transaction scope - because it is
+/// bounded on the options type rather than on a publisher type.
 ///
 /// A handler body that takes a step is the one place a body names this crate: bound the slot
 /// `Out<impl Publisher<Options = LapinPublishOptions>, Marker>` and import this crate's prelude.

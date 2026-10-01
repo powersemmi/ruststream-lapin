@@ -15,16 +15,21 @@ use ruststream::asyncapi::Bindings;
 use ruststream::{PairError, PublishPolicy};
 
 use crate::broker::ConnectedLapinBroker;
+#[cfg(feature = "testing")]
+use crate::error::AmqpError;
+#[cfg(feature = "testing")]
+use crate::in_process::Bus;
 use crate::publish_step::LapinPublishOptions;
+#[cfg(feature = "testing")]
+use crate::publisher::Buffered;
 use crate::publisher::{ConfirmsPublisher, LapinPublisher, ServerTxPublisher};
 
 use self::sealed::Sealed;
 
 pub(crate) mod sealed {
-    /// Seals [`LapinPublishPolicy`](super::LapinPublishPolicy) and its in-process counterpart
-    /// `LapinTestPublishPolicy`: pairing an AMQP publisher opens no channel of its own, and the
-    /// synchronous [`publisher`](crate::ConnectedLapinBroker::publisher) accessor depends on
-    /// that.
+    /// Seals [`LapinPublishPolicy`](super::LapinPublishPolicy): pairing an AMQP publisher opens
+    /// no channel of its own, and the synchronous
+    /// [`publisher`](crate::ConnectedLapinBroker::publisher) accessor depends on that.
     pub trait Sealed {}
 
     impl Sealed for super::LapinPublish {}
@@ -45,6 +50,29 @@ impl PublishOptions {
     /// The settings one publish carries: what its call site adjusted, over the policy's defaults.
     pub(crate) fn resolve(&self, call: Option<&LapinPublishOptions>) -> LapinPublishOptions {
         call.map_or(self.defaults, |call| call.over(&self.defaults))
+    }
+}
+
+#[cfg(feature = "testing")]
+impl PublishOptions {
+    /// Publishes `buffered` onto the in-process transport in order, each message's settings
+    /// resolved over these, and stops at the first one the transport refuses: the messages already
+    /// published stay published, as they do when a live flush stops.
+    pub(crate) fn flush_in_process(
+        &self,
+        bus: &Bus,
+        buffered: &[Buffered],
+    ) -> Result<(), AmqpError> {
+        for entry in buffered {
+            bus.publish(
+                &self.exchange,
+                &entry.routing_key,
+                &entry.payload,
+                &entry.headers,
+                &self.resolve(Some(&entry.options)),
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -70,9 +98,9 @@ macro_rules! publish_policy_settings {
         impl $policy {
             /// What this policy hands the publisher it pairs into.
             ///
-            /// The live publishers take the value by move at `bind`; this borrow is for the
-            /// in-process stand-ins, which clone it, and for the document, which reads it.
-            #[cfg(any(feature = "testing", feature = "asyncapi"))]
+            /// The publishers take the value by move at `bind`; this borrow is for the document,
+            /// which reads it.
+            #[cfg(feature = "asyncapi")]
             pub(crate) const fn publish_options(&self) -> &PublishOptions {
                 &self.0
             }
@@ -121,8 +149,8 @@ macro_rules! publish_policy_settings {
 ///
 /// A policy describes the channel it publishes to, the properties its messages carry, and where a
 /// client reads the address of an answer: this crate routes a reply by the `reply-to` header
-/// whichever publisher carries it. The bodies are the same for every policy and for its
-/// in-process stand-in, and the core copies nothing between them, so they are written once here.
+/// whichever publisher carries it. The bodies are the same for every policy, and the core copies
+/// nothing between them, so they are written once here.
 ///
 /// The core names the hooks' parameter `channel`, the `AsyncAPI` word for what a message is
 /// published to. It is the routing key here, and `channel` is an AMQP connection's own word in

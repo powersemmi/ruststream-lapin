@@ -1,7 +1,7 @@
 <h1 align="center">ruststream-lapin</h1>
 
 <p align="center">
-  <i>The RabbitMQ / AMQP 0.9.1 broker for the <a href="https://github.com/powersemmi/ruststream">RustStream</a> messaging framework: native per-message acknowledgement, quorum queues, publisher confirms, direct reply-to, and an in-process test broker.</i>
+  <i>The RabbitMQ / AMQP 0.9.1 broker for the <a href="https://github.com/powersemmi/ruststream">RustStream</a> messaging framework: native per-message acknowledgement, quorum queues, publisher confirms, direct reply-to, and an in-process mode that runs the production app in tests.</i>
 </p>
 
 <p align="center">
@@ -83,9 +83,9 @@
   shutting that down consumes it again, so subscribing before connect or publishing after
   shutdown does not compile. Publishers are policies that hold no connection and pair with the
   connected broker at startup.
-- **In-process test broker.** The `testing` feature ships `LapinTestBroker`, an in-process
-  stand-in for RabbitMQ that plugs into the framework's `TestApp` harness, so handlers are
-  unit-tested with the same wiring they ship with - no server needed.
+- **Tests on the production app.** With the `testing` feature, the framework's `TestApp` runs the
+  app `main` runs with `LapinBroker` connected in process - no server needed - and the same test
+  runs against a real RabbitMQ with `TestApp::start_live`.
 
 ## Install
 
@@ -110,17 +110,17 @@ hash fan-out, and `plugin-dme` adds the delayed-message-exchange backend for `Ra
 ## Write a service
 
 A handler body names capabilities, never a broker type: bounded `Out<impl Publisher>`, the handler
-below mounts unchanged on RabbitMQ and on the in-process test broker. The routes name values, and
-this crate's prelude spells its policies with the family's uniform names - `Publish`,
+below mounts unchanged under whichever publish policy the routes pair it with. The routes name
+values, and this crate's prelude spells its policies with the family's uniform names - `Publish`,
 `TransactionalPublish`, `Request` - so a router reads the same whichever broker it targets.
 
 ```rust
 use ruststream_lapin::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// `PartialEq` and `Serialize` are here for the test below, which publishes an order and
-// asserts on the decoded one.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+// `Outgoing`, `PartialEq` and `Serialize` are here for the test below, which publishes an order
+// and asserts on the decoded one.
+#[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
     id: u64,
 }
@@ -160,38 +160,37 @@ topology. `#[ruststream::app]` generates `main`, so the binary understands `run`
 
 ## Test it
 
-The same handler and the same mount chain, against the in-process broker: no server, and the
-routes file does not change - the crate's own policies pair here too.
+The app `main` runs, handed to the harness unchanged: `TestApp::start` connects `LapinBroker` in
+process, with no server, and the test addresses it by that type.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_lapin::testing::LapinTestBroker;
 
-let service = RustStream::new(AppInfo::new("orders", "0.1.0"))
-    .with_broker(LapinTestBroker::new(), |b| {
-        b.include(settle).out(DefaultSlot, Publish::default()).build();
-    });
-let tb = TestApp::start(service).await?;
+let tb = TestApp::start(app()).await?;
 
 // `publish` returns once the handlers it woke have settled.
-tb.broker::<LapinTestBroker>()
-    .publish("orders", &Order { id: 42 })
+tb.broker::<LapinBroker>()
+    .message(&Order { id: 42 })
+    .to("orders")
+    .publish()
     .await?;
 
-tb.broker::<LapinTestBroker>()
+tb.broker::<LapinBroker>()
     .subscriber("orders")
     .assert_called_once()
     .with(&Order { id: 42 })
     .settled(HandlerOutcome::ack());
 
-tb.broker::<LapinTestBroker>()
+tb.broker::<LapinBroker>()
     .published::<Receipt>("receipts")
     .assert_called_once()
     .with(&Receipt { order_id: 42 });
 ```
 
-Exchange routing, bindings, dead-lettering, prefetch and publisher confirms are server behaviour:
-the env-gated suite exercises those against a real RabbitMQ (`just test-brokers`).
+The in-process mode reads the broker's own settings and refuses what the server refuses.
+`TestApp::start_live(app())` runs the same test against a running RabbitMQ, which is where a
+queue's storage, prefetch, publisher confirms and server transactions are exercised
+(`just test-brokers`).
 
 ## Scaffold a service
 

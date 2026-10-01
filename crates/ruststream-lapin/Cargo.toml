@@ -16,8 +16,9 @@ workspace = true
 
 [features]
 default = []
-# Ships the in-process test broker (`testing` module). The conformance harness stays a
-# dev-dependency: it is broker-author tooling, not part of the user-facing testing surface.
+# The broker's in-process mode: `TestApp::start` connects `LapinBroker` without a server. A
+# service enables it in its dev-dependencies. The conformance harness stays a dev-dependency here:
+# it is broker-author tooling, not part of the user-facing testing surface.
 testing = ["ruststream/testing"]
 # Fills the AMQP protocol bindings of the generated AsyncAPI document. It only forwards the core's
 # own feature: without it the document is generated all the same, with nothing RabbitMQ-specific

@@ -9,6 +9,8 @@ mod convert;
 mod delay;
 mod error;
 mod exchange;
+#[cfg(feature = "testing")]
+mod in_process;
 mod message;
 mod publish_policy;
 mod publish_step;
@@ -22,8 +24,6 @@ mod transaction;
 
 pub mod context;
 pub mod prelude;
-#[cfg(feature = "testing")]
-pub mod testing;
 
 pub use broker::{ClosedLapinBroker, ConnectedLapinBroker, LapinBroker};
 pub use delay::Delay;

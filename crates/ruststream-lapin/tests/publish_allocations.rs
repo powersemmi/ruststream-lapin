@@ -5,19 +5,22 @@
 //! cloned one - `Bytes` keeps the data pointer across a clone - so the proof is the number of
 //! allocations the buffering call makes.
 //!
-//! The in-process transport is the subject because the live publishers need a connection; both
-//! kinds build the same buffer.
+//! The broker is connected in process because a live one needs a server; the buffering is the
+//! publisher's own either way, so the count is the one a service pays.
 #![cfg(feature = "testing")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
+use ruststream::testing::InProcess;
 use ruststream::{
-    Broker, BytesMut, ConnectedBroker, HeaderMap, OutgoingFor, OutgoingMessage, OwnedTransactions,
+    BytesMut, ConnectedBroker, HeaderMap, OutgoingFor, OutgoingMessage, OwnedTransactions,
     Publisher, Take, Transaction, TransactionalPublisher,
 };
-use ruststream_lapin::LapinPublish;
-use ruststream_lapin::testing::LapinTestBroker;
+use ruststream_lapin::{LapinBroker, LapinPublish};
+
+/// The address the service's broker is built with; the in-process mode dials nothing.
+const URI: &str = "amqp://localhost:5672";
 
 /// Counts this thread's allocations, so the cost of one buffering call can be read off directly.
 /// Thread-local rather than global: the other tests of this binary run beside it and their
@@ -70,7 +73,10 @@ fn lent_message() -> OutgoingMessage<'static> {
 
 #[tokio::test]
 async fn buffering_an_owned_transaction_publish_allocates_only_its_routing_key() {
-    let broker = LapinTestBroker::new().connect().await.expect("connect");
+    let broker = LapinBroker::new(URI)
+        .connect_in_process()
+        .await
+        .expect("connect");
     let publisher = broker.publisher(LapinPublish::default().confirms());
     let mut txn = publisher.transaction().await.expect("open the transaction");
 
@@ -95,7 +101,10 @@ async fn buffering_an_owned_transaction_publish_allocates_only_its_routing_key()
 
 #[tokio::test]
 async fn buffering_a_handle_transaction_publish_allocates_only_its_routing_key_and_payload() {
-    let broker = LapinTestBroker::new().connect().await.expect("connect");
+    let broker = LapinBroker::new(URI)
+        .connect_in_process()
+        .await
+        .expect("connect");
     let publisher = broker.publisher(LapinPublish::default().confirms());
     publisher
         .begin_transaction()

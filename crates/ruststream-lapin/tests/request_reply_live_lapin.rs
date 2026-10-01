@@ -10,6 +10,7 @@
 //! Every test is a no-op unless `AMQP_TEST_URL` points at a broker (see `just test-brokers`).
 
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
@@ -21,7 +22,8 @@ use ruststream::{
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{AmqpError, LapinMessage};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::runtime;
+use tokio::sync::{Notify, oneshot};
 
 mod live;
 
@@ -32,6 +34,8 @@ const WAIT: Duration = Duration::from_secs(10);
 /// itself.
 const ASK: &str = "ruststream-rpc.inventory.check";
 const UNROUTED: &str = "ruststream-rpc.inventory.unrouted";
+/// The queue of the responder the foreign-runtime case asks.
+const ASK_FOREIGN: &str = "ruststream-rpc.inventory.check-foreign";
 
 /// The broker address, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing address
 /// fails the suite instead of skipping it.
@@ -52,6 +56,13 @@ struct Stock {
 
 #[subscriber(RabbitQueue::new(ASK), publish(UNROUTED))]
 async fn check(ask: &CheckStock) -> Stock {
+    Stock {
+        available: ask.sku != "unobtainium",
+    }
+}
+
+#[subscriber(RabbitQueue::new(ASK_FOREIGN), publish(UNROUTED))]
+async fn check_foreign(ask: &CheckStock) -> Stock {
     Stock {
         available: ask.sku != "unobtainium",
     }
@@ -176,4 +187,83 @@ async fn a_responder_answers_the_requester_and_falls_back_to_the_mount_site_name
     drop(unrouted);
     client.shutdown().await.expect("shutdown");
     delete_queues(&url, &[ASK, UNROUTED]).await;
+}
+
+/// A handler on a dedicated thread may make a requester's first request from that thread's own
+/// runtime, which may stop afterwards. The reply dispatcher that request started serves every
+/// later request, so it runs on the runtime the broker connected on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_resolves_after_the_first_one_came_from_a_stopped_runtime() {
+    let Some(url) = amqp_url() else { return };
+    delete_queues(&url, &[ASK_FOREIGN]).await;
+    declare_and_leave(&url, ASK_FOREIGN).await;
+
+    let client = LapinBroker::new(url.clone())
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+    let stop = Arc::new(Notify::new());
+    let waiter = Arc::clone(&stop);
+    let app = RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(
+        LapinBroker::new(url.clone()).declare_topology(true),
+        |b| {
+            b.include(check_foreign)
+                .out_reply(Publish::default())
+                .transform(DirectReplyTo);
+        },
+    );
+    let running = tokio::spawn(app.run_until(async move { waiter.notified().await }));
+
+    let requester = client.requester(Request::default());
+    let first = requester.clone();
+    on_foreign_runtime(async move || {
+        first
+            .request(
+                OutgoingMessage::new(ASK_FOREIGN, br#"{"sku":"widget"}"#),
+                Duration::from_secs(15),
+            )
+            .await
+            .expect("the first request resolves on the runtime that made it");
+    })
+    .await;
+
+    let reply = requester
+        .request(
+            OutgoingMessage::new(ASK_FOREIGN, br#"{"sku":"unobtainium"}"#),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("a request must resolve after the first one came from a runtime that stopped");
+    let stock: Stock = serde_json::from_slice(reply.payload()).expect("decode the reply");
+    assert!(!stock.available, "the reply must answer this request");
+
+    stop.notify_one();
+    tokio::time::timeout(WAIT, running)
+        .await
+        .expect("the responder shuts down")
+        .expect("app task did not panic")
+        .expect("run_until succeeded");
+    client.shutdown().await.expect("shutdown");
+    delete_queues(&url, &[ASK_FOREIGN]).await;
+}
+
+/// Runs `work` on a single-threaded runtime of its own thread, stopped as soon as `work` returns,
+/// the way a handler on a dedicated thread makes a request.
+async fn on_foreign_runtime<Output: Send + 'static>(
+    work: impl AsyncFnOnce() -> Output + Send + 'static,
+) -> Output {
+    let (done, finished) = oneshot::channel();
+    thread::spawn(move || {
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread runtime builds");
+        let output = runtime.block_on(work());
+        drop(runtime);
+        let _ = done.send(output);
+    });
+    finished
+        .await
+        .expect("the foreign runtime's work completes")
 }

@@ -227,7 +227,7 @@ impl DelayContext {
 
 /// The delivery's headers with the framework's retry count raised by one; an absent count is zero,
 /// so the first copy leaves with one.
-fn counted_again(headers: &HeaderMap) -> HeaderMap {
+pub(crate) fn counted_again(headers: &HeaderMap) -> HeaderMap {
     let spent = headers
         .get_str(RETRY_COUNT_HEADER)
         .and_then(|count| count.parse::<u64>().ok())

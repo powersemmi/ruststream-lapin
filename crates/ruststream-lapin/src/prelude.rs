@@ -16,7 +16,7 @@
 //! A handler body names CAPABILITIES: it imports the framework's prelude alone and bounds an
 //! injected publisher with the capability trait it needs (`Out<impl Publisher>`,
 //! `Out<impl TransactionalPublisher>`, `Out<impl RequestReply>`), so no broker type reaches the
-//! signature and the same handler mounts on a real broker or on its in-process transport. A
+//! signature and the same handler mounts under any policy the routes file pairs it with. A
 //! routes file names VALUES, and imports this prelude: the framework's own comes with it, and on
 //! top of that every broker in the family spells its mount-site policies the same way -
 //! `Publish`, `TransactionalPublish`, `Request` - so a router reads the same whichever broker it
