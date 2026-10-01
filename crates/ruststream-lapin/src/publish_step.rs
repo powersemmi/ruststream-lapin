@@ -62,16 +62,56 @@ pub const EXPIRATION_HEADER: &str = "amqp-expiration";
 /// # Examples
 ///
 /// ```
-/// use std::time::Duration;
+/// # #[cfg(feature = "testing")]
+/// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+/// use ruststream::OutSlot;
+/// use ruststream::testing::TestApp;
+/// use ruststream_lapin::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// use ruststream_lapin::LapinPublishOptions;
+/// #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
+/// struct Alert {
+///     level: u8,
+/// }
 ///
-/// let urgent = LapinPublishOptions {
-///     priority: Some(9),
-///     expiration: Some(Duration::from_secs(30)),
-///     ..LapinPublishOptions::default()
-/// };
-/// assert_eq!(urgent.priority, Some(9));
+/// #[derive(OutSlot)]
+/// #[publishes(Alert)]
+/// struct Alerts;
+///
+/// #[subscriber("alerts.raw")]
+/// async fn escalate(
+///     alert: &Alert,
+///     Out(alerts): Out<impl Publisher<Options = LapinPublishOptions>, Alerts>,
+/// ) -> HandlerOutcome {
+///     let sent = alerts.message(alert).to("alerts").priority(alert.level).publish().await;
+///     if sent.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// let app = RustStream::new(AppInfo::new("alerts", "0.1.0")).with_broker(
+///     LapinBroker::new("amqp://localhost:5672"),
+///     |b| {
+///         b.include(escalate).out(Alerts, Publish::default()).build();
+///     },
+/// );
+/// let tb = TestApp::start(app).await?;
+///
+/// tb.broker::<LapinBroker>()
+///     .message(&Alert { level: 9 })
+///     .to("alerts.raw")
+///     .publish()
+///     .await?;
+///
+/// tb.out::<Alerts>()
+///     .assert_called_once()
+///     .with_options(&LapinPublishOptions {
+///         priority: Some(9),
+///         ..LapinPublishOptions::default()
+///     });
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LapinPublishOptions {
@@ -120,32 +160,55 @@ impl LapinPublishOptions {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use std::time::Duration;
 ///
-/// use ruststream::runtime::PublishExt;
-/// use ruststream::{Broker, Outgoing};
-/// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishSteps};
-/// use serde::Serialize;
+/// use ruststream_lapin::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// #[derive(Outgoing, Serialize)]
-/// #[outgoing(name = "orders")]
+/// #[derive(Deserialize)]
 /// struct Order {
 ///     id: u64,
+///     expedited: bool,
 /// }
 ///
-/// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-/// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
-/// let publisher = connected.publisher(LapinPublish::default());
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "shipments")]
+/// struct Shipment {
+///     order_id: u64,
+/// }
 ///
-/// publisher
-///     .message(&Order { id: 1 })
-///     .priority(9)
-///     .expiration(Duration::from_secs(30))
-///     .publish()
-///     .await?;
-/// # Ok(())
-/// # }
+/// #[subscriber("orders")]
+/// async fn ship(
+///     order: &Order,
+///     Out(shipments): Out<impl Publisher<Options = LapinPublishOptions>>,
+/// ) -> HandlerOutcome {
+///     let shipment = Shipment { order_id: order.id };
+///     let sent = if order.expedited {
+///         shipments
+///             .message(&shipment)
+///             .priority(9)
+///             .expiration(Duration::from_secs(30))
+///             .publish()
+///             .await
+///     } else {
+///         shipments.message(&shipment).publish().await
+///     };
+///     if sent.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// // Every shipment takes priority 3 from the policy; an expedited one overrides it.
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672");
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(ship)
+///             .out(DefaultSlot, Publish::default().priority(3))
+///             .build();
+///     })
+/// }
 /// ```
 pub trait LapinPublishSteps {
     /// Sends this one message with the AMQP `priority` property set, whatever the policy's
@@ -156,25 +219,35 @@ pub trait LapinPublishSteps {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use ruststream::runtime::PublishExt;
-    /// use ruststream::{Broker, Outgoing};
-    /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishSteps};
-    /// use serde::Serialize;
+    /// ```
+    /// use ruststream_lapin::prelude::*;
+    /// use serde::{Deserialize, Serialize};
     ///
-    /// #[derive(Outgoing, Serialize)]
-    /// #[outgoing(name = "orders")]
-    /// struct Order {
+    /// #[derive(Deserialize)]
+    /// struct Ticket {
     ///     id: u64,
+    ///     vip: bool,
     /// }
     ///
-    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-    /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
-    /// let publisher = connected.publisher(LapinPublish::default());
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "support.queue")]
+    /// struct Escalation {
+    ///     ticket: u64,
+    /// }
     ///
-    /// publisher.message(&Order { id: 1 }).priority(9).publish().await?;
-    /// # Ok(())
-    /// # }
+    /// #[subscriber("tickets")]
+    /// async fn escalate(
+    ///     ticket: &Ticket,
+    ///     Out(support): Out<impl Publisher<Options = LapinPublishOptions>>,
+    /// ) -> HandlerOutcome {
+    ///     let priority = if ticket.vip { 9 } else { 1 };
+    ///     let escalation = Escalation { ticket: ticket.id };
+    ///     let sent = support.message(&escalation).priority(priority).publish().await;
+    ///     if sent.is_err() {
+    ///         return HandlerOutcome::retry();
+    ///     }
+    ///     HandlerOutcome::ack()
+    /// }
     /// ```
     #[must_use]
     fn priority(self, priority: u8) -> Self;
@@ -188,31 +261,44 @@ pub trait LapinPublishSteps {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// use std::time::Duration;
     ///
-    /// use ruststream::runtime::PublishExt;
-    /// use ruststream::{Broker, Outgoing};
-    /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishSteps};
-    /// use serde::Serialize;
+    /// use ruststream_lapin::prelude::*;
+    /// use serde::{Deserialize, Serialize};
     ///
-    /// #[derive(Outgoing, Serialize)]
-    /// #[outgoing(name = "orders")]
-    /// struct Order {
-    ///     id: u64,
+    /// #[derive(Deserialize)]
+    /// struct QuoteRequest {
+    ///     sku: String,
     /// }
     ///
-    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-    /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
-    /// let publisher = connected.publisher(LapinPublish::default());
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "quotes")]
+    /// struct Quote {
+    ///     sku: String,
+    ///     cents: u64,
+    /// }
     ///
-    /// publisher
-    ///     .message(&Order { id: 1 })
-    ///     .expiration(Duration::from_secs(30))
-    ///     .publish()
-    ///     .await?;
-    /// # Ok(())
-    /// # }
+    /// // A price is only good for half a minute; nobody should act on a stale one.
+    /// #[subscriber("quote.requests")]
+    /// async fn price(
+    ///     request: &QuoteRequest,
+    ///     Out(quotes): Out<impl Publisher<Options = LapinPublishOptions>>,
+    /// ) -> HandlerOutcome {
+    ///     let quote = Quote {
+    ///         sku: request.sku.clone(),
+    ///         cents: 1_999,
+    ///     };
+    ///     let sent = quotes
+    ///         .message(&quote)
+    ///         .expiration(Duration::from_secs(30))
+    ///         .publish()
+    ///         .await;
+    ///     if sent.is_err() {
+    ///         return HandlerOutcome::retry();
+    ///     }
+    ///     HandlerOutcome::ack()
+    /// }
     /// ```
     #[must_use]
     fn expiration(self, ttl: Duration) -> Self;
@@ -227,29 +313,34 @@ pub trait LapinPublishSteps {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use ruststream::runtime::PublishExt;
-    /// use ruststream::{Broker, Outgoing};
-    /// use ruststream_lapin::{LapinBroker, LapinPublish, LapinPublishSteps};
-    /// use serde::Serialize;
+    /// ```
+    /// use ruststream_lapin::prelude::*;
+    /// use serde::{Deserialize, Serialize};
     ///
-    /// #[derive(Outgoing, Serialize)]
-    /// #[outgoing(name = "metrics")]
-    /// struct Sample {
-    ///     value: u64,
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
     /// }
     ///
-    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-    /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
-    /// let publisher = connected.publisher(LapinPublish::default());
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "metrics")]
+    /// struct Sample {
+    ///     order_id: u64,
+    /// }
     ///
-    /// publisher
-    ///     .message(&Sample { value: 1 })
-    ///     .persistent(false)
-    ///     .publish()
-    ///     .await?;
-    /// # Ok(())
-    /// # }
+    /// // The order is the record; a lost sample after a broker restart costs nothing.
+    /// #[subscriber("orders")]
+    /// async fn measure(
+    ///     order: &Order,
+    ///     Out(metrics): Out<impl Publisher<Options = LapinPublishOptions>>,
+    /// ) -> HandlerOutcome {
+    ///     let sample = Sample { order_id: order.id };
+    ///     let sent = metrics.message(&sample).persistent(false).publish().await;
+    ///     if sent.is_err() {
+    ///         return HandlerOutcome::retry();
+    ///     }
+    ///     HandlerOutcome::ack()
+    /// }
     /// ```
     #[must_use]
     fn persistent(self, persistent: bool) -> Self;

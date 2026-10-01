@@ -29,22 +29,47 @@ use crate::publisher::{Buffered, ConfirmsPublisher};
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use ruststream::{Broker, OutgoingMessage, OwnedTransactions, Transaction};
-/// use ruststream_lapin::{LapinBroker, LapinPublish};
+/// ```
+/// use std::error::Error;
 ///
-/// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-/// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
-/// let publisher = connected.publisher(LapinPublish::default().confirms());
+/// use ruststream_lapin::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let mut orders = publisher.transaction().await?;
-/// let mut audit = publisher.transaction().await?; // concurrent with `orders`
-/// orders.publish(OutgoingMessage::new("orders", b"{}".as_slice()), None).await?;
-/// audit.publish(OutgoingMessage::new("audit", b"{}".as_slice()), None).await?;
-/// orders.commit().await?;
-/// audit.commit().await?;
-/// # Ok(())
-/// # }
+/// #[derive(Deserialize, Serialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// // Two transactions open side by side, each settled on its own.
+/// async fn record(
+///     publisher: &impl OwnedTransactions,
+///     order: &Order,
+/// ) -> Result<(), Box<dyn Error + Send + Sync>> {
+///     let mut shipment = publisher.owned_transaction().await?;
+///     let mut audit = publisher.owned_transaction().await?;
+///     shipment.publish("shipments", order).await?;
+///     audit.publish("audit", order).await?;
+///     shipment.commit().await?;
+///     audit.commit().await?;
+///     Ok(())
+/// }
+///
+/// #[subscriber("orders")]
+/// async fn ship(order: &Order, Out(publisher): Out<impl OwnedTransactions>) -> HandlerOutcome {
+///     if record(publisher, order).await.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672");
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(ship)
+///             .out(DefaultSlot, TransactionalPublish::default())
+///             .build();
+///     })
+/// }
 /// ```
 #[must_use = "a transaction does nothing until settled with commit() or abort()"]
 pub struct ConfirmsTransaction {

@@ -209,11 +209,37 @@ pub trait LapinPublishPolicy: PublishPolicy<ConnectedLapinBroker> + Sealed {
 /// # Examples
 ///
 /// ```
-/// use ruststream_lapin::LapinPublish;
+/// use ruststream_lapin::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let events = LapinPublish::default().exchange("events").priority(3);
-/// let shipments = LapinPublish::default().confirms();
-/// # let _ = (events, shipments);
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "order.placed")]
+/// struct OrderPlaced {
+///     id: u64,
+/// }
+///
+/// #[subscriber("orders")]
+/// async fn announce(order: &Order, Out(events): Out<impl Publisher>) -> HandlerOutcome {
+///     let placed = OrderPlaced { id: order.id };
+///     if events.message(&placed).publish().await.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// // Every announcement goes to the `events` exchange under routing key `order.placed`.
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672");
+///     let events = LapinPublish::default().exchange("events").priority(3);
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(announce).out(DefaultSlot, events).build();
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
@@ -266,10 +292,37 @@ impl LapinPublishPolicy for LapinPublish {
 /// # Examples
 ///
 /// ```
-/// use ruststream_lapin::LapinPublish;
+/// use ruststream_lapin::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let shipments = LapinPublish::default().exchange("shipments").confirms();
-/// # let _ = shipments;
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "shipment.requested")]
+/// struct Shipment {
+///     order_id: u64,
+/// }
+///
+/// // The order is acknowledged only once the broker confirmed the shipment.
+/// #[subscriber("orders")]
+/// async fn ship(order: &Order, Out(shipments): Out<impl TransactionalPublisher>) -> HandlerOutcome {
+///     let shipment = Shipment { order_id: order.id };
+///     if shipments.message(&shipment).publish().await.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672");
+///     let shipments = LapinPublish::default().exchange("shipments").confirms();
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(ship).out(DefaultSlot, shipments).build();
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
@@ -304,10 +357,67 @@ impl LapinPublishPolicy for ConfirmsPublish {
 /// # Examples
 ///
 /// ```
-/// use ruststream_lapin::LapinPublish;
+/// use std::error::Error;
 ///
-/// let ledger = LapinPublish::default().exchange("ledger").server_tx();
-/// # let _ = ledger;
+/// use ruststream_lapin::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize)]
+/// struct Transfer {
+///     from: u64,
+///     to: u64,
+///     cents: i64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "ledger.entry")]
+/// struct Entry {
+///     account: u64,
+///     cents: i64,
+/// }
+///
+/// // Both legs of a transfer become visible together, or neither does.
+/// async fn post(
+///     ledger: &impl TransactionalPublisher,
+///     transfer: &Transfer,
+/// ) -> Result<(), Box<dyn Error + Send + Sync>> {
+///     let debit = Entry {
+///         account: transfer.from,
+///         cents: -transfer.cents,
+///     };
+///     let credit = Entry {
+///         account: transfer.to,
+///         cents: transfer.cents,
+///     };
+///     let mut scope = ledger.begin().await?;
+///     for entry in [debit, credit] {
+///         if let Err(err) = scope.message(&entry).publish().await {
+///             scope.abort().await?;
+///             return Err(err.into());
+///         }
+///     }
+///     scope.commit().await?;
+///     Ok(())
+/// }
+///
+/// #[subscriber("transfers")]
+/// async fn book(
+///     transfer: &Transfer,
+///     Out(ledger): Out<impl TransactionalPublisher>,
+/// ) -> HandlerOutcome {
+///     if post(ledger, transfer).await.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672");
+///     let ledger = LapinPublish::default().exchange("ledger").server_tx();
+///     RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(broker, |b| {
+///         b.include(book).out(DefaultSlot, ledger).build();
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
