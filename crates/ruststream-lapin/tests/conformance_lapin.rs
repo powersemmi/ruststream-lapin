@@ -27,7 +27,7 @@ use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::helpers::unique_subject;
 use ruststream::conformance::in_process::{self, Refusal};
 use ruststream::conformance::message_shape::{self, OptionCases};
-use ruststream::conformance::{capabilities, harness, lifecycle, retry};
+use ruststream::conformance::{capabilities, harness, lifecycle, retry, settlement};
 use ruststream::testing::Backlog;
 use ruststream::{Bytes, HeaderMap, IncomingMessage, Name};
 use ruststream_lapin::{
@@ -61,6 +61,11 @@ fn in_process() -> InProcessBroker<LapinBroker> {
 /// non-exclusive queues by default.
 fn conformance_queue(name: &str) -> RabbitQueue {
     RabbitQueue::new(name).auto_delete(true)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_in_process_mode_passes_conformance_suite() {
+    harness::run_suite(|| LapinBroker::new(URI)).await;
 }
 
 // The ladder in process, the redelivery address included: the in-process mode answers with the
@@ -282,6 +287,10 @@ fn lasting_queue(name: &str) -> RabbitQueue {
     RabbitQueue::new(name)
 }
 
+/// How long the server takes to hand back a delivery nobody settled: it does so only when the
+/// consumer's channel closes, so there is no timeout to wait out.
+const REDELIVERY_TIMEOUT: Duration = Duration::ZERO;
+
 /// The priority and the TTL a delivery reports, which is how the publish options show on it.
 type Shown = (Option<Vec<u8>>, Option<Vec<u8>>);
 
@@ -330,6 +339,31 @@ fn options_policy() -> LapinPublish {
 fn key_header(key: &[u8], headers: &mut HeaderMap) -> Option<LapinPublishOptions> {
     headers.insert(PARTITION_KEY_HEADER, Bytes::copy_from_slice(key));
     None
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_settlements_keep_their_meaning() {
+    settlement::suite(
+        in_process,
+        lasting_queue,
+        |connected| connected.publisher(LapinPublish::default()),
+        REDELIVERY_TIMEOUT,
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settlements_answer_as_in_process() {
+    let Some(url) = amqp_url() else { return };
+    settlement::matches_in_process(
+        || live_broker(&url),
+        lasting_queue,
+        |connected| connected.publisher(LapinPublish::default()),
+        REDELIVERY_TIMEOUT,
+    )
+    .await;
 }
 
 /// The attempts the quorum queue check declares.

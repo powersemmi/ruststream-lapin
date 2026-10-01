@@ -1,7 +1,7 @@
 //! The in-process transport's state: the queues with their consumers, the exchanges and bindings
 //! the service's descriptors describe, what was declared, and the publish log.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -94,6 +94,16 @@ struct Routes {
     /// How many deliveries each queue has handed out, which is what makes the next consumer
     /// choice a rotation rather than a coin flip.
     dispatched: HashMap<String, usize>,
+    /// The queues a subscription has opened, with what reached each while it had no consumer.
+    stored: HashMap<String, Stored>,
+}
+
+/// A queue that exists on the server, and the messages it keeps while no consumer takes them.
+#[derive(Debug, Default)]
+struct Stored {
+    /// The server deletes the queue, and what it keeps, once its last consumer goes.
+    auto_delete: bool,
+    waiting: VecDeque<BusDelivery>,
 }
 
 impl Routes {
@@ -111,6 +121,22 @@ impl Routes {
         let index = *turn % consumers.len();
         *turn = turn.wrapping_add(1);
         Some(consumers[index].sender.clone())
+    }
+
+    /// The consumer of `queue` that `delivery` goes to, with the delivery; `None` when the queue
+    /// has no consumer, having kept the delivery if the queue exists.
+    fn hand_over(
+        &mut self,
+        queue: &str,
+        delivery: BusDelivery,
+    ) -> Option<(DeliverySender, BusDelivery)> {
+        if let Some(sender) = self.next_consumer(queue) {
+            return Some((sender, delivery));
+        }
+        if let Some(stored) = self.stored.get_mut(queue) {
+            stored.waiting.push_back(delivery);
+        }
+        None
     }
 
     /// Which of `queue`'s consumers the next delivery goes to, as an index into them in the order
@@ -235,18 +261,65 @@ impl Bus {
         self.routes().consumers.clear();
     }
 
+    /// Opens a consumer of the queue a subscription opened: the queue exists from now on, and
+    /// what it kept while it had no consumer is delivered first, in the order it arrived.
+    pub(crate) fn consume_queue(
+        &self,
+        queue: &str,
+        auto_delete: bool,
+    ) -> (ConsumerId, DeliveryReceiver) {
+        // One guard over the registration and the drain: a publish that lands in between would
+        // reach the new consumer ahead of the messages the queue kept for it.
+        let mut routes = self.routes();
+        let opened = self.register(&mut routes, queue.to_owned());
+        let waiting = std::mem::take(
+            &mut routes
+                .stored
+                .entry(queue.to_owned())
+                .or_insert(Stored {
+                    auto_delete,
+                    waiting: VecDeque::new(),
+                })
+                .waiting,
+        );
+        for delivery in waiting {
+            self.hand_over(&mut routes, queue, delivery);
+        }
+        drop(routes);
+        opened
+    }
+
     /// Opens a consumer of `queue`.
     pub(crate) fn consume(&self, queue: String) -> (ConsumerId, DeliveryReceiver) {
+        self.register(&mut self.routes(), queue)
+    }
+
+    fn register(&self, routes: &mut Routes, queue: String) -> (ConsumerId, DeliveryReceiver) {
         let id = ConsumerId(self.next_consumer.fetch_add(1, Ordering::Relaxed));
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.routes()
-            .consumers
-            .insert(id, Consumer { queue, sender });
+        routes.consumers.insert(id, Consumer { queue, sender });
         (id, receiver)
     }
 
+    /// Cancels a consumer. An auto-delete queue goes with its last consumer, and what it kept
+    /// goes with it.
     pub(crate) fn cancel(&self, id: ConsumerId) {
-        self.routes().consumers.remove(&id);
+        let mut routes = self.routes();
+        let Some(consumer) = routes.consumers.remove(&id) else {
+            return;
+        };
+        let last = !routes
+            .consumers
+            .values()
+            .any(|other| other.queue == consumer.queue);
+        if last
+            && routes
+                .stored
+                .get(&consumer.queue)
+                .is_some_and(|stored| stored.auto_delete)
+        {
+            routes.stored.remove(&consumer.queue);
+        }
     }
 
     /// Records what the descriptor of a subscription describes: its bindings always, since
@@ -381,18 +454,24 @@ impl Bus {
         }
     }
 
-    /// Hands `delivery` to the next consumer of `queue`, or lets it go when the queue has none -
-    /// the unroutable message of the default exchange.
+    /// Hands `delivery` to the next consumer of `queue`. A queue with no consumer keeps it for
+    /// the next one; a name no subscription has opened is no queue, and the message goes, as the
+    /// default exchange drops what it cannot route.
     ///
     /// A successful hand-over is reported to the coordinator, so the harness's in-flight count
     /// stays balanced against the delivery's release.
     pub(crate) fn deliver(&self, queue: &str, delivery: BusDelivery) {
-        // The send runs under the routes lock. A closing consumer cancels under it and then
-        // drains its channel back to the queue, so a delivery either reaches a consumer that
-        // will return it or is routed past one that is gone; it is never sent into a closed
-        // channel. An unbounded send never blocks, so holding the lock costs no wait.
-        let mut routes = self.routes();
-        let Some(sender) = routes.next_consumer(queue) else {
+        self.hand_over(&mut self.routes(), queue, delivery);
+    }
+
+    /// [`deliver`](Self::deliver) under a guard the caller holds.
+    ///
+    /// The send runs under the routes lock. A closing consumer cancels under it and then drains
+    /// its channel back to the queue, so a delivery either reaches a consumer that will return it
+    /// or is routed past one that is gone; it is never sent into a closed channel. An unbounded
+    /// send never blocks, so holding the lock costs no wait.
+    fn hand_over(&self, routes: &mut Routes, queue: &str, delivery: BusDelivery) {
+        let Some((sender, delivery)) = routes.hand_over(queue, delivery) else {
             return;
         };
         // Counted before the send: a consumer on another task may settle the delivery, and
@@ -401,9 +480,9 @@ impl Bus {
         if let Some(coordinator) = coordinator {
             coordinator.enqueued();
         }
-        let sent = sender.send(delivery).is_ok();
-        drop(routes);
-        if !sent && let Some(coordinator) = coordinator {
+        if sender.send(delivery).is_err()
+            && let Some(coordinator) = coordinator
+        {
             coordinator.consumed();
         }
     }
@@ -416,9 +495,29 @@ impl Bus {
     pub(crate) fn requeue_unread(
         &self,
         queue: &str,
-        mut delivery: BusDelivery,
+        delivery: BusDelivery,
         behaviour: &QueueBehaviour,
     ) {
+        self.requeue(queue, delivery, behaviour);
+        if let Some(coordinator) = self.coordinator.get() {
+            coordinator.consumed();
+        }
+    }
+
+    /// Puts back a delivery a cancelled consumer had handed out and nobody settled, as the server
+    /// returns what a closing channel left unacknowledged. The delivery's own settlement already
+    /// released it to the harness, so only the redelivery is counted.
+    pub(crate) fn requeue_unsettled(
+        &self,
+        queue: &str,
+        delivery: BusDelivery,
+        behaviour: &QueueBehaviour,
+    ) {
+        self.requeue(queue, delivery, behaviour);
+    }
+
+    /// Returns `delivery` to `queue`, spending one of its deliveries on a queue that counts them.
+    fn requeue(&self, queue: &str, mut delivery: BusDelivery, behaviour: &QueueBehaviour) {
         if behaviour.spend(&mut delivery) {
             behaviour.dead_letter(self, &delivery);
         } else {
@@ -429,9 +528,6 @@ impl Bus {
                     ..delivery
                 },
             );
-        }
-        if let Some(coordinator) = self.coordinator.get() {
-            coordinator.consumed();
         }
     }
 

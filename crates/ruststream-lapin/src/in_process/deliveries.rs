@@ -1,7 +1,8 @@
 //! The consuming half of the in-process transport: the stream of one consumer, and how a delivery
 //! taken from it settles.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use futures::Stream;
@@ -106,11 +107,60 @@ pub(crate) struct BusDeliveries {
     /// handed out under a new tag.
     next_tag: u64,
     behaviour: Arc<QueueBehaviour>,
+    /// What this consumer handed out and nobody settled yet, which the server returns to the
+    /// queue when the consumer's channel closes.
+    unsettled: Arc<Unsettled>,
+}
+
+/// The deliveries one consumer handed out and nobody has settled, by delivery tag.
+///
+/// `None` once the consumer has closed: what it held went back to the queue then, and a
+/// settlement arriving later finds its channel gone.
+#[derive(Debug, Default)]
+pub(crate) struct Unsettled(Mutex<Option<BTreeMap<u64, BusDelivery>>>);
+
+impl Unsettled {
+    fn open() -> Self {
+        Self(Mutex::new(Some(BTreeMap::new())))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Option<BTreeMap<u64, BusDelivery>>> {
+        self.0
+            .lock()
+            .expect("in-process unsettled deliveries mutex poisoned")
+    }
+
+    fn hand_out(&self, tag: u64, delivery: BusDelivery) {
+        if let Some(held) = self.lock().as_mut() {
+            held.insert(tag, delivery);
+        }
+    }
+
+    /// Takes `tag` off the consumer as its settlement: `false` when the consumer has closed and
+    /// the server has already returned the delivery to the queue.
+    fn settle(&self, tag: u64) -> bool {
+        self.lock()
+            .as_mut()
+            .is_some_and(|held| held.remove(&tag).is_some())
+    }
+
+    /// Closes the consumer, handing back what it held, in delivery order.
+    fn close(&self) -> Vec<BusDelivery> {
+        self.lock()
+            .take()
+            .map(|held| held.into_values().collect())
+            .unwrap_or_default()
+    }
 }
 
 impl BusDeliveries {
-    pub(crate) fn open(bus: &Arc<Bus>, queue: String, behaviour: QueueBehaviour) -> Self {
-        let (id, receiver) = bus.consume(queue.clone());
+    pub(crate) fn open(
+        bus: &Arc<Bus>,
+        queue: String,
+        auto_delete: bool,
+        behaviour: QueueBehaviour,
+    ) -> Self {
+        let (id, receiver) = bus.consume_queue(&queue, auto_delete);
         Self {
             bus: Arc::clone(bus),
             id,
@@ -118,6 +168,7 @@ impl BusDeliveries {
             receiver,
             next_tag: 1,
             behaviour: Arc::new(behaviour),
+            unsettled: Arc::new(Unsettled::open()),
         }
     }
 }
@@ -125,8 +176,13 @@ impl BusDeliveries {
 impl Drop for BusDeliveries {
     fn drop(&mut self) {
         self.bus.cancel(self.id);
-        // Handed to this consumer and never read: back to the queue, as the server requeues
-        // what a closing consumer had not acknowledged.
+        // Handed out and left unsettled, then handed to this consumer and never read: back to
+        // the queue in that order, as the server requeues what a closing consumer had not
+        // acknowledged.
+        for delivery in self.unsettled.close() {
+            self.bus
+                .requeue_unsettled(&self.queue, delivery, &self.behaviour);
+        }
         self.receiver.close();
         while let Ok(delivery) = self.receiver.try_recv() {
             self.bus
@@ -154,6 +210,7 @@ impl Subscriber for BusDeliveries {
             queue,
             next_tag,
             behaviour,
+            unsettled,
             ..
         } = self;
         futures::stream::poll_fn(move |cx| {
@@ -161,6 +218,7 @@ impl Subscriber for BusDeliveries {
                 delivery.map(|delivery| {
                     let tag = *next_tag;
                     *next_tag += 1;
+                    unsettled.hand_out(tag, delivery.clone());
                     Ok(LapinMessage::in_process(
                         delivery,
                         tag,
@@ -169,7 +227,7 @@ impl Subscriber for BusDeliveries {
                             queue: queue.clone(),
                             behaviour: Arc::clone(behaviour),
                             coordinator: bus.coordinator(),
-                            no_ack: false,
+                            held: Some((Arc::clone(unsettled), tag)),
                         },
                     ))
                 })
@@ -187,20 +245,26 @@ pub(crate) struct Settlement {
     queue: String,
     behaviour: Arc<QueueBehaviour>,
     coordinator: Option<Coordinator>,
-    /// A reply of request/reply arrives on a no-ack consumer, so settling it does nothing.
-    no_ack: bool,
+    /// The consumer that handed the delivery out, and its tag there; `None` for a reply of
+    /// request/reply, which arrives on a no-ack consumer, so settling it does nothing.
+    held: Option<(Arc<Unsettled>, u64)>,
 }
 
 impl Settlement {
     /// The settlement of a reply, which a no-ack consumer took: there is nothing to settle.
-    pub(crate) fn no_ack(bus: &Arc<Bus>, queue: String) -> Self {
+    pub(crate) fn of_reply(bus: &Arc<Bus>, queue: String) -> Self {
         Self {
             bus: Arc::clone(bus),
             queue,
             behaviour: Arc::new(QueueBehaviour::default()),
             coordinator: bus.coordinator(),
-            no_ack: true,
+            held: None,
         }
+    }
+
+    /// Whether this delivery came from a no-ack consumer, where a settlement does nothing.
+    const fn no_ack(&self) -> bool {
+        self.held.is_none()
     }
 
     /// Whether a delayed redelivery is the queue's own.
@@ -210,10 +274,20 @@ impl Settlement {
 
     /// `Ok` while the connection that delivered this is open. A live delivery settles on its
     /// channel, and a closed channel refuses the frame.
+    ///
+    /// It takes the delivery off its consumer too: a consumer that has closed returned it to the
+    /// queue already, and its channel refuses the frame.
     fn open(&self, what: &str) -> Result<(), AckError> {
         if self.bus.is_closed() {
             return Err(AckError::Broker(
                 format!("{what} was not sent: the connection is closed").into(),
+            ));
+        }
+        if let Some((unsettled, tag)) = &self.held
+            && !unsettled.settle(*tag)
+        {
+            return Err(AckError::Broker(
+                format!("{what} was not sent: the consumer's channel is closed").into(),
             ));
         }
         Ok(())
@@ -221,7 +295,7 @@ impl Settlement {
 
     /// `basic.ack`.
     pub(crate) fn ack(&self) -> Result<(), AckError> {
-        if self.no_ack {
+        if self.no_ack() {
             return Ok(());
         }
         self.open("basic.ack")
@@ -233,7 +307,7 @@ impl Settlement {
     /// spent more than the queue's delivery limit it takes the dead-letter route instead of
     /// coming back.
     pub(crate) fn reject(&self, mut delivery: BusDelivery, requeue: bool) -> Result<(), AckError> {
-        if self.no_ack {
+        if self.no_ack() {
             return Ok(());
         }
         self.open("basic.reject")?;
@@ -263,7 +337,7 @@ impl Settlement {
         delivery: BusDelivery,
         delay: Duration,
     ) -> Result<(), AckError> {
-        if !self.behaviour.delays || self.no_ack {
+        if !self.behaviour.delays || self.no_ack() {
             return Err(AckError::Unsupported);
         }
         self.open("basic.ack")?;
