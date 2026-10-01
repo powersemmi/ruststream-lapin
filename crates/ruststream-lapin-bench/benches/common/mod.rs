@@ -54,7 +54,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, EventKind, LibraryBenchmarkConfig};
+use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
 use lapin::options::{BasicPublishOptions, ConfirmSelectOptions, QueueDeleteOptions};
 use lapin::types::ShortString;
 use lapin::{BasicProperties, Connection, ConnectionProperties};
@@ -109,9 +109,9 @@ pub const MESSAGES: usize = 1_000;
 /// block or so between runs, so each scenario's floor is the highest count its runs produced plus
 /// a tenth of a percent, which one extra allocation per delivery still exceeds. Both are floors the
 /// code is held to, so a number that goes down is lowered here in the same change. The
-/// instruction limit is relative, [`INSTRUCTION_LIMIT`] percent over the run compared against:
-/// `just bench-code --save-baseline=main` records a baseline and `just bench-code
-/// --baseline=main` compares against it.
+/// instruction limit is relative and applies only against a named baseline, so the recipe sets
+/// it: `just bench-code --save-baseline=main` records one and `just bench-code --baseline=main`
+/// compares against it.
 pub fn config(steady: u64, cold: u64) -> LibraryBenchmarkConfig {
     config_every(steady, 1, cold)
 }
@@ -122,17 +122,10 @@ pub fn config_every(steady: u64, per: u64, cold: u64) -> LibraryBenchmarkConfig 
     let mut config = LibraryBenchmarkConfig::default();
     config
         .pass_through_env("AMQP_TEST_URL")
-        .tool(callgrind().soft_limits([(EventKind::Ir, INSTRUCTION_LIMIT)]))
+        .tool(callgrind())
         .tool(dhat().hard_limits([(DhatMetric::TotalBlocks, blocks(steady, per, cold))]));
     config
 }
-
-/// How many percent more instructions than the run compared against fail a scenario.
-///
-/// Twice what a real node moved a run's total by: over seven runs of an unchanged tree the longest
-/// consume run came out 2.4 percent apart once, as the service's thread waited for the socket less
-/// often, and the core's two percent would fail such a run.
-const INSTRUCTION_LIMIT: f64 = 5.0;
 
 /// The limit for the configured count: the cold part once, plus the steady rate over the longest
 /// run of the scenario, which is twice [`MESSAGES`]. The division rounds up.

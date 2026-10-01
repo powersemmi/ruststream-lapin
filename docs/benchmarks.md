@@ -14,7 +14,7 @@ this page publishes what it produced here.
 
 ## The numbers
 
-The best of three interleaved rounds, with the median round in parentheses. Higher is better.
+The best of three interleaved rounds, with the median and the worst round in parentheses. Higher is better.
 
 <div id="benchmark-results" data-benchmark-labels='{"loading": "Loading the published results...", "scenario": "Scenario", "raw": "Raw client", "adapter": "This crate", "framework": "Full service", "adapterOverhead": "This crate over raw", "overhead": "Full service over raw", "indistinguishable": "indistinguishable", "brokerBound": "broker-bound", "machine": "Machine", "os": "OS", "broker": "Broker", "roundTrip": "Round trip", "build": "Build", "versions": "Versions", "measured": "Measured", "codeMeasured": "Code costs measured", "codeUnpublished": "This results document carries no code costs.", "instructions": "Instructions per message", "allocations": "Allocations per message", "cold": "Cold start (instructions / allocations)", "unavailable": "No results could be read. They are published at {url}.", "unknownSchema": "The published results declare schema {schema}, which this page does not render."}'></div>
 
@@ -77,11 +77,11 @@ consumer. The numbers are absolute, the framework's own cost included; the core 
 cost alone on its [benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/).
 
 A real node answers in its own time, so how often the service's thread waits for the socket changes
-from run to run. Across four runs the instructions per message moved by up to five percent and the
-allocations by at most thirteen blocks a run, so a scenario's allocation floor sits a tenth of a
-percent above the highest count it produced. `just bench-code` fails on an allocation above that
-floor, and with `--baseline=main` on more than five percent more instructions, and a pull request
-that changes the cost cites its numbers.
+from run to run. Over seven runs of an unchanged tree a run's instructions moved by up to 2.4
+percent, and its allocations by a block at most. A scenario's allocation floor sits a tenth of a
+percent above the highest count it produced, and `just bench-code` fails on an allocation above it.
+With `--baseline=main` the recipe also fails on more than five percent more instructions; a plain
+run applies no instruction limit. A pull request that changes the cost cites its numbers.
 
 ## The machine
 

@@ -78,15 +78,16 @@
     }
     if (typeof measurement.best === "number") {
       const best = number(measurement.best, lang) + " " + unit;
-      // The parenthesis is the typical round: the median where the document carries one, and the
-      // worst round where it does not. The worst round stays out of the cell otherwise, because
-      // what it is there for is the spread the verdict rule reads.
-      const typical =
-        typeof measurement.median === "number" ? measurement.median : measurement.worst;
-      if (typeof typical !== "number") {
+      // The parenthesis is the median round, then the worst. The worst stays on the page because
+      // the verdict rule reads the spread between it and the best, so a reader can check the
+      // verdict from the cell.
+      const rounds = [measurement.median, measurement.worst]
+        .filter((round) => typeof round === "number")
+        .map((round) => number(round, lang));
+      if (rounds.length === 0) {
         return best;
       }
-      return best + " (" + number(typical, lang) + ")";
+      return best + " (" + rounds.join(", ") + ")";
     }
     const median = number(measurement.median, lang) + " " + unit;
     if (typeof measurement.min !== "number" || typeof measurement.max !== "number") {

@@ -80,15 +80,21 @@ bench *ARGS: brokers-up
 # cleared because valgrind aborts on the instructions a recent CPU advertises. Needs valgrind and
 # the runner the benches pin: cargo install --locked gungraun-runner --version =0.19.4
 # Extra arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
-# `just bench-code --baseline=main` compares against it.
+# `just bench-code --baseline=main` compares against it and fails on more than five percent more
+# instructions. A plain run applies no instruction limit: the runner would hold it to the previous
+# run, and two runs of an unchanged tree move by the socket waits alone.
 bench-code *ARGS: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'just brokers-down' EXIT
     mkdir -p target
+    limits=()
+    if [[ " {{ ARGS }}" == *" --baseline"* ]]; then
+        limits=(--callgrind-limits='ir=5.0%')
+    fi
     RUSTFLAGS="" AMQP_TEST_URL=amqp://127.0.0.1:5672 \
         cargo bench -p ruststream-lapin-bench --bench consume --bench reply --bench batch \
-        -- --output-format=json {{ ARGS }} > target/bench-code.json
+        -- --output-format=json "${limits[@]}" {{ ARGS }} > target/bench-code.json
     python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
 
 fmt:
