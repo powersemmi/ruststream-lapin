@@ -480,3 +480,53 @@ async fn a_delayed_redelivery_comes_back_live() {
         .expect("start against the stand");
     a_delayed_redelivery_comes_back(tb).await;
 }
+
+// --- Competing consumers against a live broker. ---
+
+#[subscriber(RabbitQueue::new("orders.shared").auto_delete(true))]
+async fn first_of_two(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
+}
+
+#[subscriber(RabbitQueue::new("orders.shared").auto_delete(true))]
+async fn second_of_two(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
+}
+
+// RabbitMQ picks which of a queue's consumers takes a message, out of the harness's sight, so a
+// live test with two subscriptions of one queue stops with the reason instead of timing out on
+// the consumer the server did not pick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_test_refuses_two_consumers_of_one_queue() {
+    let Some(url) = live::url("AMQP_TEST_URL") else {
+        return;
+    };
+    let run = tokio::spawn(async move {
+        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+            LapinBroker::new(url).declare_topology(true),
+            |b| {
+                b.include(first_of_two);
+                b.include(second_of_two);
+            },
+        );
+        let tb = TestApp::start_live(app)
+            .await
+            .expect("start against the stand");
+        tb.broker::<LapinBroker>()
+            .message(&Order { id: 7 })
+            .to("orders.shared")
+            .publish()
+            .await
+    });
+    let panic = run
+        .await
+        .expect_err("the harness cannot tell which consumer owes the message")
+        .into_panic();
+    let message = panic.downcast_ref::<String>().map_or("", String::as_str);
+    assert!(
+        message.contains("\"orders.shared\" has 2 subscriptions"),
+        "{message}"
+    );
+}

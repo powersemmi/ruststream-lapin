@@ -583,7 +583,8 @@ A test runs the service's own app: the builder `main` runs, on [`LapinBroker`], 
 framework's `TestApp` harness unchanged. With the `testing` feature in `[dev-dependencies]`,
 `TestApp::start` connects the broker in process instead of dialling the server, and the test
 addresses it by its production type, `tb.broker::<LapinBroker>()`. `TestApp::start_live` runs the
-same test body against a running `RabbitMQ`. The harness's usage is the core's:
+same test body against a running `RabbitMQ`, with one subscription per queue: the server picks
+which of a queue's consumers takes a message, out of the harness's sight. The harness's usage is the core's:
 <https://docs.rs/ruststream/latest/ruststream/testing/index.html>.
 
 ```
