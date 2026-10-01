@@ -19,73 +19,25 @@
 
 ---
 
-`ruststream-lapin` implements the RustStream broker contract over [`lapin`](https://crates.io/crates/lapin), the mature AMQP 0.9.1 client. Handlers, routers, codecs, and middleware come from the framework; this crate supplies the transport - and nothing broker-specific leaks back into the framework.
+`ruststream-lapin` connects a RustStream service to RabbitMQ over
+[`lapin`](https://crates.io/crates/lapin), the AMQP 0.9.1 client. Handlers, routing, codecs and
+middleware come from the framework; this crate is the transport.
 
 ## Features
 
-- **Native settlement.** AMQP has per-message acknowledgement built in:
-  `ack` is `basic.ack`, retry is `basic.reject(requeue = true)`, drop is
-  `basic.reject(requeue = false)` - straight into the queue's dead-letter exchange when one is
-  configured. A rejection is the frame RabbitMQ counts as a spent delivery, so a handler's retry
-  runs down a quorum queue's own limit.
-- **A descriptor per queue type.** `RabbitQueue` is the classic queue and `RabbitQuorumQueue` the
-  quorum one, because the type decides what a retry does and can never change after the queue is
-  created. Both carry exchange bindings, prefetch, dead-letter and raw `x-*` arguments; the
-  bare-string `#[subscriber("orders")]` form consumes the classic queue with that name.
-- **Infrastructure stays yours.** Descriptors describe the EXPECTED topology; nothing is created
-  on the broker unless the service opts in with `.declare_topology(true)`.
-- **Batches assembled on the client.** AMQP pushes one `basic.deliver` at a time, so there is no
-  wire batch to ask the broker for: a batch handler names its size at the mount site with
-  `.batch(nonzero!(n))` and this crate fills it from the delivery stream. The descriptor governs
-  how it forms - a prefetch window at least as wide as the batch, and `.batch_wait(..)` capping
-  how long a batch that never fills keeps its deliveries.
-- **Durable delayed retry.** `RabbitQueue::delay(..)` makes `retry_after` native and keeps the
-  delayed copy on the broker instead of the core in-process fallback. Two backends:
-  `Delay::dlx_ttl()` routes through a TTL waiting queue that dead-letters back to the origin, and
-  `Delay::plugin_dme()` (behind `plugin-dme`) through the delayed-message exchange, where mixed
-  delays do not block each other.
-- **A cap the queue can enforce itself.** `.max_attempts(n).dead_letter(name)` after `include`
-  says how many deliveries one message gets and where it goes once they run out. On a quorum queue
-  this service declares, the pair becomes the queue's own `x-delivery-limit` and dead-letter route,
-  so a spent delivery leaves with no service running - and `out_retry(policy)` does not compile
-  there, because no copy of this service's is published. On a classic queue the runtime applies the
-  cap on the retry path, counting in its own header. A delivery reports the queue's
-  `x-delivery-count` where the queue keeps one, and no count at all where it does not.
-- **A document that knows AMQP.** Behind the `asyncapi` feature every subscription and every
-  publish policy fills the specification's `amqp` binding: the queue's settings on the channel,
-  the manual acknowledgement on the receive operation, the exchange a publish leaves through or
-  the queue it lands in, the message properties on a send, and the reply-to header a client reads
-  an answer's address from. The server reports
-  `protocolVersion` `0.9.1`, which is what tells AMQP 0.9.1 from AMQP 1.0.
-- **Three publishers, chosen on the policy.** `LapinPublish::default()` is fire-and-forget;
-  `.confirms()` awaits every broker confirm and buffers a transaction client-side (durable, fast,
-  recommended, and the policy the family's `TransactionalPublish` name points at); `.server_tx()`
-  uses AMQP channel transactions for atomic visibility at commit.
-- **Owned and borrowed transactions.** Confirms buffer client-side, so the confirms publisher
-  also offers the owned kind: `owned_transaction()` hands back a value owning its buffer, so any
-  number can be open on one handle, settling one never touches another, and the handle keeps
-  publishing directly meanwhile. `server_tx` keeps only the borrowed kind - `tx.select` is
-  channel state, one per channel.
-- **Per-message AMQP properties.** The `priority`, the per-message `expiration` (TTL) and the
-  delivery mode are typed settings (`LapinPublishOptions`), never headers. The mount site fixes
-  them for every message on the policy (`Publish::default().priority(3)`), and the publish builder
-  adjusts one message with `.priority(9)`, `.expiration(ttl)` or `.persistent(false)`. A step is a
-  position on the builder rather than a wrapper around the publisher, so it keeps the codec and
-  the destination the mount site gave it, holds through both transaction kinds, and stays
-  attributed to its `Out` slot under the test harness. Written into the header table instead, a
-  value would reach the broker as a table entry it reads for no purpose.
-- **Request/reply over direct reply-to.** `LapinRequest` pairs into a requester implementing the
-  framework's `RequestReply` capability on `amq.rabbitmq.reply-to` with correlation-id
-  multiplexing. The responder side is a mount-site transform, `DirectReplyTo`, so the handler
-  stays a plain request-to-reply function.
-- **A typed lifecycle.** `LapinBroker::new(uri)` is synchronous and does no I/O, so the broker
-  composes with `#[ruststream::app]`; connecting consumes it into `ConnectedLapinBroker` and
-  shutting that down consumes it again, so subscribing before connect or publishing after
-  shutdown does not compile. Publishers are policies that hold no connection and pair with the
-  connected broker at startup.
-- **Tests on the production app.** With the `testing` feature, the framework's `TestApp` runs the
-  app `main` runs with `LapinBroker` connected in process - no server needed - and the same test
-  runs against a real RabbitMQ with `TestApp::start_live`.
+- **Native settlement:** `ack` is `basic.ack`, a retry is `basic.reject` with requeue, and a drop
+  goes to the queue's dead-letter exchange.
+- **A descriptor per queue type:** `RabbitQueue` for classic queues, `RabbitQuorumQueue` for
+  quorum queues, with bindings, prefetch and dead-letter settings.
+- **Your topology:** nothing is created on the broker unless the service opts in with
+  `declare_topology(true)`.
+- **Durable delayed retry** through a TTL waiting queue or the delayed-message-exchange plugin, and
+  a retry cap a quorum queue enforces itself.
+- **Three publishers:** fire-and-forget, publisher confirms with client-side transactions, and AMQP
+  channel transactions. Priority, TTL and persistence are typed per-message settings.
+- **Request/reply** over direct reply-to.
+- **AsyncAPI** with the specification's `amqp` bindings, behind the `asyncapi` feature.
+- **Tests without a server:** the service's own app runs with `LapinBroker` in process.
 
 ## Install
 
@@ -99,27 +51,15 @@ serde = { version = "1", features = ["derive"] }
 ruststream-lapin = { version = "0.7", features = ["testing"] }
 ```
 
-Add the `asyncapi` feature to fill the AMQP bindings of the generated document; without it the
-document is generated all the same, with nothing RabbitMQ-specific in it.
-
-TLS (`amqps://`) is feature-gated, mapped onto `lapin`'s backends: `tls-rustls`,
-`tls-rustls-ring`, `tls-native-tls`. Two features need a plugin enabled on the broker and are off
-by default: `plugin-consistent-hash` adds `RabbitExchange::consistent_hash(..)` for server-side
-hash fan-out, and `plugin-dme` adds the delayed-message-exchange backend for `RabbitQueue::delay`.
+Optional features: `asyncapi`, TLS (`tls-rustls`, `tls-rustls-ring`, `tls-native-tls`), and the
+broker plugins `plugin-consistent-hash` and `plugin-dme`.
 
 ## Write a service
-
-A handler body names capabilities, never a broker type: bounded `Out<impl Publisher>`, the handler
-below mounts unchanged under whichever publish policy the routes pair it with. The routes name
-values, and this crate's prelude spells its policies with the family's uniform names - `Publish`,
-`TransactionalPublish`, `Request` - so a router reads the same whichever broker it targets.
 
 ```rust
 use ruststream_lapin::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// `Outgoing`, `PartialEq` and `Serialize` are here for the test below, which publishes an order
-// and asserts on the decoded one.
 #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
     id: u64,
@@ -135,7 +75,6 @@ struct Receipt {
 async fn settle(order: &Order, Out(receipts): Out<impl Publisher>) -> HandlerOutcome {
     let receipt = Receipt { order_id: order.id };
     if receipts.message(&receipt).publish().await.is_err() {
-        // Nothing reached the broker; ask for redelivery and settle the order again.
         return HandlerOutcome::retry();
     }
     HandlerOutcome::ack()
@@ -150,25 +89,24 @@ fn app() -> impl App {
 }
 ```
 
-`.out(marker, policy)` names the publisher an `Out` slot leaves through, and `DefaultSlot` is the
-handler's single unnamed slot. The reply of a `#[subscriber(.., publish("dest"))]` handler is
-bound with `out_reply(policy)`, and the deferred copy of a `retry_after` with
-`out_retry(policy)`. The message name is the routing key, sent to the policy's exchange, and on
-the default exchange it addresses the queue with that name - which is why this service needs no
-topology. `#[ruststream::app]` generates `main`, so the binary understands `run` and
-`asyncapi gen` with no boilerplate.
+`#[ruststream::app]` generates `main`, so the binary understands `run` and `asyncapi gen`.
+
+Scaffold a fresh project from a template, a work queue or a topic exchange:
+
+```bash
+cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-queue --name my-service
+cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-topic --name my-service
+```
 
 ## Test it
 
-The app `main` runs, handed to the harness unchanged: `TestApp::start` connects `LapinBroker` in
-process, with no server, and the test addresses it by that type.
+`TestApp` runs the service's own app with `LapinBroker` in process, with no server.
 
 ```rust
 use ruststream::testing::TestApp;
 
 let tb = TestApp::start(app()).await?;
 
-// `publish` returns once the handlers it woke have settled.
 tb.broker::<LapinBroker>()
     .message(&Order { id: 42 })
     .to("orders")
@@ -178,7 +116,6 @@ tb.broker::<LapinBroker>()
 tb.broker::<LapinBroker>()
     .subscriber("orders")
     .assert_called_once()
-    .with(&Order { id: 42 })
     .settled(HandlerOutcome::ack());
 
 tb.broker::<LapinBroker>()
@@ -187,30 +124,20 @@ tb.broker::<LapinBroker>()
     .with(&Receipt { order_id: 42 });
 ```
 
-The in-process mode reads the broker's own settings and refuses what the server refuses.
-`TestApp::start_live(app())` runs the same test against a running RabbitMQ, which is where
-prefetch, publisher confirms, server transactions and queues shared between connections are
-exercised (`just test-brokers`).
+`TestApp::start_live(app())` runs the same test against a running RabbitMQ.
 
-## Scaffold a service
+## Documentation
 
-Generate a runnable starter with [`cargo generate`](https://github.com/cargo-generate/cargo-generate):
+- This crate: <https://docs.rs/ruststream-lapin>
+- The framework: <https://powersemmi.github.io/ruststream/latest>
 
-```bash
-# work queue (default exchange, competing consumers)
-cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-queue --name my-service
-# topic exchange (routing-key patterns, declared topology)
-cargo generate --git https://github.com/powersemmi/ruststream-lapin templates/amqp-topic --name my-service
-```
+## Minimum supported Rust version
+
+The MSRV is **1.88**, edition 2024.
 
 ## Contributing
 
-```bash
-just check          # fmt, clippy, feature checks
-just test           # in-process tests, no server
-just test-brokers   # live integration and conformance against a RabbitMQ container
-just test-plugins   # the plugin-gated tests against the plugin-enabled container
-```
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
