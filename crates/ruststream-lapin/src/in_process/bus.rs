@@ -268,10 +268,12 @@ impl Bus {
         queue: &str,
         auto_delete: bool,
     ) -> (ConsumerId, DeliveryReceiver) {
-        let opened = self.consume(queue.to_owned());
+        // One guard over the registration and the drain: a publish that lands in between would
+        // reach the new consumer ahead of the messages the queue kept for it.
+        let mut routes = self.routes();
+        let opened = self.register(&mut routes, queue.to_owned());
         let waiting = std::mem::take(
-            &mut self
-                .routes()
+            &mut routes
                 .stored
                 .entry(queue.to_owned())
                 .or_insert(Stored {
@@ -281,18 +283,21 @@ impl Bus {
                 .waiting,
         );
         for delivery in waiting {
-            self.deliver(queue, delivery);
+            self.hand_over(&mut routes, queue, delivery);
         }
+        drop(routes);
         opened
     }
 
     /// Opens a consumer of `queue`.
     pub(crate) fn consume(&self, queue: String) -> (ConsumerId, DeliveryReceiver) {
+        self.register(&mut self.routes(), queue)
+    }
+
+    fn register(&self, routes: &mut Routes, queue: String) -> (ConsumerId, DeliveryReceiver) {
         let id = ConsumerId(self.next_consumer.fetch_add(1, Ordering::Relaxed));
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.routes()
-            .consumers
-            .insert(id, Consumer { queue, sender });
+        routes.consumers.insert(id, Consumer { queue, sender });
         (id, receiver)
     }
 
@@ -456,11 +461,16 @@ impl Bus {
     /// A successful hand-over is reported to the coordinator, so the harness's in-flight count
     /// stays balanced against the delivery's release.
     pub(crate) fn deliver(&self, queue: &str, delivery: BusDelivery) {
-        // The send runs under the routes lock. A closing consumer cancels under it and then
-        // drains its channel back to the queue, so a delivery either reaches a consumer that
-        // will return it or is routed past one that is gone; it is never sent into a closed
-        // channel. An unbounded send never blocks, so holding the lock costs no wait.
-        let mut routes = self.routes();
+        self.hand_over(&mut self.routes(), queue, delivery);
+    }
+
+    /// [`deliver`](Self::deliver) under a guard the caller holds.
+    ///
+    /// The send runs under the routes lock. A closing consumer cancels under it and then drains
+    /// its channel back to the queue, so a delivery either reaches a consumer that will return it
+    /// or is routed past one that is gone; it is never sent into a closed channel. An unbounded
+    /// send never blocks, so holding the lock costs no wait.
+    fn hand_over(&self, routes: &mut Routes, queue: &str, delivery: BusDelivery) {
         let Some((sender, delivery)) = routes.hand_over(queue, delivery) else {
             return;
         };
@@ -470,9 +480,9 @@ impl Bus {
         if let Some(coordinator) = coordinator {
             coordinator.enqueued();
         }
-        let sent = sender.send(delivery).is_ok();
-        drop(routes);
-        if !sent && let Some(coordinator) = coordinator {
+        if sender.send(delivery).is_err()
+            && let Some(coordinator) = coordinator
+        {
             coordinator.consumed();
         }
     }
