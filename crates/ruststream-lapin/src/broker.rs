@@ -540,6 +540,44 @@ impl TestableBroker for ConnectedLapinBroker {
     fn published(&self, name: &str) -> Vec<RawMessage> {
         self.bus("published").published(name)
     }
+
+    /// A queue hands each message to one of its consumers, so a publish to a queue with two
+    /// subscriptions is owed by one of them, never by both.
+    ///
+    /// The broker's default publisher sends on the default exchange, which routes by queue name,
+    /// so the candidates are the subscriptions of `destination`'s name, in the order they opened.
+    /// In process the answer is the consumer the transport's rotation serves next. Against a
+    /// server the pick is the server's and not observable from here, so a live test opens one
+    /// subscription per queue.
+    ///
+    /// # Panics
+    ///
+    /// Panics against a server when `destination` has more than one subscription: the harness
+    /// would wait on a consumer the server may not have picked, and time out without saying why.
+    fn routes(&self, destination: &str, subscriptions: &[&str]) -> Vec<usize> {
+        let candidates: Vec<usize> = subscriptions
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| **name == destination)
+            .map(|(position, _)| position)
+            .collect();
+        let turn = match &self.link {
+            Link::InProcess(bus) => bus.next_consumer_of(destination),
+            Link::Amqp(_) => {
+                assert!(
+                    candidates.len() <= 1,
+                    "queue {destination:?} has {} subscriptions, and RabbitMQ picks which consumer \
+                     takes a message where the harness cannot see it: a live test opens one \
+                     subscription per queue",
+                    candidates.len()
+                );
+                Some(0)
+            }
+        };
+        turn.and_then(|turn| candidates.get(turn).copied())
+            .into_iter()
+            .collect()
+    }
 }
 
 #[cfg(feature = "testing")]
