@@ -2,6 +2,7 @@
 //! the handlers that take a batch.
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "testing")]
@@ -10,6 +11,7 @@ use futures::{Stream, StreamExt};
 use lapin::{Channel, Consumer};
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
 
+use crate::broker::AmqpConnection;
 use crate::delay::DelayContext;
 use crate::error::AmqpError;
 #[cfg(feature = "testing")]
@@ -36,6 +38,7 @@ pub struct LapinSubscriber {
 
 impl LapinSubscriber {
     pub(crate) fn new(
+        connection: Arc<AmqpConnection>,
         channel: Channel,
         consumer: Consumer,
         queue: String,
@@ -43,6 +46,7 @@ impl LapinSubscriber {
         delay: Option<DelayContext>,
     ) -> Self {
         let deliveries = Deliveries::Amqp(AmqpDeliveries {
+            connection,
             _channel: channel,
             consumer,
             delay,
@@ -158,6 +162,9 @@ impl Subscriber for Deliveries {
 
 /// The wire consumer, one `basic.deliver` at a time.
 struct AmqpDeliveries {
+    // Threaded into every delivery, so a settlement after shutdown is refused instead of waiting
+    // on an answer lapin never gives.
+    connection: Arc<AmqpConnection>,
     // Kept alive for the lifetime of the subscription: dropping the channel cancels the
     // consumer server-side.
     _channel: Channel,
@@ -170,12 +177,17 @@ struct AmqpDeliveries {
 impl AmqpDeliveries {
     fn stream(&mut self) -> impl Stream<Item = Result<LapinMessage, AmqpError>> + Send + '_ {
         let delay = self.delay.clone();
+        let connection = &self.connection;
         futures::stream::unfold(
             (&mut self.consumer, delay),
-            |(consumer, delay)| async move {
+            move |(consumer, delay)| async move {
                 let item = consumer.next().await?;
                 let mapped = match item {
-                    Ok(delivery) => Ok(LapinMessage::from_delivery(delivery, delay.clone())),
+                    Ok(delivery) => Ok(LapinMessage::from_delivery(
+                        delivery,
+                        Some(Arc::clone(connection)),
+                        delay.clone(),
+                    )),
                     Err(err) => Err(AmqpError::consume(err)),
                 };
                 Some((mapped, (consumer, delay)))

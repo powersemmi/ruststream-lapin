@@ -110,9 +110,14 @@ impl AmqpConnection {
             .await
     }
 
+    /// Whether the broker has shut this connection down.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     /// `Ok` while the connection is live, [`AmqpError::Closed`] once the broker has shut down.
     pub(crate) fn ensure_live(&self, target: &str) -> Result<(), AmqpError> {
-        if self.closed.load(Ordering::Acquire) {
+        if self.is_closed() {
             return Err(AmqpError::closed(target));
         }
         Ok(())
@@ -381,6 +386,7 @@ impl ConnectedLapinBroker {
             .map_err(AmqpError::subscribe)?;
 
         Ok(LapinSubscriber::new(
+            Arc::clone(conn),
             channel,
             consumer,
             queue,
