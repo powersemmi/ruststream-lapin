@@ -1,0 +1,123 @@
+{
+  "schema": 3,
+  "crate": "ruststream-lapin",
+  "crate_version": "0.7.0",
+  "core_version": "0.7.0-rc.9",
+  "measured_at": "2026-09-23",
+  "environment": {
+    "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
+    "architecture": "x86_64",
+    "cpu_frequency": "427-5912 MHz",
+    "cores": "12 physical, 24 logical",
+    "memory": "62.4 GiB",
+    "memory_speed": "unknown",
+    "os": "Linux 7.2.6-x64v3-xanmod1-1",
+    "broker": "rabbitmq:4-management-alpine in Docker on localhost",
+    "round_trip": "55.6 us for one basic.qos answered by the server",
+    "rustc": "1.98.1",
+    "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
+    "features": "ruststream-lapin default (none), ruststream macros,json",
+    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)",
+    "valgrind": "3.25.1"
+  },
+  "scenarios": [
+    {
+      "name": "Classic queue, 512 B JSON, ack each",
+      "unit": "msg/s",
+      "messages": 351953,
+      "pairs": 3,
+      "raw": {
+        "best": 59851,
+        "median": 57786,
+        "worst": 56858
+      },
+      "adapter": {
+        "best": 57746,
+        "median": 55656,
+        "worst": 32976
+      },
+      "framework": {
+        "best": 57737,
+        "median": 55103,
+        "worst": 48457
+      },
+      "adapter_overhead_percent": 3.5,
+      "overhead_percent": 3.5,
+      "adapter_verdict": "indistinguishable",
+      "verdict": "indistinguishable",
+      "broker_bound": false
+    },
+    {
+      "name": "Quorum queue, 512 B JSON, ack each",
+      "unit": "msg/s",
+      "messages": 226530,
+      "pairs": 3,
+      "raw": {
+        "best": 33215,
+        "median": 32451,
+        "worst": 31998
+      },
+      "adapter": {
+        "best": 32024,
+        "median": 31953,
+        "worst": 29787
+      },
+      "framework": {
+        "best": 33331,
+        "median": 32898,
+        "worst": 20891
+      },
+      "adapter_overhead_percent": 3.6,
+      "overhead_percent": -0.4,
+      "adapter_verdict": "indistinguishable",
+      "verdict": "indistinguishable",
+      "broker_bound": false
+    }
+  ],
+  "code": [
+    {
+      "name": "classic queue, JSON decode into a small struct, ack each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 17289.2,
+        "allocations": 16.0
+      },
+      "cold": {
+        "instructions": 390728,
+        "allocations": 218
+      },
+      "gated": true
+    },
+    {
+      "name": "classic queue, reply published through LapinPublish",
+      "messages": 1000,
+      "framework": {
+        "instructions": 25700.5,
+        "allocations": 27.0
+      },
+      "cold": {
+        "instructions": 391787,
+        "allocations": 220
+      },
+      "gated": true
+    },
+    {
+      "name": "classic queue, batches of 64 assembled on the client",
+      "messages": 1000,
+      "framework": {
+        "instructions": 18130.6,
+        "allocations": 16.3
+      },
+      "cold": {
+        "instructions": 398867,
+        "allocations": 224
+      },
+      "gated": true
+    }
+  ],
+  "code_measured": {
+    "crate_version": "0.7.0",
+    "core_version": "0.7.0-rc.10",
+    "measured_at": "2026-10-01"
+  }
+}
