@@ -331,7 +331,7 @@ fn option_cases() -> OptionCases<LapinPublishOptions, Shown> {
 fn options_policy() -> LapinPublish {
     LapinPublish::default()
         .priority(5)
-        .expiration(Duration::from_secs(60))
+        .expiration(Duration::from_mins(1))
 }
 
 /// Carries a key the way this crate does: in the header its deliveries report it from.

@@ -53,7 +53,7 @@ async fn ship(
         shipments
             .message(&shipment)
             .priority(9)
-            .expiration(Duration::from_secs(3600))
+            .expiration(Duration::from_hours(1))
             .publish()
             .await
     } else {
@@ -124,7 +124,7 @@ async fn a_stepped_slot_publish_stays_attributed_and_carries_what_the_step_asked
         .assert_called_once()
         .with_options(&LapinPublishOptions {
             priority: Some(9),
-            expiration: Some(Duration::from_secs(3600)),
+            expiration: Some(Duration::from_hours(1)),
             persistent: None,
         });
     stepped

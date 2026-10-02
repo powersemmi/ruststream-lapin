@@ -50,7 +50,7 @@ use crate::error::AmqpError;
 /// #[subscriber(RabbitQueue::new("orders").delay(Delay::dlx_ttl()))]
 /// async fn fulfil(order: &Order) -> HandlerOutcome {
 ///     if !order.paid {
-///         return HandlerOutcome::retry_after(Duration::from_secs(60));
+///         return HandlerOutcome::retry_after(Duration::from_mins(1));
 ///     }
 ///     println!("fulfilling order {}", order.id);
 ///     HandlerOutcome::ack()

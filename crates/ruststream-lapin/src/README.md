@@ -401,7 +401,7 @@ async fn ship(
         shipments
             .message(&shipment)
             .priority(9)
-            .expiration(Duration::from_secs(3600))
+            .expiration(Duration::from_hours(1))
             .publish()
             .await
     } else {
