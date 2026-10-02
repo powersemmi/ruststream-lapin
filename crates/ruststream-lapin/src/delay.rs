@@ -35,13 +35,33 @@ use crate::error::AmqpError;
 /// # Examples
 ///
 /// ```
-/// use ruststream_lapin::{Delay, RabbitQueue};
+/// use std::time::Duration;
 ///
-/// // Waiting queue named `orders.retry` (the default derived from the origin queue):
-/// let orders = RabbitQueue::new("orders").delay(Delay::dlx_ttl());
-/// // Or an explicit waiting-queue name:
-/// let named = RabbitQueue::new("orders").delay(Delay::dlx_ttl_named("orders.wait"));
-/// # let _ = (orders, named);
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+///     paid: bool,
+/// }
+///
+/// // An unpaid order waits a minute in `orders.retry` on the broker, then comes back here.
+/// #[subscriber(RabbitQueue::new("orders").delay(Delay::dlx_ttl()))]
+/// async fn fulfil(order: &Order) -> HandlerOutcome {
+///     if !order.paid {
+///         return HandlerOutcome::retry_after(Duration::from_secs(60));
+///     }
+///     println!("fulfilling order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(fulfil);
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]

@@ -11,10 +11,27 @@ use lapin::ExchangeKind;
 /// # Examples
 ///
 /// ```
-/// use ruststream_lapin::RabbitExchange;
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
 ///
-/// let events = RabbitExchange::topic("events").durable(true);
-/// assert_eq!(events.name(), "events");
+/// #[derive(Deserialize)]
+/// struct OrderPlaced {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RabbitQueue::new("orders")
+///     .bind(RabbitExchange::topic("events").durable(true), "order.*"))]
+/// async fn on_order(event: &OrderPlaced) -> HandlerOutcome {
+///     println!("order {} placed", event.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(on_order);
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RabbitExchange {
@@ -84,12 +101,28 @@ impl RabbitExchange {
     /// # Examples
     ///
     /// ```
-    /// use ruststream_lapin::{RabbitExchange, RabbitQueue};
+    /// use ruststream_lapin::prelude::*;
+    /// use serde::Deserialize;
     ///
-    /// let hashed = RabbitExchange::consistent_hash("orders-by-key");
-    /// // Bind a queue with its weight as the routing key:
-    /// let shard = RabbitQueue::new("shard-a").bind(hashed, "1");
-    /// # let _ = shard;
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// // This queue binds with weight 1, so it takes its share of the hash space.
+    /// #[subscriber(RabbitQueue::new("orders.shard-a")
+    ///     .bind(RabbitExchange::consistent_hash("orders-by-key"), "1"))]
+    /// async fn on_order(order: &Order) -> HandlerOutcome {
+    ///     println!("shard a took order {}", order.id);
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// fn app() -> RustStream {
+    ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(on_order);
+    ///     })
+    /// }
     /// ```
     #[cfg(feature = "plugin-consistent-hash")]
     #[must_use]

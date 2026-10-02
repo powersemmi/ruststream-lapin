@@ -43,13 +43,31 @@ use crate::subscriber::LapinSubscriber;
 /// # Examples
 ///
 /// ```
-/// use ruststream_lapin::{RabbitExchange, RabbitQuorumQueue};
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
 ///
-/// let orders = RabbitQuorumQueue::new("orders")
-///     .bind(RabbitExchange::topic("events"), "order.*")
+/// #[derive(Deserialize)]
+/// struct Charge {
+///     id: u64,
+/// }
+///
+/// // A charge the payment provider keeps refusing is moved to `dead-letters` by the server after
+/// // its fourth delivery.
+/// #[subscriber(RabbitQuorumQueue::new("charges")
+///     .bind(RabbitExchange::topic("events"), "charge.*")
 ///     .dead_letter_exchange("dead-letters")
-///     .delivery_limit(4);
-/// assert_eq!(orders.name(), "orders");
+///     .delivery_limit(4))]
+/// async fn take_payment(charge: &Charge) -> HandlerOutcome {
+///     println!("charging {}", charge.id);
+///     HandlerOutcome::retry()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+///     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
+///         b.include(take_payment);
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct RabbitQuorumQueue {

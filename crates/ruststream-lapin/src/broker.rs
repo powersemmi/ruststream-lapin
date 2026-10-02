@@ -165,14 +165,29 @@ const _: () = assert!(size_of::<Link>() == size_of::<Arc<AmqpConnection>>());
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use ruststream::nonzero;
-/// use ruststream_lapin::LapinBroker;
+/// ```
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
 ///
-/// let broker = LapinBroker::new("amqp://localhost:5672")
-///     .prefetch(nonzero!(64))
-///     .declare_topology(true);
-/// # let _ = broker;
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber("orders")]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     println!("got order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672")
+///         .prefetch(nonzero!(64))
+///         .declare_topology(true);
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(handle);
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]
@@ -405,16 +420,27 @@ impl ConnectedLapinBroker {
     /// # Examples
     ///
     /// ```no_run
-    /// use ruststream::Broker;
-    /// use ruststream_lapin::{LapinBroker, LapinPublish};
+    /// use std::error::Error;
     ///
-    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
-    /// let orders = connected.publisher(LapinPublish::default().exchange("orders"));
-    /// let shipments = connected.publisher(LapinPublish::default().confirms());
-    /// # let _ = (orders, shipments);
-    /// # Ok(())
-    /// # }
+    /// use ruststream::Broker;
+    /// use ruststream_lapin::prelude::*;
+    /// use serde::Serialize;
+    ///
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "order.placed")]
+    /// struct OrderPlaced {
+    ///     id: u64,
+    /// }
+    ///
+    /// // A one-off backfill outside any service: connect, publish, confirm.
+    /// async fn backfill(ids: &[u64]) -> Result<(), Box<dyn Error>> {
+    ///     let connected = LapinBroker::new("amqp://localhost:5672").connect().await?;
+    ///     let events = connected.publisher(LapinPublish::default().exchange("events").confirms());
+    ///     for &id in ids {
+    ///         events.message(&OrderPlaced { id }).publish().await?;
+    ///     }
+    ///     Ok(())
+    /// }
     /// ```
     #[must_use]
     pub fn publisher<P: LapinPublishPolicy>(&self, policy: P) -> P::Live {

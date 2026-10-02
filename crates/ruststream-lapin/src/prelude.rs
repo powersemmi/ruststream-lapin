@@ -4,11 +4,35 @@
 //!
 //! ```
 //! use ruststream_lapin::prelude::*;
+//! use serde::{Deserialize, Serialize};
 //!
-//! let broker = LapinBroker::new("amqp://localhost:5672");
-//! let orders = RabbitQueue::new("orders").durable(true);
-//! let shipments = TransactionalPublish::default().exchange("shipments");
-//! # let _ = (broker, orders, shipments);
+//! #[derive(Deserialize)]
+//! struct Order {
+//!     id: u64,
+//! }
+//!
+//! #[derive(Serialize, Outgoing)]
+//! #[outgoing(name = "shipment.requested")]
+//! struct Shipment {
+//!     order_id: u64,
+//! }
+//!
+//! #[subscriber(RabbitQueue::new("orders").durable(true))]
+//! async fn ship(order: &Order, Out(shipments): Out<impl TransactionalPublisher>) -> HandlerOutcome {
+//!     let shipment = Shipment { order_id: order.id };
+//!     if shipments.message(&shipment).publish().await.is_err() {
+//!         return HandlerOutcome::retry();
+//!     }
+//!     HandlerOutcome::ack()
+//! }
+//!
+//! fn app() -> RustStream {
+//!     let broker = LapinBroker::new("amqp://localhost:5672");
+//!     let shipments = TransactionalPublish::default().exchange("shipments");
+//!     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+//!         b.include(ship).out(DefaultSlot, shipments).build();
+//!     })
+//! }
 //! ```
 //!
 //! A service writes two kinds of file, and each names a different thing.

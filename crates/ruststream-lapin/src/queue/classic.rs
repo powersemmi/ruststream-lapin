@@ -34,12 +34,31 @@ use crate::subscriber::LapinSubscriber;
 /// # Examples
 ///
 /// ```
-/// use ruststream_lapin::{RabbitExchange, RabbitQueue};
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
 ///
-/// let orders = RabbitQueue::new("orders")
+/// #[derive(Deserialize)]
+/// struct OrderPlaced {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RabbitQueue::new("orders")
 ///     .bind(RabbitExchange::topic("events"), "order.*")
-///     .dead_letter_exchange("dead-letters");
-/// assert_eq!(orders.name(), "orders");
+///     .dead_letter_exchange("dead-letters"))]
+/// async fn on_order(event: &OrderPlaced) -> HandlerOutcome {
+///     if event.id == 0 {
+///         // Rejected without requeue: the queue's dead-letter exchange takes it.
+///         return HandlerOutcome::drop();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(on_order);
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct RabbitQueue {

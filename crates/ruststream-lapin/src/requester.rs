@@ -47,10 +47,35 @@ type Pending = Mutex<HashMap<String, oneshot::Sender<LapinMessage>>>;
 /// # Examples
 ///
 /// ```
-/// use ruststream_lapin::LapinRequest;
+/// use std::time::Duration;
 ///
-/// let inventory = LapinRequest::default().exchange("rpc");
-/// # let _ = inventory;
+/// use ruststream::OutgoingMessage;
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Order {
+///     sku: String,
+/// }
+///
+/// #[subscriber("orders")]
+/// async fn place(order: &Order, Out(inventory): Out<impl RequestReply>) -> HandlerOutcome {
+///     let ask = OutgoingMessage::new("inventory.check", order.sku.as_bytes());
+///     match inventory.request(ask, Duration::from_secs(2)).await {
+///         Ok(reply) if reply.payload() == b"in-stock" => HandlerOutcome::ack(),
+///         Ok(_) => HandlerOutcome::drop(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672");
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(place)
+///             .out(DefaultSlot, LapinRequest::default().exchange("rpc"))
+///             .build();
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]

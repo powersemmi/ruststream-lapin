@@ -136,26 +136,50 @@ arguments rather than the key. The last one is what `bind_with` exists for - `x-
 whether a message has to carry `all` of the remaining entries or any one of them, and the routing
 key is ignored:
 
-```rust
-use ruststream_lapin::{AMQPValue, FieldTable, RabbitExchange, RabbitQueue};
+```
+# mod demo {
+use ruststream_lapin::prelude::*;
+use serde::Deserialize;
 
-let mut gold_in_eu = FieldTable::default();
-gold_in_eu.insert("x-match".into(), AMQPValue::LongString("all".into()));
-gold_in_eu.insert("region".into(), AMQPValue::LongString("eu".into()));
-gold_in_eu.insert("tier".into(), AMQPValue::LongString("gold".into()));
+#[derive(Deserialize)]
+struct Order {
+    id: u64,
+}
 
-let both = RabbitQueue::new("orders.eu.gold")
-    .bind_with(RabbitExchange::headers("orders"), "", gold_in_eu);
+// The binding arguments: how to match, then the headers matched on.
+fn gold_in_eu(x_match: &str) -> FieldTable {
+    let mut arguments = FieldTable::default();
+    arguments.insert("x-match".into(), AMQPValue::LongString(x_match.into()));
+    arguments.insert("region".into(), AMQPValue::LongString("eu".into()));
+    arguments.insert("tier".into(), AMQPValue::LongString("gold".into()));
+    arguments
+}
 
-let mut either = FieldTable::default();
-either.insert("x-match".into(), AMQPValue::LongString("any".into()));
-either.insert("region".into(), AMQPValue::LongString("eu".into()));
-either.insert("tier".into(), AMQPValue::LongString("gold".into()));
+#[subscriber(RabbitQueue::new("orders.eu.gold")
+    .bind_with(RabbitExchange::headers("orders"), "", gold_in_eu("all")))]
+async fn on_gold_in_eu(order: &Order) -> HandlerOutcome {
+    println!("gold order {} in the EU", order.id);
+    HandlerOutcome::ack()
+}
 
 // One header is enough here, where the binding above needs both.
-let some = RabbitQueue::new("orders.eu.or.gold")
-    .bind_with(RabbitExchange::headers("orders"), "", either);
-# let _ = (both, some);
+#[subscriber(RabbitQueue::new("orders.eu.or.gold")
+    .bind_with(RabbitExchange::headers("orders"), "", gold_in_eu("any")))]
+async fn on_gold_or_eu(order: &Order) -> HandlerOutcome {
+    println!("order {} is gold or in the EU", order.id);
+    HandlerOutcome::ack()
+}
+
+#[ruststream::app]
+fn app() -> impl App {
+    let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        b.include(on_gold_in_eu);
+        b.include(on_gold_or_eu);
+    })
+}
+# }
+# fn main() {}
 ```
 
 Binding to a headers exchange with the plain `bind` takes the whole exchange instead of a slice of
@@ -590,6 +614,8 @@ which of a queue's consumers takes a message, out of the harness's sight. The ha
 ```
 # #[cfg(feature = "testing")]
 # mod demo {
+use std::error::Error;
+
 use ruststream::testing::TestApp;
 use ruststream_lapin::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -616,7 +642,7 @@ pub fn app() -> RustStream {
         })
 }
 
-pub async fn accepts_a_payment() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn accepts_a_payment() -> Result<(), Box<dyn Error>> {
     let tb = TestApp::start(app()).await?;
 
     // The publish returns once the handler it woke has settled.

@@ -21,7 +21,13 @@
 //!     println!("order {} came via {}", order.id, ctx.context(RoutingKey));
 //!     HandlerOutcome::ack()
 //! }
-//! # let _ = audit;
+//!
+//! fn app() -> RustStream {
+//!     let broker = LapinBroker::new("amqp://localhost:5672");
+//!     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(broker, |b| {
+//!         b.include(audit);
+//!     })
+//! }
 //! ```
 
 use ruststream::{BuildContext, Field};

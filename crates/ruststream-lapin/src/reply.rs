@@ -47,13 +47,14 @@ use ruststream::runtime::{ForReply, Names, Outgoing, PublishContext, PublishTran
 ///     }
 /// }
 ///
-/// let broker = LapinBroker::new("amqp://localhost:5672");
-/// let app = RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
-///     b.include(check)
-///         .out_reply(Publish::default())
-///         .transform(DirectReplyTo);
-/// });
-/// # let _ = app;
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672");
+///     RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
+///         b.include(check)
+///             .out_reply(Publish::default())
+///             .transform(DirectReplyTo);
+///     })
+/// }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DirectReplyTo;
