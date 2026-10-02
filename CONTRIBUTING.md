@@ -26,9 +26,9 @@ git clone https://github.com/powersemmi/ruststream-lapin.git
 ## Environment
 
 - **Rust** through rustup. `rust-toolchain.toml` selects stable with rustfmt and clippy. The
-  minimum supported version is 1.88, the `rust-version` in `Cargo.toml`:
-  `rustup toolchain install 1.88` builds against it with
-  `cargo +1.88 check --workspace --all-features`.
+  minimum supported version is 1.95, the `rust-version` in `Cargo.toml`:
+  `rustup toolchain install 1.95` builds against it with
+  `cargo +1.95 check --workspace --all-features`.
 - **just**, which runs every recipe below.
 - **Docker** with Compose, for the two RabbitMQ stands the live suite runs against: a plain node, and a node built with the consistent-hash and delayed-message-exchange plugins (`docker/rabbitmq-plugins.dockerfile`).
 - Per task:

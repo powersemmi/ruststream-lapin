@@ -1447,7 +1447,7 @@ async fn publish_steps_reach_the_native_amqp_properties() {
         .message(&Wire::of(b"{\"id\":1}"))
         .to(&stepped_queue)
         .priority(4)
-        .expiration(Duration::from_secs(60))
+        .expiration(Duration::from_mins(1))
         .publish()
         .await
         .expect("publish with steps");

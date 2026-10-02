@@ -380,7 +380,7 @@ mod tests {
     fn a_call_site_field_wins_over_the_policy_and_the_rest_is_kept() {
         let defaults = LapinPublishOptions {
             priority: Some(3),
-            expiration: Some(Duration::from_secs(60)),
+            expiration: Some(Duration::from_mins(1)),
             persistent: Some(true),
         };
         let call = LapinPublishOptions {
@@ -390,7 +390,7 @@ mod tests {
 
         let resolved = call.over(&defaults);
         assert_eq!(resolved.priority, Some(9));
-        assert_eq!(resolved.expiration, Some(Duration::from_secs(60)));
+        assert_eq!(resolved.expiration, Some(Duration::from_mins(1)));
         assert_eq!(resolved.persistent, Some(true));
     }
 

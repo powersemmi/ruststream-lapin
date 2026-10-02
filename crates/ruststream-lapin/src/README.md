@@ -401,7 +401,7 @@ async fn ship(
         shipments
             .message(&shipment)
             .priority(9)
-            .expiration(Duration::from_secs(3600))
+            .expiration(Duration::from_hours(1))
             .publish()
             .await
     } else {
@@ -446,7 +446,7 @@ values round-trip.
 
 A publishing handler returns its reply and the runtime publishes it through the policy named at
 `.out_reply(..)`. Where it goes is the reply type's word: `#[outgoing(name = "..")]` fixes the
-routing key, and a type that declares none takes the name the `publish("..")` clause gives. The
+routing key, and a type that declares none takes the name the `reply("..")` clause gives. The
 steps after the position fill the rest of the wiring, `.codec(..)` for the reply codec and
 `.transform(..)` for a change to each reply before it leaves. The whole reply surface is the
 core's: <https://docs.rs/ruststream/latest/ruststream/runtime/index.html#replies>.
@@ -502,7 +502,7 @@ struct Stock {
     available: bool,
 }
 
-#[subscriber("inventory.check", publish("inventory.check.unrouted"))]
+#[subscriber("inventory.check", reply("inventory.check.unrouted"))]
 async fn check(req: &CheckStock) -> Stock {
     Stock {
         available: !req.sku.is_empty(),

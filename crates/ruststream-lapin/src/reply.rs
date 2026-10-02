@@ -3,7 +3,7 @@
 use ruststream::Str;
 use ruststream::runtime::{ForReply, Names, Outgoing, PublishContext, PublishTransform};
 
-/// Redirects each reply of a `#[subscriber(.., publish(..))]` handler to the requester's
+/// Redirects each reply of a `#[subscriber(.., reply(..))]` handler to the requester's
 /// private reply-to address, echoing its correlation id.
 ///
 /// This is the canonical responder wiring for [request/reply over `RabbitMQ` direct
@@ -40,7 +40,7 @@ use ruststream::runtime::{ForReply, Names, Outgoing, PublishContext, PublishTran
 ///     available: bool,
 /// }
 ///
-/// #[subscriber("inventory.check", publish("inventory.check.unrouted"))]
+/// #[subscriber("inventory.check", reply("inventory.check.unrouted"))]
 /// async fn check(ask: &Ask) -> Stock {
 ///     Stock {
 ///         available: !ask.sku.is_empty(),

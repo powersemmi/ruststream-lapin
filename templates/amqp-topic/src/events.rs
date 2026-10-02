@@ -27,12 +27,12 @@ pub struct Recorded {
 
 /// Records every `order.*` event and replies with a `Recorded` acknowledgement.
 ///
-/// The queue is bound to the `events` topic exchange under `order.*`; the `publish` clause makes
+/// The queue is bound to the `events` topic exchange under `order.*`; the `reply` clause makes
 /// the runtime encode the return value and publish it at the destination `Recorded` declares (the
 /// router wires a publisher targeting the `events` exchange).
 #[subscriber(
     RabbitQueue::new("order-events").bind(RabbitExchange::topic("events"), "order.*"),
-    publish
+    reply
 )]
 pub async fn record(event: &OrderEvent) -> Recorded {
     println!("recording order {} ({})", event.id, event.kind);

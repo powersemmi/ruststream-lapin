@@ -1007,7 +1007,7 @@ async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
     tb.shutdown().await.expect("shutdown");
 }
 
-#[subscriber(RabbitQueue::new("rpc.in"), publish("rpc.fallback"))]
+#[subscriber(RabbitQueue::new("rpc.in"), reply("rpc.fallback"))]
 async fn echo_id(order: &Order) -> Result<Order, HandlerOutcome> {
     Ok(Order { id: order.id })
 }
@@ -1064,7 +1064,7 @@ struct Confirmation {
     id: u64,
 }
 
-#[subscriber("orders.declared", publish)]
+#[subscriber("orders.declared", reply)]
 async fn confirm_order(order: &Order) -> Confirmation {
     Confirmation { id: order.id }
 }
@@ -1075,7 +1075,7 @@ struct Receipt {
     id: u64,
 }
 
-#[subscriber("orders.mounted", publish("receipts"))]
+#[subscriber("orders.mounted", reply("receipts"))]
 async fn receipt_for(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }
