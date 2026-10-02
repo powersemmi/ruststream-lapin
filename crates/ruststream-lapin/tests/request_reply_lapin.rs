@@ -55,7 +55,7 @@ struct RpcState {
 
 // The responder: an ordinary handler whose reply is redirected to the requester's private
 // address by the crate's own transform.
-#[subscriber("inventory.check", publish("inventory.unrouted"))]
+#[subscriber("inventory.check", reply("inventory.unrouted"))]
 async fn check_stock(ask: &CheckStock) -> Stock {
     Stock {
         available: ask.sku != "unobtainium",

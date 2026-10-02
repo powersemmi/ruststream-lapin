@@ -2,7 +2,7 @@
 //! services query synchronously through the broker (its counterpart is the
 //! `lapin_rpc_client` example).
 //!
-//! The responder is an ordinary `#[subscriber(.., publish(..))]` handler; what makes it an RPC
+//! The responder is an ordinary `#[subscriber(.., reply(..))]` handler; what makes it an RPC
 //! responder is the crate's [`DirectReplyTo`] transform composed onto the reply publisher, which
 //! redirects each reply to the private address the requester stamped on the request. The
 //! handler itself knows nothing about reply-to.
@@ -33,7 +33,7 @@ struct Stock {
 
 // A plain publishing handler: decode the request, return the reply. `Err` settles without
 // replying, and the requester's timeout is the recovery mechanism.
-#[subscriber("inventory.check", publish("inventory.check.unrouted"))]
+#[subscriber("inventory.check", reply("inventory.check.unrouted"))]
 async fn check(req: &CheckStock) -> Result<Stock, HandlerOutcome> {
     if req.sku.is_empty() {
         return Err(HandlerOutcome::drop());

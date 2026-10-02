@@ -33,7 +33,7 @@ struct Stock {
 // pass on a value the crate never read.
 #[subscriber(
     RabbitQueue::new("inventory.check").durable(false).exclusive(true).auto_delete(true),
-    publish("inventory.unrouted")
+    reply("inventory.unrouted")
 )]
 async fn check(ask: &Ask) -> Stock {
     Stock {

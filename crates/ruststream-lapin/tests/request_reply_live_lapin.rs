@@ -54,14 +54,14 @@ struct Stock {
     available: bool,
 }
 
-#[subscriber(RabbitQueue::new(ASK), publish(UNROUTED))]
+#[subscriber(RabbitQueue::new(ASK), reply(UNROUTED))]
 async fn check(ask: &CheckStock) -> Stock {
     Stock {
         available: ask.sku != "unobtainium",
     }
 }
 
-#[subscriber(RabbitQueue::new(ASK_FOREIGN), publish(UNROUTED))]
+#[subscriber(RabbitQueue::new(ASK_FOREIGN), reply(UNROUTED))]
 async fn check_foreign(ask: &CheckStock) -> Stock {
     Stock {
         available: ask.sku != "unobtainium",
