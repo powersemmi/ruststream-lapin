@@ -3,6 +3,10 @@ set dotenv-load := false
 
 export PATH := env("HOME") + "/.cargo/bin:" + env("HOME") + "/.local/bin:" + env("PATH")
 
+# The scenarios `just bench-code` counts, one benchmark file each. Every one holds an allocation
+# floor, and a run against a baseline holds every one to the instruction limit as well.
+code_benches := "--bench consume --bench reply --bench batch"
+
 default: check
 
 check:
@@ -86,14 +90,21 @@ bench *ARGS: brokers-up
 # build, so the recipe clears it.
 #
 # Extra arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
-# `just bench-code --baseline=main` compares against it and fails on more than five percent more
-# instructions. A plain run applies no instruction limit: the runner would hold it to the previous
-# run, and two runs of an unchanged tree move by the socket waits alone.
-bench-code *ARGS: brokers-up
+# `just bench-code --baseline=main` measures against it.
+#
+# A run against a baseline, named with `--baseline` or in `GUNGRAUN_BASELINE`, fails on more than
+# five percent more instructions than the baseline in any scenario. The limit is relative, so it
+# applies only there: a plain run would be held to the previous run, and two runs of an unchanged
+# tree move by the socket waits alone. The allocation limits are absolute, and every run is held
+# to them.
+#
+# A benchmark that breaches a limit fails the run, and the run still goes to the end: the table
+# prints, every breach under it with the value it was compared against beside the new one, and
+# the recipe fails after that. A build error stops it before the stand starts.
+[positional-arguments]
+bench-code *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    trap 'just brokers-down' EXIT
-    mkdir -p target
     version="$(cargo pkgid gungraun)"
     version="${version##*@}"
     runner="$PWD/target/gungraun-runner"
@@ -102,15 +113,25 @@ bench-code *ARGS: brokers-up
         cargo install --locked --root "$runner" gungraun-runner --version "=$version"
     fi
     unset GUNGRAUN_RUNNER
-    export PATH="$runner/bin:$PATH"
+    export PATH="$runner/bin:$PATH" RUSTFLAGS=""
+    # A baseline named on the command line or in the environment brings the instruction limit.
+    baseline="${GUNGRAUN_BASELINE:-}"
+    for arg in "$@"; do
+        case "$arg" in --baseline | --baseline=*) baseline="$arg" ;; esac
+    done
     limits=()
-    if [[ " {{ ARGS }}" == *" --baseline"* ]]; then
+    if [ -n "$baseline" ]; then
         limits=(--callgrind-limits='ir=5.0%')
     fi
-    RUSTFLAGS="" AMQP_TEST_URL=amqp://127.0.0.1:5672 \
-        cargo bench -p ruststream-lapin-bench --bench consume --bench reply --bench batch \
-        -- --output-format=json "${limits[@]}" {{ ARGS }} > target/bench-code.json
+    cargo bench -p ruststream-lapin-bench {{ code_benches }} --no-run
+    trap 'just brokers-down' EXIT
+    just brokers-up
+    status=0
+    AMQP_TEST_URL=amqp://127.0.0.1:5672 \
+        cargo bench -p ruststream-lapin-bench {{ code_benches }} --no-fail-fast \
+        -- --output-format=json "${limits[@]}" "$@" > target/bench-code.json || status=$?
     python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
+    exit "$status"
 
 fmt:
     cargo fmt --all

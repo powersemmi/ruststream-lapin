@@ -64,7 +64,9 @@ templates/amqp-queue --name smoke` renders one locally.
 on the plain stand and rewrites `docs/benchmarks/results.json`. It takes minutes and wants the
 machine to itself. `just bench-code` counts what a message costs in code, in instructions and
 allocations of a service on the same stand, and rewrites the code table of the same document; it
-takes under a minute.
+takes under a minute. `just bench-code --save-baseline=main` on `main` and
+`just bench-code --baseline=main` on a branch compare the two, and a pull request that changes the
+cost cites its numbers.
 
 ## Testing against a local core
 
