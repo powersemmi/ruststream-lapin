@@ -108,5 +108,5 @@ just bench-code
 ```
 
 这条 recipe 从 `docker-compose.test.yml` 起停节点，在 valgrind 下统计代码表，并重写同一份文档里的
-`code` 部分。它要花不到一分钟，需要 valgrind 和基准测试运行器：
-`cargo install --locked gungraun-runner --version =0.19.4`。
+`code` 部分。它要花不到一分钟，需要 valgrind。基准测试运行器由 recipe 自己安装，版本与 `Cargo.lock`
+锁定的一致。

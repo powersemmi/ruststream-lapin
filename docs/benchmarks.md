@@ -131,5 +131,5 @@ just bench-code
 
 The recipe starts the node from `docker-compose.test.yml`, counts the code table under valgrind,
 stops the node again and rewrites the `code` section of the same document. It takes under a minute
-and needs valgrind and the benchmark runner:
-`cargo install --locked gungraun-runner --version =0.19.4`.
+and needs valgrind. The recipe installs the benchmark runner itself, at the release `Cargo.lock`
+pins.
