@@ -20,7 +20,9 @@ benchmark, in the summary layout gungraun 0.20 writes (its version 7). It writes
 section, one entry per scenario with instructions and allocations per message plus what starting
 the service cost once, by the core's method: every scenario is measured over one delivery, over
 MESSAGES and over twice MESSAGES, the slope between the last two is the steady state, and the
-one-delivery run is the cold start. Either run keeps the section the other one wrote.
+one-delivery run is the cold start. `--messages` names MESSAGES, the count the benches were built
+with, which `just bench-code N` passes on and which is 1000 otherwise. Either run keeps the
+section the other one wrote.
 
 A code benchmark that breaches one of its limits fails the run, and in this output format the
 runner says nothing more about it: what went over is recorded in the summary alone. So `--code`
@@ -38,6 +40,7 @@ comes from the DMI tables, which most systems only let root read.
     python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
 """
 
+import argparse
 import json
 import re
 import subprocess
@@ -150,13 +153,16 @@ def environment(round_trip_us: float) -> dict[str, str]:
 # version stops the conversion with a message naming both rather than with a missing field.
 SUMMARY_VERSION = "7"
 
-# Deliveries per measured run of the code-cost benches, the default of their `MESSAGES`.
-CODE_MESSAGES = 1000
+# Deliveries per measured run of the code-cost benches, the default of their `MESSAGES`. Every
+# published number is per message, so the totals are divided by it. `just bench-code N` builds the
+# benches with another count and passes the same one here through `--messages`.
+DEFAULT_CODE_MESSAGES = 1000
 
-# An instruction count below this on a code run means the measured region stopped matching its
-# frame and the run reported the process exit, not that the code got faster. The cold run handles
-# one delivery, so it is held to a lower floor.
-CODE_FLOOR = 100_000
+# An instruction count below this on a code run of the default count means the measured region
+# stopped matching its frame and the run reported the process exit, not that the code got faster.
+# The floor scales with the count. The cold run handles one delivery, so it is held to a lower
+# floor.
+CODE_FLOOR_PER_DEFAULT_RUN = 100_000
 CODE_COLD_FLOOR = 1_000
 
 # The code table, in reading order: the published name, the benchmark as `file/function`, and
@@ -219,9 +225,9 @@ def code_runs(summaries: list[dict]) -> dict[str, dict]:
 METRIC_NAMES = {("Callgrind", "Ir"): "instructions", ("Dhat", "TotalBlocks"): "allocations"}
 
 
-def run_name(run: str) -> str:
+def run_name(run: str, messages: int) -> str:
     """A benchmark id as the number of deliveries its run handled."""
-    counts = {"first": 1, "base": CODE_MESSAGES, "twice": 2 * CODE_MESSAGES}
+    counts = {"first": 1, "base": messages, "twice": 2 * messages}
     if run not in counts:
         return run
     return "one delivery" if counts[run] == 1 else f"{counts[run]} deliveries"
@@ -252,12 +258,13 @@ def breach(regression: dict, metrics: dict) -> str:
     return f"{label} {change}{as_text(detail['new'])} against a limit of {as_text(detail['limit'])}"
 
 
-def code_breaches(summaries: list[dict]) -> list[str]:
+def code_breaches(summaries: list[dict], messages: int) -> list[str]:
     """Every limit the run breached, one line each, named by its scenario and its run."""
     names = {key: name for name, key, _ in CODE_SCENARIOS}
     found = []
     for summary in summaries:
-        where = f"{names.get(benchmark(summary), benchmark(summary))}, {run_name(summary['id'])}"
+        scenario = names.get(benchmark(summary), benchmark(summary))
+        where = f"{scenario}, {run_name(summary['id'], messages)}"
         for profile in summary["profiles"]:
             total = profile["data"]["total"]
             for regression in total["regressions"]:
@@ -296,20 +303,21 @@ def per_message(figure: float) -> float:
     return round(figure, 3) if abs(figure) < 1 else round(figure, 1)
 
 
-def code_section(found: dict[str, dict]) -> list[dict]:
+def code_section(found: dict[str, dict], messages: int) -> list[dict]:
+    floor = CODE_FLOOR_PER_DEFAULT_RUN * messages // DEFAULT_CODE_MESSAGES
     rows = []
     for name, key, gated in CODE_SCENARIOS:
-        base = code_total(found, f"{key}/base", CODE_FLOOR)
-        twice = code_total(found, f"{key}/twice", CODE_FLOOR)
+        base = code_total(found, f"{key}/base", floor)
+        twice = code_total(found, f"{key}/twice", floor)
         if twice["instructions"] <= base["instructions"]:
             sys.exit(f"benchmark {key} does not grow with the message count: no slope to read")
         first = code_total(found, f"{key}/first", CODE_COLD_FLOOR)
         rows.append(
             {
                 "name": name,
-                "messages": CODE_MESSAGES,
+                "messages": messages,
                 "framework": {
-                    metric: per_message((twice[metric] - base[metric]) / CODE_MESSAGES)
+                    metric: per_message((twice[metric] - base[metric]) / messages)
                     for metric in ("instructions", "allocations")
                 },
                 "cold": {metric: first[metric] for metric in ("instructions", "allocations")},
@@ -324,21 +332,31 @@ def valgrind() -> str:
 
 
 def main() -> int:
-    args = sys.argv[1:]
-    code = bool(args) and args[0] == "--code"
-    if code:
-        args = args[1:]
-    if len(args) != 2:
-        print(__doc__, file=sys.stderr)
-        return 2
-    source, out = Path(args[0]), Path(args[1])
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--code", action="store_true", help="read a run of the code-cost benches")
+    parser.add_argument(
+        "--messages",
+        type=int,
+        help="deliveries per measured run of the code-cost benches, the count they were built with",
+    )
+    parser.add_argument("source", type=Path, help="the JSON the benchmark run wrote")
+    parser.add_argument("out", type=Path, help="the results document to write")
+    args = parser.parse_args()
+    if args.messages is not None and not args.code:
+        parser.error("--messages is the count of a code run, so it goes with --code")
+    messages = DEFAULT_CODE_MESSAGES if args.messages is None else args.messages
+    if messages <= 0:
+        parser.error("--messages must be a positive number of deliveries")
+    code, source, out = args.code, args.source, args.out
     previous = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
     breached = []
     if code:
         summaries = code_summaries(source)
-        breached = code_breaches(summaries)
+        breached = code_breaches(summaries, messages)
         try:
-            rows = code_section(code_runs(summaries))
+            rows = code_section(code_runs(summaries), messages)
         except SystemExit:
             # One failure does not hide another: a summary that cannot be converted still shows
             # what the run breached.

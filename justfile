@@ -89,8 +89,13 @@ bench *ARGS: brokers-up
 # the runner up. A `GUNGRAUN_RUNNER` in the environment would win over PATH when the benchmarks
 # build, so the recipe clears it.
 #
-# Extra arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
-# `just bench-code --baseline=main` measures against it.
+# A leading number is the deliveries per measured run: the default of 1000 is what the published
+# document is measured at, a larger count buys a steadier number for a longer run
+# (`just bench-code 2000`). The benches read it at build time, so a new count rebuilds them. The
+# other arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
+# `just bench-code --baseline=main` measures against it. Totals over another count are not
+# comparable, so each count keeps its runs and baselines in a directory of its own,
+# `target/gungraun/<count>`.
 #
 # A run against a baseline, named with `--baseline` or in `GUNGRAUN_BASELINE`, fails on more than
 # five percent more instructions than the baseline in any scenario. The limit is relative, so it
@@ -105,6 +110,11 @@ bench *ARGS: brokers-up
 bench-code *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
+    messages=1000
+    if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+        messages="$1"
+        shift
+    fi
     version="$(cargo pkgid gungraun)"
     version="${version##*@}"
     runner="$PWD/target/gungraun-runner"
@@ -113,7 +123,8 @@ bench-code *ARGS:
         cargo install --locked --root "$runner" gungraun-runner --version "=$version"
     fi
     unset GUNGRAUN_RUNNER
-    export PATH="$runner/bin:$PATH" RUSTFLAGS=""
+    export PATH="$runner/bin:$PATH" RUSTFLAGS="" RUSTSTREAM_BENCH_MESSAGES="$messages" \
+        GUNGRAUN_HOME="$PWD/target/gungraun/$messages"
     # A baseline named on the command line or in the environment brings the instruction limit.
     baseline="${GUNGRAUN_BASELINE:-}"
     for arg in "$@"; do
@@ -130,7 +141,8 @@ bench-code *ARGS:
     AMQP_TEST_URL=amqp://127.0.0.1:5672 \
         cargo bench -p ruststream-lapin-bench {{ code_benches }} --no-fail-fast \
         -- --output-format=json "${limits[@]}" "$@" > target/bench-code.json || status=$?
-    python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
+    python3 scripts/bench_results.py --code --messages "$messages" target/bench-code.json \
+        docs/benchmarks/results.json
     exit "$status"
 
 fmt:

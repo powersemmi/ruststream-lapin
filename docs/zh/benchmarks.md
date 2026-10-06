@@ -110,4 +110,5 @@ just bench-code
 
 这条 recipe 从 `docker-compose.test.yml` 起停节点，在 valgrind 下统计代码表，并重写同一份文档里的
 `code` 部分。它要花不到一分钟，需要 valgrind。基准测试运行器由 recipe 自己安装，版本与 `Cargo.lock`
-锁定的一致。
+锁定的一致。在 recipe 名字后面加一个数字，可以设定每次被测量的运行投递多少条消息，例如
+`just bench-code 2000`；公布的数字是在默认值 1000 下测得的。
