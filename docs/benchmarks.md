@@ -81,7 +81,8 @@ from run to run. Over seven runs of an unchanged tree a run's instructions moved
 percent, and its allocations by a block at most. A scenario's allocation floor sits a tenth of a
 percent above the highest count it produced, and `just bench-code` fails on an allocation above it.
 With `--baseline=main` the recipe also fails on more than five percent more instructions; a plain
-run applies no instruction limit. A pull request that changes the cost cites its numbers.
+run applies no instruction limit. A failed run still prints the table, and under it every limit it
+breached, the old value beside the new one. A pull request that changes the cost cites its numbers.
 
 ## The machine
 
@@ -131,5 +132,6 @@ just bench-code
 
 The recipe starts the node from `docker-compose.test.yml`, counts the code table under valgrind,
 stops the node again and rewrites the `code` section of the same document. It takes under a minute
-and needs valgrind and the benchmark runner:
-`cargo install --locked gungraun-runner --version =0.19.4`.
+and needs valgrind. The recipe installs the benchmark runner itself, at the release `Cargo.lock`
+pins. A number after the recipe's name sets the deliveries per measured run, as in
+`just bench-code 2000`; the published numbers are taken at the default of 1000.

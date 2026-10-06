@@ -39,7 +39,7 @@ git clone https://github.com/powersemmi/ruststream-lapin.git
 | `just typo`, `just zizmor` | uv | the uv documentation |
 | rendering a scaffold under `templates/` | cargo-generate | `cargo install cargo-generate --locked` |
 | `just bench` | Python 3 | the system package manager |
-| `just bench-code` | valgrind and the benchmark runner | the system package manager, then `cargo install --locked gungraun-runner --version =0.19.4` |
+| `just bench-code` | valgrind | the system package manager; the recipe installs the benchmark runner itself, at the release `Cargo.lock` pins |
 | the documentation site | Python 3.12 | `pip install -r docs/requirements.txt`, then `properdocs serve` |
 
 ## Checking a change
@@ -64,7 +64,9 @@ templates/amqp-queue --name smoke` renders one locally.
 on the plain stand and rewrites `docs/benchmarks/results.json`. It takes minutes and wants the
 machine to itself. `just bench-code` counts what a message costs in code, in instructions and
 allocations of a service on the same stand, and rewrites the code table of the same document; it
-takes under a minute.
+takes under a minute. `just bench-code --save-baseline=main` on `main` and
+`just bench-code --baseline=main` on a branch compare the two, and a pull request that changes the
+cost cites its numbers.
 
 ## Testing against a local core
 
