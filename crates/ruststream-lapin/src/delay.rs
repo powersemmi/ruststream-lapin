@@ -18,10 +18,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use lapin::Channel;
-use lapin::options::BasicPublishOptions;
-use lapin::types::ShortString;
+use lapin::options::{BasicPublishOptions, QueueDeclareOptions};
+use lapin::types::{FieldTable, ShortString};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{HeaderMap, Str};
+use thiserror::Error;
 
 use crate::convert;
 use crate::error::AmqpError;
@@ -163,6 +164,84 @@ pub(crate) enum DelayTarget {
         exchange: String,
         routing_key: String,
     },
+}
+
+impl DelayTarget {
+    /// Checks, once, that the waiting queue or delayed exchange exists on the server, for a
+    /// subscription whose broker does not declare it.
+    ///
+    /// The delayed copy is published without waiting for the server's answer and the original is
+    /// acked after it. A copy sent to a waiting queue that does not exist is dropped by the server
+    /// (the default exchange routes it nowhere), and one sent to a delayed exchange that does not
+    /// exist closes the channel the subscription consumes on. Checking at startup turns both into
+    /// a subscription that refuses to open.
+    ///
+    /// A missing target closes `channel` (a passive declaration answers "not found" that way), so
+    /// it runs on the subscription's own channel before the consumer opens: the subscription fails
+    /// with it either way.
+    pub(crate) async fn ensure_exists(
+        &self,
+        channel: &Channel,
+        subscription: &str,
+    ) -> Result<(), AmqpError> {
+        let missing = |what: &'static str, target: &str, source: lapin::Error| {
+            AmqpError::Subscribe(Box::new(MissingDelayTarget {
+                subscription: subscription.to_owned(),
+                what,
+                target: target.to_owned(),
+                source,
+            }))
+        };
+        match self {
+            Self::WaitingQueue { waiting_queue } => {
+                channel
+                    .queue_declare(
+                        convert::short(waiting_queue, "waiting queue name")?,
+                        QueueDeclareOptions {
+                            passive: true,
+                            ..QueueDeclareOptions::default()
+                        },
+                        FieldTable::default(),
+                    )
+                    .await
+                    .map_err(|err| missing("waiting queue", waiting_queue, err))?;
+            }
+            #[cfg(feature = "plugin-dme")]
+            Self::DelayedExchange { exchange, .. } => {
+                use lapin::ExchangeKind;
+                use lapin::options::ExchangeDeclareOptions;
+
+                channel
+                    .exchange_declare(
+                        convert::short(exchange, "delayed exchange name")?,
+                        ExchangeKind::Custom("x-delayed-message".to_owned()),
+                        ExchangeDeclareOptions {
+                            passive: true,
+                            ..ExchangeDeclareOptions::default()
+                        },
+                        FieldTable::default(),
+                    )
+                    .await
+                    .map_err(|err| missing("delayed exchange", exchange, err))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A delay target the subscription's broker does not declare, and the server does not have.
+#[derive(Debug, Error)]
+#[error(
+    "subscription {subscription:?} delays its retries through the {what} {target:?}, which the \
+     server does not have; provision it, or let the broker declare it with \
+     declare_topology(true)"
+)]
+struct MissingDelayTarget {
+    subscription: String,
+    what: &'static str,
+    target: String,
+    #[source]
+    source: lapin::Error,
 }
 
 /// The resolved delay wiring a subscriber threads into each delivery, so a message can honor a

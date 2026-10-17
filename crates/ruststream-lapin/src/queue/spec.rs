@@ -317,7 +317,9 @@ macro_rules! queue_settings {
             ///
             /// The waiting queue is infrastructure: it is declared only when the broker opts into
             /// [`declare_topology`](crate::LapinBroker::declare_topology); otherwise provision it
-            /// yourself.
+            /// yourself. Without declaration the subscription checks that it exists when it
+            /// opens, and refuses to open when it does not, because a delayed copy sent to a
+            /// missing waiting queue would be dropped.
             #[must_use]
             pub fn delay(mut self, delay: Delay) -> Self {
                 self.spec.delay = Some(delay);

@@ -351,8 +351,9 @@ impl ConnectedLapinBroker {
     /// Returns [`AmqpError::Closed`] after shutdown, [`AmqpError::Declare`] when opted-in
     /// declaration fails, [`AmqpError::InvalidOptions`] for contradictory descriptor options and
     /// for a retry declaration this queue cannot carry, and [`AmqpError::Subscribe`] when the
-    /// channel or consumer cannot be opened (for example the queue does not exist and declaration
-    /// was not opted into).
+    /// channel or consumer cannot be opened (for example the queue, or the waiting queue or
+    /// delayed exchange its [`delay`](crate::RabbitQueue::delay) names, does not exist and
+    /// declaration was not opted into).
     pub async fn subscribe(&self, def: impl QueueDescriptor) -> Result<LapinSubscriber, AmqpError> {
         let conn = match &self.link {
             Link::Amqp(conn) => conn,
@@ -385,10 +386,16 @@ impl ConnectedLapinBroker {
         // A native delay backend re-publishes the delayed copy on the same channel the delivery is
         // acked on, so no extra channel is created and the publish orders naturally before the
         // ack (duplicate-not-loss).
-        let delay = spec
-            .delay
-            .as_ref()
-            .map(|delay| DelayContext::new(channel.clone(), delay.target_for(&queue)));
+        let delay = match &spec.delay {
+            Some(delay) => {
+                let target = delay.target_for(&queue);
+                if !self.declare {
+                    target.ensure_exists(&channel, &queue).await?;
+                }
+                Some(DelayContext::new(channel.clone(), target))
+            }
+            None => None,
+        };
 
         let consumer = channel
             .basic_consume(

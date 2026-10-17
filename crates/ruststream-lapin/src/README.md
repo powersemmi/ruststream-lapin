@@ -283,6 +283,8 @@ dead-letters back to the origin when it fires; the `plugin-dme` feature offers
 a short delay never waits behind a long one. A classic waiting queue releases expired messages
 only from its head, so mixed delays want one waiting queue per delay class, a quorum queue, or the
 plugin. Either waiting queue is infrastructure, declared only under `declare_topology(true)`.
+Without it, the subscription checks when it opens that the waiting queue or the delayed exchange
+exists, and refuses to open when it does not.
 
 The copy the wait releases is a new message, which the server counts from zero, so it carries the
 framework's `x-ruststream-retry-count` raised by one. The runtime reads that count on this path as

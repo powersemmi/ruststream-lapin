@@ -306,9 +306,9 @@ impl IncomingMessage for LapinMessage {
     ///
     /// Duplicate-not-loss: the re-publish is sent on the same channel before the original is
     /// acked, so a connection failure between them leaves the original unacked (redelivered), not
-    /// lost. The one loss window is a missing waiting queue - an unroutable publish to the default
-    /// exchange is silently dropped - which is why the waiting queue is the user's declared
-    /// infrastructure.
+    /// lost. The server drops a copy sent to a waiting queue that does not exist, so a
+    /// subscription whose broker does not declare topology checks for the waiting queue (or the
+    /// delayed exchange) when it opens, and refuses to open without it.
     ///
     /// # Errors
     ///

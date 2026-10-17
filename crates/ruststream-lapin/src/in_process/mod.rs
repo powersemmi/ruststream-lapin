@@ -20,7 +20,8 @@
 //! direct reply-to. What belongs to the server and is left to the live mode: the prefetch window,
 //! publisher confirms, the atomicity of a server transaction, a plugin exchange's routing, a
 //! queue shared between two connections, and a topology the service expects to find but did not
-//! declare (a subscription here finds every queue it names).
+//! declare (a subscription here finds every queue it names, the waiting queue or delayed exchange
+//! of its delay included).
 
 mod bus;
 mod deliveries;
