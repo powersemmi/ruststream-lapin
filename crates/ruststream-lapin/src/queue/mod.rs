@@ -21,6 +21,8 @@ pub(crate) use spec::{DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, declared_ar
 // The in-process transport reads a declaration's arguments back the way a server reads them off
 // the queue, and nothing else in the crate needs them by these names.
 #[cfg(feature = "testing")]
+pub(crate) use spec::Binding;
+#[cfg(feature = "testing")]
 pub(crate) use spec::{DELIVERY_LIMIT, QueueKind};
 
 mod sealed {

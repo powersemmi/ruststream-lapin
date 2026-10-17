@@ -11,6 +11,8 @@ mod error;
 mod exchange;
 #[cfg(feature = "testing")]
 mod in_process;
+#[cfg(feature = "testing")]
+mod live_routes;
 mod message;
 mod publish_policy;
 mod publish_step;

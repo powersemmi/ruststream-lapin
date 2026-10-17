@@ -71,12 +71,17 @@ impl Buffered {
 }
 
 pub(crate) async fn do_publish(
+    conn: &AmqpConnection,
     channel: &Channel,
     exchange: &str,
     routing_key: &str,
     payload: &[u8],
     properties: BasicProperties,
 ) -> Result<PublisherConfirm, AmqpError> {
+    #[cfg(feature = "testing")]
+    conn.routes().published(exchange, routing_key);
+    #[cfg(not(feature = "testing"))]
+    let _ = conn;
     channel
         .basic_publish(
             convert::short(exchange, "exchange name")?,
@@ -154,6 +159,7 @@ impl Publisher for LapinPublisher {
         // Without confirm_select on the channel the returned confirm resolves to NotRequested;
         // dropping it does not lose anything.
         let _confirm = do_publish(
+            conn,
             &channel,
             &self.options.exchange,
             msg.name(),
@@ -253,6 +259,7 @@ impl ConfirmsPublisher {
                 &self.options.resolve(Some(&entry.options)),
             )?;
             let confirm = do_publish(
+                conn,
                 &channel,
                 &self.options.exchange,
                 &entry.routing_key,
@@ -293,6 +300,7 @@ impl ConfirmsPublisher {
         let channel = self.channel(conn, routing_key).await?;
         let properties = convert::properties_for_publish(headers, &self.options.resolve(options))?;
         let confirm = do_publish(
+            conn,
             &channel,
             &self.options.exchange,
             routing_key,
@@ -418,6 +426,7 @@ impl TransactionalPublisher for ConfirmsPublisher {
                 &self.options.resolve(Some(&entry.options)),
             )?;
             let confirm = do_publish(
+                conn,
                 &channel,
                 &self.options.exchange,
                 &entry.routing_key,
@@ -594,6 +603,7 @@ impl Publisher for ServerTxPublisher {
             conn.live_publish_channel(msg.name()).await?
         };
         let _confirm = do_publish(
+            conn,
             &channel,
             &self.options.exchange,
             msg.name(),

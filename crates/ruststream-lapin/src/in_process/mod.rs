@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 pub(crate) use bus::{Bus, BusDelivery};
 pub(crate) use deliveries::{BusDeliveries, QueueBehaviour, Settlement};
+pub(crate) use matching::topic_matches;
 pub(crate) use request::request;
 
 use crate::convert;

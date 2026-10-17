@@ -327,6 +327,8 @@ impl Publisher for LapinRequester {
         let state = self.state(conn, msg.name()).await?;
         let properties =
             convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
+        #[cfg(feature = "testing")]
+        conn.routes().published(&self.options.exchange, msg.name());
         let _confirm = state
             .channel
             .basic_publish(
@@ -415,6 +417,8 @@ impl RequestReply for LapinRequester {
             }
         };
 
+        #[cfg(feature = "testing")]
+        conn.routes().published(&self.options.exchange, msg.name());
         let published = state
             .channel
             .basic_publish(
