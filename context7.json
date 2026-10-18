@@ -1,14 +1,29 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
+  "folders": [
+    "docs",
+    "crates/ruststream-lapin/src",
+    "crates/ruststream-lapin/examples",
+    "website/static"
+  ],
+  "excludeFolders": [
+    "docs/benchmarks",
+    "website/i18n",
+    "website/build",
+    "website/.docusaurus",
+    "website/node_modules",
+    "target"
+  ],
   "rules": [
     "Import `ruststream_lapin::prelude::*` in a routes file (it re-exports the framework's prelude); a handler body imports `ruststream::prelude::*` alone, the one exception being a body that adjusts an AMQP property for a single message.",
-    "Subscribe to a classic queue with `#[subscriber(RabbitQueue::new(\"orders\"))]` or the bare `#[subscriber(\"orders\")]`, and to a quorum queue with `RabbitQuorumQueue::new(..)`; neither descriptor has a bare-type form, so write it out in full in the attribute.",
-    "Cap redeliveries with `.max_attempts(n).dead_letter(name)` right after `include`; on a classic queue add `.out_retry(policy)` to choose the publisher the runtime's copies leave through, and on a quorum queue `out_retry` does not compile because the server moves a spent delivery itself.",
-    "Write a per-message AMQP setting as a publish-builder step (`.priority(n)`, `.expiration(ttl)`, `.persistent(flag)`) on a slot bounded `Out<impl Publisher<Options = LapinPublishOptions>, Marker>`, never as a header, and set the defaults on the policy at the mount site.",
-    "Name the publish policy at the mount site under the family's uniform names - `Publish`, `TransactionalPublish` (publisher confirms, with borrowed and owned transactions), `Request` - and `ServerTxPublish` only where AMQP channel transactions are required.",
-    "Settlement, dead-lettering and a quorum queue's delivery limit are native protocol behaviour; the runtime only counts retries and republishes copies on a classic queue, and holds a `retry_after` copy in process unless the descriptor opts into `.delay(..)`.",
+    "Subscribe to a classic queue with the bare `#[subscriber(\"orders\")]` or `#[subscriber(RabbitQueue::new(\"orders\"))]`, and to a quorum queue with `RabbitQuorumQueue::new(..)`; a descriptor with settings is written in full in the attribute.",
+    "Cap redeliveries with `.max_attempts(n).dead_letter(name)` after `include`; on a classic queue `.out_retry(policy)` picks the publisher the runtime's copies leave through; on a quorum queue `out_retry` does not compile: the server moves a spent delivery.",
+    "Write a per-message AMQP setting as a publish-builder step (`.priority(n)`, `.expiration(ttl)`, `.persistent(flag)`) on a slot bounded `Out<impl Publisher<Options = LapinPublishOptions>, Marker>`, never as a header; policy defaults go at the mount site.",
+    "Name the publish policy at the mount site under the family's uniform names: `Publish`, `TransactionalPublish` (publisher confirms, with borrowed and owned transactions), `Request` - and `ServerTxPublish` only where AMQP channel transactions are required.",
+    "Settlement, dead-lettering and a quorum queue's delivery limit are native protocol behaviour; the runtime counts retries and republishes copies on a classic queue only, and holds a `retry_after` copy in process unless the descriptor sets `.delay(..)`.",
     "Create nothing on the broker unless the service owns its topology: `LapinBroker::declare_topology(true)` is the opt-in, and a mount-site retry cap reaches a quorum queue's arguments only through it.",
     "Answer an RPC request by mounting `.out_reply(policy).transform(DirectReplyTo)` over a reply type that declares no `#[outgoing(name = \"..\")]`; the `reply(\"..\")` clause is the address a request without a `reply-to` header falls back to.",
     "Pair `.batch(n)` with a prefetch of at least `n` and tune `.batch_wait(..)`: AMQP pushes one delivery at a time, so the batch is assembled on the client.",
-    "Test the production app: with feature `testing`, hand the builder `main` runs to `ruststream::testing::TestApp::start`, which connects `LapinBroker` in process, and address it as `tb.broker::<LapinBroker>()`; `TestApp::start_live` runs the same test against a real RabbitMQ, which is where a queue's storage, prefetch, publisher confirms and server transactions are exercised."
+    "Test the production app: with feature `testing`, `TestApp::start` runs the app `main` builds, `LapinBroker` in process (`tb.broker::<LapinBroker>()`); `TestApp::start_live` runs it on a real RabbitMQ: storage, prefetch, confirms, server transactions."
   ]
 }

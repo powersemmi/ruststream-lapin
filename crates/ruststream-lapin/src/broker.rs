@@ -190,7 +190,7 @@ const _: () = assert!(size_of::<Link>() == size_of::<Arc<AmqpConnection>>());
 ///
 /// #[subscriber("orders")]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("got order {}", order.id);
+///     tracing::info!(order.id, "accepted");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -202,6 +202,64 @@ const _: () = assert!(size_of::<Link>() == size_of::<Arc<AmqpConnection>>());
 ///         b.include(handle);
 ///     })
 /// }
+/// ```
+///
+/// # Testing
+///
+/// With the `testing` feature, `TestApp::start` runs the service's own app with the broker in
+/// process, and a test addresses it by its production type:
+///
+/// ```
+/// # #[cfg(feature = "testing")]
+/// # mod demo {
+/// use std::error::Error;
+///
+/// use ruststream::testing::TestApp;
+/// use ruststream_lapin::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
+/// #[outgoing(name = "payments")]
+/// struct Payment {
+///     amount: u64,
+/// }
+///
+/// #[subscriber(RabbitQueue::new("payments"))]
+/// async fn accept(payment: &Payment) -> HandlerOutcome {
+///     if payment.amount == 0 {
+///         return HandlerOutcome::drop();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// The app `main` runs.
+/// pub fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("payments", "0.1.0"))
+///         .with_broker(LapinBroker::new("amqp://rabbit:5672"), |b| {
+///             b.include(accept);
+///         })
+/// }
+///
+/// pub async fn accepts_a_payment() -> Result<(), Box<dyn Error>> {
+///     let tb = TestApp::start(app()).await?;
+///
+///     // The publish returns once the handler it woke has settled.
+///     tb.broker::<LapinBroker>()
+///         .message(&Payment { amount: 100 })
+///         .publish()
+///         .await?;
+///
+///     tb.broker::<LapinBroker>()
+///         .subscriber("payments")
+///         .assert_called_once()
+///         .with(&Payment { amount: 100 })
+///         .settled(HandlerOutcome::ack());
+///
+///     tb.shutdown().await?;
+///     Ok(())
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone)]
 #[must_use]

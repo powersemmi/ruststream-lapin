@@ -1,0 +1,59 @@
+# ruststream-lapin
+
+> `ruststream-lapin` is the RabbitMQ broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. It speaks AMQP 0.9.1 over the `lapin` client: a queue is destructive storage, and acknowledgement, requeue and dead-lettering are protocol frames, so a message is settled on the broker itself.
+
+A subscription consumes one queue through a descriptor: `RabbitQueue` (a classic queue, retries counted by the runtime) or `RabbitQuorumQueue` (a quorum queue, retries counted by the server), with bindings and prefetch; `#[subscriber("orders")]` consumes the classic queue `orders`. A routes file imports `ruststream_lapin::prelude::*`, which offers `LapinPublish` as `Publish`, `ConfirmsPublish` as `TransactionalPublish` and `LapinRequest` as `Request`. The AMQP properties of one message are its per-message settings. Two `cargo generate` templates, `templates/amqp-queue` and `templates/amqp-topic`, scaffold a service.
+
+This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, and the framework itself is documented on the RustStream site.
+
+## Guides
+
+- [Guides](https://powersemmi.github.io/ruststream-lapin/latest/): building a RabbitMQ service with the crate, from a first subscriber to production
+- [Getting started](https://powersemmi.github.io/ruststream-lapin/latest/guides/getting-started/): installation, a local RabbitMQ, a first subscriber against it and its test without a server
+- [Work queues](https://powersemmi.github.io/ruststream-lapin/latest/guides/work-queues/): competing consumers on one queue, prefetch, keyed lanes for per-key order, batches and a single active consumer
+- [Exchanges and routing](https://powersemmi.github.io/ruststream-lapin/latest/guides/routing/): the default, topic, fanout and headers exchanges, bindings on the queue and the exchange on the publish policy
+- [Topology](https://powersemmi.github.io/ruststream-lapin/latest/guides/topology/): who creates queues and exchanges, the service with `declare_topology` or operations, and classic and quorum queues
+- [Acknowledgements, retries and dead letters](https://powersemmi.github.io/ruststream-lapin/latest/guides/retries/): native settlement frames, a retry now or after a delay, the attempt cap and the dead-letter queue
+- [Reliable publishing](https://powersemmi.github.io/ruststream-lapin/latest/guides/publishing/): fire-and-forget, publisher confirms, channel transactions and per-message priority, expiration and persistence
+- [Request and reply](https://powersemmi.github.io/ruststream-lapin/latest/guides/rpc/): a requester over direct reply-to, a responder that replies to it, and a timeout
+- [Testing a RabbitMQ service](https://powersemmi.github.io/ruststream-lapin/latest/guides/testing/): `TestApp` on the production app with outcomes, replies and delays, and the same test against a running RabbitMQ
+- [Running in production](https://powersemmi.github.io/ruststream-lapin/latest/guides/production/): the connection URI, TLS, a named connection, prefetch, channels, connection loss and shutdown
+
+## Components
+
+- [Components](https://powersemmi.github.io/ruststream-lapin/latest/components/): the parts of the crate a RabbitMQ service uses, one page each
+- [LapinBroker](https://powersemmi.github.io/ruststream-lapin/latest/components/broker/): the broker type, its URI and its lazy connection, with connection, TLS, `declare_topology`, shutdown, the prelude and errors
+- [Subscriptions](https://powersemmi.github.io/ruststream-lapin/latest/components/subscriptions/): a queue name in `#[subscriber]`, `RabbitQueue`, `RabbitQuorumQueue`, prefetch, arguments, batches and lanes
+- [RabbitExchange](https://powersemmi.github.io/ruststream-lapin/latest/components/exchanges/): bindings to direct, topic, fanout and headers exchanges, and the consistent-hash plugin exchange
+- [Settlement](https://powersemmi.github.io/ruststream-lapin/latest/components/settlement/): what ack, retry and drop send, dead-letter exchanges, retry caps, the quorum delivery limit and delayed redelivery
+- [AmqpContext](https://powersemmi.github.io/ruststream-lapin/latest/components/context/): the exchange, routing key, redelivered flag and delivery tag of a delivery, read through `Ctx<K>`
+- [LapinPublish](https://powersemmi.github.io/ruststream-lapin/latest/components/publishing/): the plain publish policy, its exchange, the headers that ride native properties
+- [Properties](https://powersemmi.github.io/ruststream-lapin/latest/components/publishing/properties/): priority, expiration and persistence of one message, as publish-builder steps over the policy's defaults
+- [Transactions](https://powersemmi.github.io/ruststream-lapin/latest/components/transactions/): publisher confirms, server transactions and the owned `ConfirmsTransaction`
+- [LapinRequest](https://powersemmi.github.io/ruststream-lapin/latest/components/request/): requests over direct reply-to, and `DirectReplyTo` on the responder
+- [AMQP bindings](https://powersemmi.github.io/ruststream-lapin/latest/components/asyncapi/): what the `asyncapi` feature reports for the server, channels, operations and queue bindings
+- [Testing](https://powersemmi.github.io/ruststream-lapin/latest/components/testing/): `LapinBroker` in process under `TestApp`, and the same test against a running RabbitMQ
+
+## Architecture
+
+- [Architecture](https://powersemmi.github.io/ruststream-lapin/latest/architecture/): how RabbitMQ works, where the crate sits between RabbitMQ and the RustStream runtime, and what that costs
+- [Model](https://powersemmi.github.io/ruststream-lapin/latest/architecture/rabbitmq/): exchanges route a message into queues by bindings, and a consumer reads one queue over a channel
+- [Exchange types](https://powersemmi.github.io/ruststream-lapin/latest/architecture/rabbitmq/routing/): what each exchange type reads to pick its queues
+- [Classic and quorum queues](https://powersemmi.github.io/ruststream-lapin/latest/architecture/rabbitmq/queues/): a single-node queue that counts nothing, and a replicated one that counts deliveries
+- [Consumers and prefetch](https://powersemmi.github.io/ruststream-lapin/latest/architecture/rabbitmq/consumers/): pushed deliveries within a window of unacknowledged ones
+- [Confirms and transactions](https://powersemmi.github.io/ruststream-lapin/latest/architecture/rabbitmq/publishing/): when a publish ends: the frame written, the server's confirm, or a commit
+- [Direct reply-to](https://powersemmi.github.io/ruststream-lapin/latest/architecture/rabbitmq/reply-to/): a reply sent straight to the requester's channel, at most once
+- [Design](https://powersemmi.github.io/ruststream-lapin/latest/architecture/design/): one connection and a channel per subscription, between the runtime and the `lapin` client
+- [Lifecycle](https://powersemmi.github.io/ruststream-lapin/latest/architecture/lifecycle/): `new`, `connect`, a channel and a consumer per subscription at startup, and shutdown
+- [Path](https://powersemmi.github.io/ruststream-lapin/latest/architecture/path/): one delivery through the handler and the reply to its acknowledgement
+- [Lanes and order](https://powersemmi.github.io/ruststream-lapin/latest/architecture/lanes/): one queue on one channel, and `workers(n, by_key)` lanes keyed by a header
+- [Settlement and retries](https://powersemmi.github.io/ruststream-lapin/latest/architecture/settlement/): what `ack`, drop, retry and `retry_after` become as frames on the delivery's channel
+- [Benchmarks](https://powersemmi.github.io/ruststream-lapin/latest/architecture/benchmarks/): what the crate and the framework's runtime cost over the raw `lapin` client, and the cost of the crate's own code
+- [Benchmarks: Numbers](https://powersemmi.github.io/ruststream-lapin/latest/architecture/benchmarks/numbers/): what each published number measures, and what it does not allow you to conclude
+- [Benchmarks: Methodology](https://powersemmi.github.io/ruststream-lapin/latest/architecture/benchmarks/methodology/): the three loops, the run on a real node and the code count with `just bench` and `just bench-code`
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-lapin): the full rustdoc of the crate, whose overview maps each topic to its page here
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-lapin): the crate's repository and its templates

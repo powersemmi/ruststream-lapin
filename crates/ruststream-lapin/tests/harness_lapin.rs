@@ -41,8 +41,8 @@ struct Shipments;
 /// The mount site's own priority, which every shipment carries unless a step says otherwise.
 const MOUNTED_PRIORITY: u8 = 3;
 
-// The body the `lapin_priority` example ships, narrowed to one named slot so the harness can
-// assert per slot.
+// A body that raises one message's priority, on one named slot so the harness can assert per
+// slot.
 #[subscriber("orders")]
 async fn ship(
     order: &Order,

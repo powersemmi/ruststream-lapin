@@ -1,5 +1,8 @@
 //! The imports a service on `RabbitMQ` writes every time, in one glob.
 //!
+//! The [Prelude](https://powersemmi.github.io/ruststream-lapin/latest/components/broker/prelude/)
+//! page shows it in a service.
+//!
 //! # Examples
 //!
 //! ```

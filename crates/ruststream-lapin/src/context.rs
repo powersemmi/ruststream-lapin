@@ -3,7 +3,11 @@
 //! [`AmqpContext`] carries the AMQP delivery metadata that is not part of the payload or the
 //! headers. Request it in a handler by typing the context parameter as
 //! `Context<'_, AmqpContext>` and read individual fields with the zero-sized keys in [`keys`].
-//! The prelude carries the keys but not the context type, so import that from here:
+//! The prelude carries the keys but not the context type, so import that from here. The
+//! [AmqpContext](https://powersemmi.github.io/ruststream-lapin/latest/components/context/) page
+//! shows both forms in a service.
+//!
+//! # Examples
 //!
 //! ```
 //! use ruststream_lapin::context::AmqpContext;
@@ -18,7 +22,7 @@
 //!
 //! #[subscriber(RabbitQueue::new("orders"))]
 //! async fn audit(order: &Order, ctx: &mut Context<'_, AmqpContext>) -> HandlerOutcome {
-//!     println!("order {} came via {}", order.id, ctx.context(RoutingKey));
+//!     tracing::info!(order.id, routing_key = ctx.context(RoutingKey), "audited");
 //!     HandlerOutcome::ack()
 //! }
 //!
@@ -81,6 +85,38 @@ impl BuildContext<LapinMessage> for AmqpContext {
 }
 
 /// Zero-sized [`Field`] keys reading one [`AmqpContext`] field each.
+///
+/// A handler names the fields it needs one key at a time, through `Ctx<..>`; the prelude carries
+/// the four keys.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RabbitQueue::new("orders-audit"))]
+/// async fn audit(
+///     order: &Order,
+///     Ctx(routing_key): Ctx<RoutingKey>,
+///     Ctx(redelivered): Ctx<Redelivered>,
+/// ) -> HandlerOutcome {
+///     tracing::info!(order.id, routing_key, redelivered, "audited");
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672");
+///     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(broker, |b| {
+///         b.include(audit);
+///     })
+/// }
+/// ```
 pub mod keys {
     use ruststream::ContextField;
 

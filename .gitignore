@@ -2,9 +2,6 @@ target/
 **/*.rs.bk
 Cargo.lock.bak
 
-# properdocs build output
-site/
-
 .venv/
 __pycache__/
 *.py[cod]

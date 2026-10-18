@@ -22,7 +22,7 @@ use lapin::ExchangeKind;
 /// #[subscriber(RabbitQueue::new("orders")
 ///     .bind(RabbitExchange::topic("events").durable(true), "order.*"))]
 /// async fn on_order(event: &OrderPlaced) -> HandlerOutcome {
-///     println!("order {} placed", event.id);
+///     tracing::info!(event.id, "order placed");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -75,6 +75,50 @@ impl RabbitExchange {
     /// table carries `x-match` (`all` or `any`) and the headers a message has to match. The
     /// plain [`bind`](crate::RabbitQueue::bind) sends no arguments, and an empty table here
     /// matches every message the exchange gets rather than none.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_lapin::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// // The binding arguments: how to match, then the headers matched on.
+    /// fn gold_in_eu(x_match: &str) -> FieldTable {
+    ///     let mut arguments = FieldTable::default();
+    ///     arguments.insert("x-match".into(), AMQPValue::LongString(x_match.into()));
+    ///     arguments.insert("region".into(), AMQPValue::LongString("eu".into()));
+    ///     arguments.insert("tier".into(), AMQPValue::LongString("gold".into()));
+    ///     arguments
+    /// }
+    ///
+    /// #[subscriber(RabbitQueue::new("orders.eu.gold")
+    ///     .bind_with(RabbitExchange::headers("orders"), "", gold_in_eu("all")))]
+    /// async fn on_gold_in_eu(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "gold order in the EU");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// // One header is enough here, where the binding above needs both.
+    /// #[subscriber(RabbitQueue::new("orders.eu.or.gold")
+    ///     .bind_with(RabbitExchange::headers("orders"), "", gold_in_eu("any")))]
+    /// async fn on_gold_or_eu(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "gold order or an order in the EU");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// fn app() -> RustStream {
+    ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(on_gold_in_eu);
+    ///         b.include(on_gold_or_eu);
+    ///     })
+    /// }
+    /// ```
     #[must_use]
     pub fn headers(name: impl Into<String>) -> Self {
         Self::new(name, ExchangeKind::Headers)
@@ -113,7 +157,7 @@ impl RabbitExchange {
     /// #[subscriber(RabbitQueue::new("orders.shard-a")
     ///     .bind(RabbitExchange::consistent_hash("orders-by-key"), "1"))]
     /// async fn on_order(order: &Order) -> HandlerOutcome {
-    ///     println!("shard a took order {}", order.id);
+    ///     tracing::info!(order.id, "shard a took the order");
     ///     HandlerOutcome::ack()
     /// }
     ///
