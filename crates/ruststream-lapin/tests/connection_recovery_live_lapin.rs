@@ -63,6 +63,64 @@ async fn message(
         .expect("delivery")
 }
 
+async fn wait_for_route(
+    probe: &lapin::Channel,
+    name: &str,
+    subscriber: &mut ruststream_lapin::LapinSubscriber,
+) {
+    // Confirms alone accept unroutable messages. Wait for the binding, then its consumer.
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let confirmation = probe
+                .basic_publish(
+                    name.into(),
+                    "key".into(),
+                    lapin::options::BasicPublishOptions {
+                        mandatory: true,
+                        ..Default::default()
+                    },
+                    b"ready",
+                    lapin::BasicProperties::default(),
+                )
+                .await
+                .expect("probe publish")
+                .await
+                .expect("probe confirm");
+            assert!(!confirmation.is_nack(), "probe was negatively confirmed");
+            if confirmation.take_message().is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let ready = message(subscriber).await;
+        assert_eq!(ready.payload(), b"ready");
+        ready.ack().await.expect("ack readiness probe");
+    })
+    .await
+    .expect("binding and consumer recovery");
+}
+
+async fn publish_when_ready(
+    publisher: &impl Publisher<Payload = ruststream::Lend>,
+    routing_key: &str,
+    payload: &[u8],
+) {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if publisher
+                .publish(OutgoingMessage::new(routing_key, payload), None)
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("publish after channel recovery");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn existing_handles_resume_after_repeated_outages() {
     let Some(url) = live::url("AMQP_TEST_URL") else {
@@ -83,12 +141,21 @@ async fn existing_handles_resume_after_repeated_outages() {
                 .durable(false)
                 .exclusive(true)
                 .bind(RabbitExchange::direct(&name).durable(false), "key")
+                .batch_wait(WAIT)
                 .delay(Delay::dlx_ttl()),
         )
         .await
         .expect("subscribe");
     let publisher = broker.publisher(LapinPublish::default().exchange(&name).confirms());
     let plain = broker.publisher(LapinPublish::default());
+    let operator = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+        .await
+        .expect("operator");
+    let probe = operator.create_channel().await.expect("probe channel");
+    probe
+        .confirm_select(lapin::options::ConfirmSelectOptions::default())
+        .await
+        .expect("probe confirms");
     for round in 0..3 {
         if round > 0 {
             proxy.offline();
@@ -111,26 +178,9 @@ async fn existing_handles_resume_after_repeated_outages() {
             proxy.online();
             proxy.wait_for(|| broker.is_connected()).await;
         }
-        // Connection readiness can precede channel restoration. Failed operations remain visible;
-        // retry this known probe explicitly until the channel accepts a fresh publish.
-        tokio::time::timeout(WAIT, async {
-            loop {
-                if publisher
-                    .publish(OutgoingMessage::new("key", b"confirmed"), None)
-                    .await
-                    .is_ok()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("publish after recovery");
-        plain
-            .publish(OutgoingMessage::new(&name, b"plain"), None)
-            .await
-            .expect("same plain handle");
+        wait_for_route(&probe, &name, &mut subscriber).await;
+        publish_when_ready(&publisher, "key", b"confirmed").await;
+        publish_when_ready(&plain, &name, b"plain").await;
         let mut batches = Box::pin(subscriber.batches(NonZeroUsize::new(2).expect("nonzero")));
         let batch = tokio::time::timeout(WAIT, batches.next())
             .await
@@ -158,6 +208,10 @@ async fn existing_handles_resume_after_repeated_outages() {
         msg.ack().await.expect("ack delayed");
     }
     broker.shutdown().await.expect("shutdown");
+    operator
+        .close(200, "OK".into())
+        .await
+        .expect("close operator");
     assert!(matches!(
         plain
             .publish(OutgoingMessage::new(&name, b"closed"), None)
@@ -207,30 +261,30 @@ async fn rpc_dispatcher_survives_and_request_deadlines_do_not_restart() {
         .expect("consume");
     let requester = broker.requester(LapinRequest::default());
     for round in 0..2 {
-        let deadline = if round == 0 {
-            Duration::from_millis(400)
-        } else {
-            WAIT
+        let deadline = Duration::from_millis(if round == 0 { 400 } else { 1_000 });
+        let ask = async {
+            loop {
+                let result = requester
+                    .request(OutgoingMessage::new(&name, b"ask"), deadline)
+                    .await;
+                if round == 0 || result.is_ok() {
+                    return result;
+                }
+                tokio::task::yield_now().await;
+            }
         };
-        let ask = requester.request(OutgoingMessage::new(&name, b"ask"), deadline);
         let respond = async {
             let msg = tokio::time::timeout(WAIT, requests.next())
                 .await
                 .expect("request timeout")
                 .expect("request")
                 .expect("delivery");
-            let reply_to = msg
-                .properties
-                .reply_to()
-                .as_ref()
-                .expect("reply-to")
-                .clone();
+            let reply_to = msg.properties.reply_to().clone().expect("reply-to");
             let id = msg
                 .properties
                 .correlation_id()
-                .as_ref()
-                .expect("correlation")
-                .clone();
+                .clone()
+                .expect("correlation");
             if round == 0 {
                 proxy.offline();
                 proxy.wait_for(|| !broker.is_connected()).await;
@@ -252,9 +306,10 @@ async fn rpc_dispatcher_survives_and_request_deadlines_do_not_restart() {
             assert!(matches!(result, Err(AmqpError::RequestTimeout(_))));
             proxy.online();
             proxy.wait_for(|| broker.is_connected()).await;
-            tokio::time::sleep(Duration::from_millis(200)).await;
         } else {
-            let (result, ()) = tokio::join!(ask, respond);
+            let (result, ()) = tokio::time::timeout(WAIT, async { tokio::join!(ask, respond) })
+                .await
+                .expect("RPC recovery probe");
             assert_eq!(
                 result.expect("same requester after recovery").payload(),
                 b"reply"

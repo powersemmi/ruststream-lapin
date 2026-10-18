@@ -26,7 +26,7 @@ pub(crate) struct RecoveringConsumer {
     channel: Channel,
     /// The same consumer is restored by Lapin's topology recovery.
     consumer: Consumer,
-    /// Becomes true on shutdown or terminal connection failure.
+    /// Wakes polling on connection changes or shutdown; true marks a terminal failure.
     recovery: watch::Receiver<bool>,
     /// Prevents another poll or repeated errors after the consumer has terminated.
     ended: bool,

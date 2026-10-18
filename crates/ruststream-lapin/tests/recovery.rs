@@ -42,6 +42,38 @@ async fn exhausted_reconnects_end_the_consumer_instead_of_hanging() {
 }
 
 #[tokio::test]
+async fn exhausted_handshake_retries_notify_the_consumer() {
+    let Some(url) = live::url("AMQP_TEST_URL") else {
+        return;
+    };
+    let proxy = proxy::Proxy::new(&url).await;
+    let broker = LapinBroker::new(&proxy.url)
+        .auto_recover(true)
+        .recovery_retries(1)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+    let queue = format!("ruststream.exhausted-handshake.{}", std::process::id());
+    let mut consumer = broker
+        .subscribe(RabbitQueue::new(&queue).durable(false).exclusive(true))
+        .await
+        .expect("consumer");
+    // TCP connects, but the proxy closes before the AMQP handshake can finish.
+    proxy.offline();
+    let mut stream = consumer.stream().boxed();
+    let result = tokio::time::timeout(Duration::from_secs(10), stream.next())
+        .await
+        .expect("bounded recovery must finish")
+        .expect("terminal failure is reported");
+    assert!(result.is_err());
+    assert!(stream.next().await.is_none());
+    assert!(!broker.is_connected());
+    drop(stream);
+    broker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn zero_retries_fails_the_initial_connection_without_retrying() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

@@ -27,6 +27,7 @@ The policy holds the defaults of the per-message [properties](./properties/index
 [Automatic recovery](../broker/connection.md#automatic-recovery) restores publisher channels and confirms, but does not replay failed publishes.
 A publish during an outage can return an error, and the outcome of an in-flight publish can be uncertain.
 An application that retries must account for possible duplicates. Connection readiness alone does not mean every publisher channel has finished recovering.
+A recovered publisher channel can also precede binding restoration on another channel; a confirmed publish can then be unroutable and discarded, as described under [connection recovery](../broker/connection.md#automatic-recovery).
 
 ## Example
 

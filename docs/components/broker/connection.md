@@ -42,6 +42,12 @@ Set a heartbeat in the URI, such as `?heartbeat=30`, so RabbitMQ and Lapin can d
 connection check for readiness: it is false while disconnected or after shutdown.
 A true result does not guarantee that channel and topology restoration has finished, or that workers are healthy.
 
+Lapin can restore a publisher channel before another channel has recreated an exclusive queue and its binding.
+A publish in that window can be confirmed but unroutable: RabbitMQ discards it, so it is neither queued nor redelivered.
+Publisher confirms alone do not prove that a route exists. Keep production topology provisioned independently of the reconnecting connection,
+or establish that the route is ready before sending application messages.
+This cross-channel recovery ordering is tracked in [Lapin issue #481](https://github.com/amqp-rs/lapin/issues/481).
+
 A failed [publish](../publishing/index.md) is not replayed, outstanding [RPC deadlines](../request/direct-reply-to.md)
 keep running, and [server transactions](../transactions/server-tx-publish.md) require recovery to remain disabled.
 

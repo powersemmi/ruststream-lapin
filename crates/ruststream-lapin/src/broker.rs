@@ -16,8 +16,8 @@ use std::future::{Future, ready};
 use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
 
+use futures::StreamExt;
 use lapin::options::{BasicConsumeOptions, BasicQosOptions};
 use lapin::types::{FieldTable, ShortString};
 #[cfg(feature = "testing")]
@@ -49,19 +49,19 @@ use crate::requester::{LapinRequest, LapinRequester};
 use crate::subscriber::LapinSubscriber;
 use crate::topology;
 
-/// Open with Lapin's socket/TLS connector, recording exhausted TCP retries.
+/// Open with Lapin's socket/TLS connector, notifying consumers of exhausted TCP retries.
 pub(crate) async fn dial(
     uri: &str,
     properties: ConnectionProperties,
     tcp_retries: usize,
-) -> Result<(Connection, Arc<AtomicBool>), AmqpError> {
+) -> Result<(Connection, watch::Sender<bool>), AmqpError> {
     use lapin::tcp::{AMQPUriTcpExt, OwnedTLSConfig};
 
     let uri = uri
         .parse()
         .map_err(|err: String| AmqpError::Connect(err.into()))?;
-    let failed = Arc::new(AtomicBool::new(false));
-    let terminal = Arc::clone(&failed);
+    let recovery = watch::channel(false).0;
+    let terminal = recovery.clone();
     let failures = AtomicUsize::new(0);
     let runtime = lapin::runtime::default_runtime().map_err(AmqpError::connect)?;
     let connection = Connection::connector(
@@ -83,7 +83,7 @@ pub(crate) async fn dial(
                     let shutdown = runtime.is_runtime_shutdown_error(&error);
                     // shortcut: Lapin leaves exhausted TCP retries reconnecting; remove when it exposes terminal failure.
                     if shutdown || failures.fetch_add(1, Ordering::AcqRel) >= tcp_retries {
-                        terminal.store(true, Ordering::Release);
+                        terminal.send_replace(true);
                     }
                     Err(if shutdown {
                         ErrorKind::RuntimeShutdownError(Arc::new(error)).into()
@@ -97,7 +97,7 @@ pub(crate) async fn dial(
     )
     .await
     .map_err(AmqpError::connect)?;
-    Ok((connection, failed))
+    Ok((connection, recovery))
 }
 
 /// The protocol name the `AsyncAPI` document reports for this crate.
@@ -116,7 +116,6 @@ pub(crate) struct AmqpConnection {
     connection: Connection,
     publish_channel: ChannelCell<Channel>,
     closed: AtomicBool,
-    connect_failed: Arc<AtomicBool>,
     recovery: watch::Sender<bool>,
     auto_recover: bool,
     /// The runtime `connect` ran on. Every task the broker starts runs here, such as a
@@ -133,32 +132,35 @@ impl AmqpConnection {
         connection: Connection,
         publish_channel: Channel,
         runtime: Handle,
-        connect_failed: Arc<AtomicBool>,
         auto_recover: bool,
+        recovery: watch::Sender<bool>,
     ) -> Arc<Self> {
         let conn = Arc::new(Self {
             connection,
             publish_channel: ChannelCell::holding(publish_channel),
             closed: AtomicBool::new(false),
-            connect_failed,
-            recovery: watch::channel(false).0,
+            recovery,
             auto_recover,
             runtime,
             #[cfg(feature = "testing")]
             routes: LiveRoutes::default(),
         });
-        // Only recovering consumers need these terminal-failure notifications.
         if auto_recover {
+            let events = conn.connection.events_listener();
             let weak = Arc::downgrade(&conn);
             conn.runtime.spawn(async move {
-                let mut check = tokio::time::interval(Duration::from_millis(100));
-                loop {
-                    check.tick().await;
+                tokio::pin!(events);
+                while let Some(event) = events.next().await {
+                    if !matches!(event, lapin::Event::Connected | lapin::Event::Error(_)) {
+                        continue;
+                    }
                     let Some(conn) = weak.upgrade() else { return };
-                    if conn.is_closed() || conn.failed() {
+                    if conn.failed() {
                         conn.recovery.send_replace(true);
                         return;
                     }
+                    // Wake cleanup on reconnect without marking a healthy connection terminal.
+                    conn.recovery.send_modify(|_| {});
                 }
             });
         }
@@ -169,7 +171,7 @@ impl AmqpConnection {
         self.auto_recover
     }
 
-    /// Notifies consumers when recovery fails permanently or the broker shuts down.
+    /// Wakes consumers and shutdown cleanup; true means recovery failed permanently.
     pub(crate) fn recovery(&self) -> watch::Receiver<bool> {
         self.recovery.subscribe()
     }
@@ -177,26 +179,27 @@ impl AmqpConnection {
     /// Whether Lapin has finished trying to reconnect.
     pub(crate) fn failed(&self) -> bool {
         let status = self.connection.status();
-        self.connect_failed.load(Ordering::Acquire)
-            || status.errored()
-            || status.closed()
-            || status.closing()
+        *self.recovery.borrow() || status.errored() || status.closed() || status.closing()
     }
 
     /// Lapin cannot close while reconnecting; keep ownership until it can close or retries end.
     fn close_after_recovery(self: &Arc<Self>) {
         let cleanup = Arc::clone(self);
+        let mut recovery = self.recovery();
         self.runtime.spawn(async move {
             while !cleanup.failed() {
                 if cleanup.connection.status().connected() {
                     match cleanup.connection.close(200, "OK".into()).await {
                         Ok(()) => return,
+                        Err(err) if already_closing(&err) => return,
                         Err(err) => {
                             tracing::debug!(%err, "closing recovered connection after shutdown");
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                if recovery.changed().await.is_err() {
+                    return;
+                }
             }
         });
     }
@@ -422,7 +425,7 @@ impl Broker for LapinBroker {
         if let Some(name) = &self.connection_name {
             properties = properties.with_connection_name(name.as_str().into());
         }
-        let (connection, connect_failed) = dial(&self.uri, properties, retries).await?;
+        let (connection, recovery) = dial(&self.uri, properties, retries).await?;
         let publish_channel = connection
             .create_channel()
             .await
@@ -433,8 +436,8 @@ impl Broker for LapinBroker {
                 connection,
                 publish_channel,
                 Handle::current(),
-                connect_failed,
                 self.auto_recover,
+                recovery,
             )),
             uri: self.uri,
             prefetch: self.prefetch,
@@ -675,7 +678,7 @@ impl ConnectedBroker for ConnectedLapinBroker {
         // Marked closed before the handshake: a publisher aliasing the connection must not slip
         // a message into a connection that is already going away.
         conn.closed.store(true, Ordering::Release);
-        conn.recovery.send_replace(true);
+        conn.recovery.send_modify(|_| {});
         let handshake = conn.connection.status().connected();
         if handshake {
             match conn.connection.close(200, ShortString::from("OK")).await {
