@@ -202,8 +202,8 @@ pub trait LapinPublishPolicy: PublishPolicy<ConnectedLapinBroker> + Sealed {
 /// them.
 ///
 /// It pairs into [`LapinPublisher`], and it is the broker's
-/// [`DefaultPublish`](ruststream::DefaultPublish) policy, so a `publish("dest")` handler mounted
-/// without an explicit publisher replies through it. [`confirms`](Self::confirms) and
+/// [`DefaultPublish`](ruststream::DefaultPublish) policy, so a `reply("dest")` handler mounted
+/// without an explicit `out_reply` policy replies through it. [`confirms`](Self::confirms) and
 /// [`server_tx`](Self::server_tx) move to the transactional policies, keeping the settings.
 ///
 /// # Examples

@@ -9,7 +9,7 @@ use ruststream::runtime::{ForReply, Names, Outgoing, PublishContext, PublishTran
 /// This is the canonical responder wiring for [request/reply over `RabbitMQ` direct
 /// reply-to](crate::LapinRequester): compose it onto the reply publisher at mount time and the
 /// handler stays a pure request-to-reply function. A request without a `reply-to` header falls
-/// through to the mount site's `publish("..")` name.
+/// through to the mount site's `reply("..")` name.
 ///
 /// The transform names the destination per delivery, so it mounts only where nothing has declared
 /// one: the reply type derives `Outgoing` without `#[outgoing(name = "..")]` and the mount site

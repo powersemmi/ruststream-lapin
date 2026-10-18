@@ -29,9 +29,8 @@ use crate::error::AmqpError;
 
 /// How a subscription handles `retry_after` / `nack_after` delays.
 ///
-/// Passed to [`RabbitQueue::delay`](crate::RabbitQueue::delay). There is no default that enables
-/// it: a waiting queue or delayed exchange is infrastructure the user owns, so opting in is
-/// explicit.
+/// Passed to [`RabbitQueue::delay`](crate::RabbitQueue::delay). A waiting queue or a delayed
+/// exchange is infrastructure the user owns, so a subscription opts in explicitly.
 ///
 /// # Examples
 ///
@@ -53,7 +52,7 @@ use crate::error::AmqpError;
 ///     if !order.paid {
 ///         return HandlerOutcome::retry_after(Duration::from_mins(1));
 ///     }
-///     println!("fulfilling order {}", order.id);
+///     tracing::info!(order.id, "fulfilling");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -70,12 +69,13 @@ pub enum Delay {
     /// Route delayed redeliveries through a TTL waiting queue whose dead-letter target is the
     /// origin queue.
     ///
-    /// # Classic-queue caveat
+    /// # Mixed delays
     ///
-    /// A classic queue releases expired messages only from its head, so a short-TTL message stuck
-    /// behind a long-TTL one waits for the long one. Use one waiting queue per delay class (or a
-    /// quorum queue, which does not have this head-of-line constraint) when delays vary widely, or
-    /// switch to [`plugin_dme`](Self::plugin_dme), which has no head-of-line constraint.
+    /// A queue releases expired messages only from its head, classic and quorum queues alike, so a
+    /// short-TTL message behind a long-TTL one waits for the long one. When delays vary widely, use
+    /// one waiting queue per delay class ([`dlx_ttl_named`](Self::dlx_ttl_named)), or the
+    /// delayed-message-exchange plugin (`Delay::plugin_dme`, feature `plugin-dme`), where a short
+    /// delay never waits behind a long one.
     DlxTtl {
         /// The waiting queue name; `None` derives `<origin>.retry`.
         waiting_queue: Option<String>,
@@ -84,8 +84,8 @@ pub enum Delay {
     /// Route delayed redeliveries through the
     /// [`rabbitmq_delayed_message_exchange`](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange)
     /// plugin: the message is re-published to an `x-delayed-message` exchange with an `x-delay`
-    /// header, and the plugin releases it to the origin queue after the delay. Unlike the classic
-    /// waiting queue, mixed delays do not block each other. Requires the plugin on the broker, so
+    /// header, and the plugin releases it to the origin queue after the delay. Unlike a waiting
+    /// queue, mixed delays do not block each other. Requires the plugin on the broker, so
     /// it is behind the `plugin-dme` feature.
     #[cfg(feature = "plugin-dme")]
     DelayedMessageExchange {

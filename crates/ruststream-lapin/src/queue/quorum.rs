@@ -24,11 +24,34 @@ use crate::subscriber::LapinSubscriber;
 /// A quorum queue counts the deliveries a message has spent and ends a poison loop itself: with
 /// an `x-delivery-limit` and a dead-letter route it carries a message away once its deliveries
 /// run out, whether or not a service is running to count them. So the retries of a registration
-/// mounted here are the broker's, and `out_retry(policy)` does not compile on it - there is no
-/// copy of this process's to publish. A registration declares the pair at the mount site:
+/// mounted here are the broker's, and `out_retry(policy)` does not compile on it: the server moves
+/// the spent message, and the service publishes no copy. A registration declares the pair at the mount site:
 ///
-/// ```text
-/// b.include(charge).max_attempts(nonzero!(3)).dead_letter("orders.dead");
+/// ```
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Payout {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RabbitQuorumQueue::new("payouts"))]
+/// async fn on_payout(payout: &Payout) -> HandlerOutcome {
+///     tracing::warn!(payout.id, "the bank refused, trying again");
+///     HandlerOutcome::retry()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+///     RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(broker, |b| {
+///         // The server applies this cap: it becomes the queue's delivery limit and dead-letter
+///         // route.
+///         b.include(on_payout)
+///             .max_attempts(nonzero!(5u32))
+///             .dead_letter("payouts.dead");
+///     })
+/// }
 /// ```
 ///
 /// The pair becomes this queue's `x-delivery-limit` and dead-letter route when the broker opts
@@ -52,13 +75,13 @@ use crate::subscriber::LapinSubscriber;
 /// }
 ///
 /// // A charge the payment provider keeps refusing is moved to `dead-letters` by the server after
-/// // its fourth delivery.
+/// // its fifth delivery: the limit counts the four returns it survives.
 /// #[subscriber(RabbitQuorumQueue::new("charges")
 ///     .bind(RabbitExchange::topic("events"), "charge.*")
 ///     .dead_letter_exchange("dead-letters")
 ///     .delivery_limit(4))]
 /// async fn take_payment(charge: &Charge) -> HandlerOutcome {
-///     println!("charging {}", charge.id);
+///     tracing::info!(charge.id, "charging");
 ///     HandlerOutcome::retry()
 /// }
 ///

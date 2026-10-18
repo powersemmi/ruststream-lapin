@@ -60,6 +60,64 @@ use crate::subscriber::LapinSubscriber;
 ///     })
 /// }
 /// ```
+///
+/// A slice parameter asks for a batch, and the mount site says how big it may get:
+///
+/// ```
+/// use std::time::Duration;
+///
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Settlement {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RabbitQueue::new("settlements")
+///     .prefetch(nonzero!(64))
+///     .batch_wait(Duration::from_millis(200)))]
+/// async fn on_settlements(settlements: &[Settlement]) -> HandlerOutcome {
+///     tracing::info!(count = settlements.len(), "settling");
+///     HandlerOutcome::ack()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+///     RustStream::new(AppInfo::new("settlements", "0.1.0")).with_broker(broker, |b| {
+///         b.include(on_settlements.batch(nonzero!(32)));
+///     })
+/// }
+/// ```
+///
+/// The runtime caps the retries of a classic queue and publishes each copy through the
+/// `out_retry` policy, here the confirms one:
+///
+/// ```
+/// use ruststream_lapin::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Refund {
+///     id: u64,
+/// }
+///
+/// #[subscriber(RabbitQueue::new("refunds"))]
+/// async fn on_refund(refund: &Refund) -> HandlerOutcome {
+///     tracing::warn!(refund.id, "the provider is down, trying again");
+///     HandlerOutcome::retry()
+/// }
+///
+/// fn app() -> RustStream {
+///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
+///     RustStream::new(AppInfo::new("refunds", "0.1.0")).with_broker(broker, |b| {
+///         b.include(on_refund)
+///             .max_attempts(nonzero!(5u32))
+///             .dead_letter("refunds.dead")
+///             .out_retry(TransactionalPublish::default());
+///     })
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct RabbitQueue {
     spec: QueueSpec,
