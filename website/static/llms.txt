@@ -6,6 +6,8 @@ A subscription consumes one queue through a descriptor: `RabbitQueue` (a classic
 
 This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, and the framework itself is documented on the RustStream site.
 
+Connection recovery is disabled by default. Enable `LapinBroker::auto_recover(true)` to let Lapin restore connections, channels, topology, prefetch, confirms and consumers; `recovery_retries(n)` sets the retry limit (default 16), including startup. `is_connected()` checks connection readiness, not completion of channel recovery or worker health. Publishes are not replayed, RPC deadlines keep running, and `ServerTxPublish` requires recovery off. See [Connection and recovery](https://powersemmi.github.io/ruststream-lapin/latest/components/broker/connection/#automatic-recovery).
+
 ## Guides
 
 - [Guides](https://powersemmi.github.io/ruststream-lapin/latest/): building a RabbitMQ service with the crate, from a first subscriber to production

@@ -1,54 +1,8 @@
 //! Keeps consumer polling alive while Lapin restores its connection and topology.
 //!
-//! Subscribers and RPC reply dispatchers share [`RecoveringConsumer`]. With recovery enabled,
-//! recoverable errors pause polling until Lapin restores the channel; a terminal error is yielded
-//! once and ends the stream. Shutdown wakes blocked consumers without waiting for reconnection.
-//! This layer never replays publishes or renews RPC deadlines.
-//!
-//! Recovery is opt-in through [`LapinBroker::auto_recover`](crate::LapinBroker::auto_recover).
-//! Applications keep their existing subscription and let its stream resume after an outage:
-//!
-//! ```no_run
-//! use futures::StreamExt;
-//! use ruststream::{Broker, ConnectedBroker, IncomingMessage, Subscriber};
-//! use ruststream_lapin::{LapinBroker, RabbitQueue};
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let broker = LapinBroker::new("amqp://localhost:5672?heartbeat=30")
-//!     .auto_recover(true)
-//!     .declare_topology(true)
-//!     .connect()
-//!     .await?;
-//! let mut subscriber = broker.subscribe(RabbitQueue::new("orders")).await?;
-//! let mut messages = Box::pin(subscriber.stream());
-//! while let Some(message) = messages.next().await {
-//!     let message = message?;
-//!     // Process the delivery before acknowledging it; redelivery is possible after an outage.
-//!     message.ack().await?;
-//! }
-//! drop(messages);
-//! broker.shutdown().await?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! A readiness endpoint can inspect the connection without triggering a restart:
-//!
-//! ```no_run
-//! use ruststream::Broker;
-//! use ruststream_lapin::{AmqpError, LapinBroker};
-//!
-//! # async fn example() -> Result<(), AmqpError> {
-//! let broker = LapinBroker::new("amqp://localhost:5672")
-//!     .auto_recover(true)
-//!     .connect()
-//!     .await?;
-//! let ready = broker.is_connected();
-//! // `ready` checks the AMQP connection; topology replay and worker health are separate.
-//! # let _ = ready;
-//! # Ok(())
-//! # }
-//! ```
+//! Subscribers and RPC reply dispatchers use this wrapper only when recovery is enabled.
+//! Recoverable errors wait for the channel to recover; a terminal error ends the stream.
+//! The connection's watch also wakes blocked consumers on shutdown or exhausted retries.
 
 use std::sync::Arc;
 

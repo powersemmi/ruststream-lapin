@@ -25,9 +25,29 @@ Each subscription opens a channel of its own on it.
 Fire-and-forget publishes share one channel.
 A [confirms](../transactions/confirms-publish.md) or [server-transaction](../transactions/server-tx-publish.md) publisher opens its own channel on first use, because both modes are channel state.
 
+## Automatic recovery
+
+Recovery is off by default. Enable it with [`auto_recover(true)`](api:ruststream_lapin::LapinBroker::auto_recover).
+Lapin restores the connection, channels, declared exchanges, queues, bindings, prefetch, publisher confirms and consumers.
+Existing handles stay usable; the application and its startup hooks do not restart.
+
+Retries use Lapin's exponential backoff. The default limit is 16 retries, configurable with
+[`recovery_retries(n)`](api:ruststream_lapin::LapinBroker::recovery_retries).
+The limit applies to the initial connection and later reconnects. Zero allows an attempt without retrying;
+a successful connection resets the retry budget. With recovery off, the initial connection is attempted once.
+Exhausting startup retries returns `AmqpError::Connect`; exhausting recovery ends the affected consumer stream with `AmqpError::Consume`.
+
+Set a heartbeat in the URI, such as `?heartbeat=30`, so RabbitMQ and Lapin can detect silent connection loss.
+[`ConnectedLapinBroker::is_connected()`](api:ruststream_lapin::ConnectedLapinBroker::is_connected) is a synchronous
+connection check for readiness: it is false while disconnected or after shutdown.
+A true result does not guarantee that channel and topology restoration has finished, or that workers are healthy.
+
+A failed [publish](../publishing/index.md) is not replayed, outstanding [RPC deadlines](../request/direct-reply-to.md)
+keep running, and [server transactions](../transactions/server-tx-publish.md) require recovery to remain disabled.
+
 ## Example
 
-The service logs in as `orders` on the virtual host `shop`.
+The service logs in as `orders` on the virtual host `shop`, enables recovery with 32 retries, and requests a 30-second heartbeat.
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">

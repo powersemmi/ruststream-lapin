@@ -39,3 +39,10 @@ export const words = {
 订阅被释放时关闭它的信道，RabbitMQ 把它持有而未结算的投递重新入队。运行时如何结算每次投递，见[结算与重试](../settlement.md)。
 
 协议规则来自 RabbitMQ（[消费者预取](https://www.rabbitmq.com/docs/consumer-prefetch)、[消费者确认](https://www.rabbitmq.com/docs/confirms#consumer-acknowledgements)、[工作队列](https://www.rabbitmq.com/tutorials/tutorial-two-python)）。
+
+## 连接恢复 {/* #connection-recovery */}
+
+启用[连接恢复](../../components/broker/connection.md#automatic-recovery)后，Lapin 恢复消费者现有的信道、已声明的交换机、队列和绑定，并在恢复投递前重新应用预取设置。
+消费者流等待可恢复的断连，重试耗尽时以消费错误结束。恢复关闭时，遵循普通 Lapin 消费者的终止行为。
+断连后仍然存在的队列中的未确认投递可能再次投递。旧的确认在重连后可能失败；处理器必须容忍重复处理。
+发布不会自动重发，等待中的 RPC 请求的截止时间继续计算。

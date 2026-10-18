@@ -18,6 +18,10 @@ Over a type with its own `#[outgoing(name = "..")]` the mount does not compile.
 The name in the mount site's `reply("..")` is the fallback: a request without `reply-to` is answered there, and the generated AsyncAPI document reports it.
 A [`LapinRequest`](./index.md) requester and a requester on another stack both name the reply address this way.
 
+With [automatic recovery](../broker/connection.md#automatic-recovery), the reply dispatcher resumes after Lapin restores its channel and direct reply-to consumer.
+Deadlines of requests already waiting for replies keep running during the outage; recovery does not restart them or replay their requests.
+A reply lost during a disconnect may therefore end in `AmqpError::RequestTimeout`.
+
 ## Example
 
 The inventory service answers every stock check at the address the request named. A request without one is answered at `inventory.check.unrouted`.

@@ -61,7 +61,9 @@ item's own documentation keeps the detail.
 
 - [LapinBroker][c-broker]: [`LapinBroker`], connected into [`ConnectedLapinBroker`] and closed
   into [`ClosedLapinBroker`].
-- [Connection][c-connection]: the URI and [`LapinBroker::connection_name`].
+- [Connection][c-connection]: the URI, [`LapinBroker::connection_name`], opt-in
+  [`LapinBroker::auto_recover`], [`LapinBroker::recovery_retries`] and
+  [`ConnectedLapinBroker::is_connected`].
 - [TLS][c-tls]: `amqps://` URIs with the `tls-native-tls`, `tls-rustls` or `tls-rustls-ring`
   feature.
 - [declare_topology][c-declare-topology]: [`LapinBroker::declare_topology`] declares what the

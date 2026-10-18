@@ -60,3 +60,10 @@ The protocol rules are RabbitMQ's
 ([consumer prefetch](https://www.rabbitmq.com/docs/consumer-prefetch),
 [consumer acknowledgements](https://www.rabbitmq.com/docs/confirms#consumer-acknowledgements),
 [work queues](https://www.rabbitmq.com/tutorials/tutorial-two-python)).
+
+## Connection recovery
+
+With [connection recovery](../../components/broker/connection.md#automatic-recovery) enabled, Lapin restores the consumer's existing channel, declared exchanges, queues and bindings, and reapplies its prefetch before resuming delivery.
+The stream waits through recoverable disconnects and ends with a consume error if retries run out. With recovery disabled, it follows the plain Lapin consumer's terminal behavior.
+Unsettled deliveries from queues that survive the disconnect can be redelivered. An old acknowledgement can fail after reconnect; the handler must tolerate processing a delivery again.
+Failed publishes are not replayed, and outstanding RPC deadlines keep running.

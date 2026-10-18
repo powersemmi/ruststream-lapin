@@ -19,6 +19,11 @@ Each commit is a synchronous round trip, which makes the policy slower than [`Co
 Outside a transaction a publish behaves like a [fire-and-forget](../publishing/index.md) one.
 The transaction is the channel's state, so the policy offers only the borrowed kind of the [transaction scope](./index.md).
 
+Server transactions require `auto_recover(false)`, which is the default.
+Lapin cannot restore a transaction's state after a disconnect, so pairing this policy with `auto_recover(true)` fails with `AmqpError::InvalidOptions` before it is used.
+Direct publish, begin, commit and abort calls also reject that combination.
+Use [publisher confirms](./confirms-publish.md) when enabling [connection recovery](../broker/connection.md#automatic-recovery).
+
 ## Example
 
 The debit and the credit of a transfer are published in one server transaction. A frozen account rolls it back, and the debit already sent is discarded on the broker.
