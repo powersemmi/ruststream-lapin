@@ -60,15 +60,16 @@ impl<T: Holds> ChannelCell<T> {
         }
     }
 
-    /// The held value while its channel can still carry a frame, and `None` when there is none or
-    /// the broker closed it.
+    /// The held value while its channel is connected or recovering, and `None` once closed.
+    /// Recovering channels stay cached because Lapin restores their topology and consumers.
     ///
     /// An atomic load and a state read: every publish goes through this, and the value is a
     /// handle, so the clone costs a refcount.
     pub(crate) fn live(&self) -> Option<T> {
         let held = self.held.load();
         let value = held.as_deref()?;
-        value.channel().status().connected().then(|| value.clone())
+        let status = value.channel().status();
+        (status.connected() || status.reconnecting()).then(|| value.clone())
     }
 
     /// Whatever is held, live or not.

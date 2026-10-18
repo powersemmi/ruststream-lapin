@@ -1,0 +1,118 @@
+//! Interrupts test connections without touching the `RabbitMQ` server or other tests.
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::time::Duration;
+
+use lapin::uri::AMQPUri;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
+use tokio::task::{JoinHandle, JoinSet};
+
+pub(super) struct Proxy {
+    pub(super) url: String,
+    #[allow(dead_code)]
+    control: watch::Sender<(bool, u64)>,
+    task: JoinHandle<()>,
+    accepted: Arc<AtomicUsize>,
+    active: Arc<AtomicUsize>,
+}
+
+#[allow(dead_code)] // Recovery suites use different proxy controls.
+impl Proxy {
+    pub(super) async fn new(url: &str) -> Self {
+        let uri: AMQPUri = url.parse().expect("test AMQP URI");
+        assert_eq!(
+            uri.scheme.to_string(),
+            "amqp",
+            "the test proxy forwards plaintext AMQP"
+        );
+        let upstream = (uri.authority.host.clone(), uri.authority.port);
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
+        let port = listener.local_addr().expect("proxy address").port();
+        let mut proxied = uri;
+        "127.0.0.1".clone_into(&mut proxied.authority.host);
+        proxied.authority.port = port;
+        let (control, mut changes) = watch::channel((true, 0));
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let totals = Arc::clone(&accepted);
+        let open = Arc::clone(&active);
+        let task = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let (mut client, _) = result.expect("proxy accept");
+                        if !changes.borrow().0 { continue; }
+                        let upstream = upstream.clone();
+                        let mut disconnected = changes.clone();
+                        connections.spawn(async move {
+                            tokio::select! {
+                                _ = disconnected.changed() => {}
+                                () = async {
+                                    let mut server = TcpStream::connect(upstream).await.expect("proxy upstream");
+                                    let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+                                } => {}
+                            }
+                        });
+                        open.store(connections.len(), Ordering::Release);
+                        totals.fetch_add(1, Ordering::Release);
+                    }
+                    notification = changes.changed() => {
+                        if notification.is_err() { return; }
+                        connections.abort_all();
+                    }
+                    _ = connections.join_next(), if !connections.is_empty() => {}
+                }
+                open.store(connections.len(), Ordering::Release);
+            }
+        });
+        Self {
+            url: proxied.to_string(),
+            control,
+            task,
+            accepted,
+            active,
+        }
+    }
+
+    pub(super) fn connections(&self) -> (usize, usize) {
+        (
+            self.accepted.load(Ordering::Acquire),
+            self.active.load(Ordering::Acquire),
+        )
+    }
+
+    pub(super) fn offline(&self) {
+        self.control.send_modify(|(online, epoch)| {
+            *online = false;
+            *epoch += 1;
+        });
+    }
+
+    pub(super) fn online(&self) {
+        self.control.send_modify(|(online, epoch)| {
+            *online = true;
+            *epoch += 1;
+        });
+    }
+
+    pub(super) async fn wait_for(&self, condition: impl Fn() -> bool + Send + Sync) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("connection state within timeout");
+    }
+}
+
+impl Drop for Proxy {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}

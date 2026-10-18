@@ -33,6 +33,9 @@ middleware come from the framework; this crate is the transport.
   `declare_topology(true)`.
 - **Durable delayed retry** through a TTL waiting queue or the delayed-message-exchange plugin, and
   a retry cap a quorum queue enforces itself.
+- **Opt-in recovery:** `.auto_recover(true)` reconnects and restores consumers and topology after
+  connection loss, with bounded retries and a connection health check. Disabled by default;
+  server transactions require recovery to remain disabled.
 - **Three publishers:** fire-and-forget, publisher confirms with client-side transactions, and AMQP
   channel transactions. Priority, TTL and persistence are typed per-message settings.
 - **Request/reply** over direct reply-to.

@@ -5,9 +5,9 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::Stream;
 #[cfg(feature = "testing")]
 use futures::future::Either;
-use futures::{Stream, StreamExt};
 use lapin::{Channel, Consumer};
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
 
@@ -17,6 +17,7 @@ use crate::error::AmqpError;
 #[cfg(feature = "testing")]
 use crate::in_process::BusDeliveries;
 use crate::message::LapinMessage;
+use crate::recovery::RecoveringConsumer;
 
 /// A consumer on one queue, yielding [`LapinMessage`] deliveries.
 ///
@@ -46,9 +47,7 @@ impl LapinSubscriber {
         delay: Option<DelayContext>,
     ) -> Self {
         let deliveries = Deliveries::Amqp(AmqpDeliveries {
-            connection,
-            _channel: channel,
-            consumer,
+            consumer: RecoveringConsumer::new(connection, channel, consumer),
             delay,
             #[cfg(feature = "testing")]
             queue: queue.clone(),
@@ -94,7 +93,7 @@ impl Subscriber for LapinSubscriber {
     type Error = AmqpError;
 
     /// Streams deliveries as they arrive; the stream ends when the consumer is cancelled or the
-    /// connection closes.
+    /// connection fails permanently. Recoverable disconnects pause delivery until Lapin resumes.
     ///
     /// # Cancel safety
     ///
@@ -166,11 +165,7 @@ impl Subscriber for Deliveries {
 struct AmqpDeliveries {
     // Threaded into every delivery, so a settlement after shutdown is refused instead of waiting
     // on an answer lapin never gives.
-    connection: Arc<AmqpConnection>,
-    // Kept alive for the lifetime of the subscription: dropping the channel cancels the
-    // consumer server-side.
-    _channel: Channel,
-    consumer: Consumer,
+    consumer: RecoveringConsumer,
     // Present only when the descriptor opted into a native delay queue; threaded into every
     // delivery so `nack_after` can re-publish to the waiting queue.
     delay: Option<DelayContext>,
@@ -183,7 +178,6 @@ struct AmqpDeliveries {
 impl AmqpDeliveries {
     fn stream(&mut self) -> impl Stream<Item = Result<LapinMessage, AmqpError>> + Send + '_ {
         let delay = self.delay.clone();
-        let connection = &self.connection;
         #[cfg(feature = "testing")]
         let queue = self.queue.as_str();
         futures::stream::unfold(
@@ -193,18 +187,18 @@ impl AmqpDeliveries {
                 let mapped = match item {
                     Ok(delivery) => Ok({
                         #[cfg(feature = "testing")]
-                        connection.routes().delivered(
+                        consumer.connection.routes().delivered(
                             delivery.exchange.as_str(),
                             delivery.routing_key.as_str(),
                             queue,
                         );
                         LapinMessage::from_delivery(
                             delivery,
-                            Some(Arc::clone(connection)),
+                            Some(Arc::clone(&consumer.connection)),
                             delay.clone(),
                         )
                     }),
-                    Err(err) => Err(AmqpError::consume(err)),
+                    Err(err) => Err(err),
                 };
                 Some((mapped, (consumer, delay)))
             },

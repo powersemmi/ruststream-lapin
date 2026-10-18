@@ -21,7 +21,7 @@ use ruststream::{
     HeaderMap, Lend, OutgoingFor, OutgoingMessage, Publisher, Take, TransactionalPublisher,
 };
 
-use crate::broker::{AmqpConnection, ConnectedLapinBroker, Link};
+use crate::broker::{AmqpConnection, ConnectedLapinBroker, Link, check_server_tx};
 use crate::channel::ChannelCell;
 use crate::convert;
 use crate::error::AmqpError;
@@ -477,6 +477,10 @@ impl TransactionalPublisher for ConfirmsPublisher {
 /// transaction is channel state with exactly one instance, and there is no buffer for an owned
 /// [`Transaction`](ruststream::Transaction) value to own.
 ///
+/// Automatic recovery must remain disabled (the default); see
+/// [`LapinBroker::auto_recover`](crate::LapinBroker::auto_recover). Operations return
+/// [`AmqpError::InvalidOptions`] while automatic recovery is enabled.
+///
 /// Clones share the transactional channel and its open/closed state. Interleaving `publish`
 /// and `begin_transaction`/`commit` from concurrent tasks is not supported: which side of the
 /// transaction boundary a concurrent publish lands on would be a race either way. Like every
@@ -488,6 +492,7 @@ pub struct ServerTxPublisher {
     options: PublishOptions,
     channel: Arc<ChannelCell<Channel>>,
     open: Arc<Mutex<bool>>,
+    auto_recover: bool,
     /// The in-process stand for the messages a server stages inside the channel transaction.
     #[cfg(feature = "testing")]
     staged: Arc<Mutex<Vec<Buffered>>>,
@@ -497,6 +502,7 @@ impl ServerTxPublisher {
     pub(crate) fn new(connected: &ConnectedLapinBroker, options: PublishOptions) -> Self {
         Self {
             link: connected.link().clone(),
+            auto_recover: connected.auto_recover(),
             options,
             channel: Arc::new(ChannelCell::new()),
             open: Arc::new(Mutex::new(false)),
@@ -569,6 +575,7 @@ impl Publisher for ServerTxPublisher {
         msg: OutgoingMessage<'_>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
+        check_server_tx(self.auto_recover)?;
         let conn = match &self.link {
             Link::Amqp(conn) => conn,
             #[cfg(feature = "testing")]
@@ -628,6 +635,7 @@ impl TransactionalPublisher for ServerTxPublisher {
     /// (the open transaction is left untouched), [`AmqpError::Closed`] once the broker has shut
     /// down, and [`AmqpError::Publish`] when the transactional channel cannot be set up.
     async fn begin_transaction(&self) -> Result<(), Self::Error> {
+        check_server_tx(self.auto_recover)?;
         if self.is_open() {
             return Err(AmqpError::Transaction(
                 "a transaction is already open on this server-transactional publisher; commit or \
@@ -655,6 +663,7 @@ impl TransactionalPublisher for ServerTxPublisher {
     /// [`AmqpError::Publish`] when `tx.commit` fails; the transaction state on the broker is
     /// then unknown (the channel may be closed) and the publisher should be discarded.
     async fn commit(&self) -> Result<(), Self::Error> {
+        check_server_tx(self.auto_recover)?;
         if !self.is_open() {
             return Err(AmqpError::Transaction(
                 "commit with no open transaction on this server-transactional publisher".to_owned(),
@@ -695,6 +704,7 @@ impl TransactionalPublisher for ServerTxPublisher {
     /// Returns [`AmqpError::Transaction`] when no transaction is open, and
     /// [`AmqpError::Publish`] when `tx.rollback` fails.
     async fn abort(&self) -> Result<(), Self::Error> {
+        check_server_tx(self.auto_recover)?;
         if !self.is_open() {
             return Err(AmqpError::Transaction(
                 "abort with no open transaction on this server-transactional publisher".to_owned(),

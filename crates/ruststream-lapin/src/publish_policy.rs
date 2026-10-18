@@ -14,7 +14,7 @@ use std::time::Duration;
 use ruststream::asyncapi::Bindings;
 use ruststream::{PairError, PublishPolicy};
 
-use crate::broker::ConnectedLapinBroker;
+use crate::broker::{ConnectedLapinBroker, check_server_tx};
 #[cfg(feature = "testing")]
 use crate::error::AmqpError;
 #[cfg(feature = "testing")]
@@ -354,6 +354,10 @@ impl LapinPublishPolicy for ConfirmsPublish {
 ///
 /// Reached with [`LapinPublish::server_tx`].
 ///
+/// Pairing fails when [`LapinBroker::auto_recover`](crate::LapinBroker::auto_recover) is enabled,
+/// so applications reject this unsupported combination at startup. Keep recovery disabled or use
+/// [`LapinPublish::confirms`] instead.
+///
 /// # Examples
 ///
 /// ```
@@ -432,7 +436,11 @@ impl PublishPolicy<ConnectedLapinBroker> for ServerTxPublish {
         self,
         connected: &ConnectedLapinBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(self.bind(connected)))
+        ready(
+            check_server_tx(connected.auto_recover())
+                .map(|()| self.bind(connected))
+                .map_err(PairError::new),
+        )
     }
 
     publish_policy_bindings!();

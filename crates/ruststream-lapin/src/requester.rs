@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use futures::StreamExt;
 use lapin::Channel;
 use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
 use lapin::types::{FieldTable, ShortString};
@@ -31,6 +30,7 @@ use crate::in_process;
 use crate::message::LapinMessage;
 use crate::publish_policy::{LapinPublishPolicy, PublishOptions, publish_policy_bindings};
 use crate::publish_step::LapinPublishOptions;
+use crate::recovery::RecoveringConsumer;
 
 /// The pseudo-queue `RabbitMQ` rewrites per-request for direct reply-to.
 pub(crate) const REPLY_TO: &str = "amq.rabbitmq.reply-to";
@@ -215,7 +215,7 @@ impl LapinRequester {
     /// A channel-level error closes the channel and takes the reply consumer with it. The
     /// requests in flight on it are lost, which is what the per-request timeout is for; what the
     /// requester must not do is stop working for every later request too.
-    async fn state(&self, conn: &AmqpConnection, target: &str) -> Result<ReqState, AmqpError> {
+    async fn state(&self, conn: &Arc<AmqpConnection>, target: &str) -> Result<ReqState, AmqpError> {
         self.state
             .get(|| async {
                 let channel = conn
@@ -236,12 +236,13 @@ impl LapinRequester {
                     .await
                     .map_err(AmqpError::request)?;
 
-                // The task exits when the channel closes (consumer stream ends) or when every
+                // The task survives reconnects and exits on a terminal channel failure or when every
                 // requester clone is gone (Weak upgrade fails on the next reply). It runs on the
                 // runtime the broker connected on: the request that starts it may come from a
                 // handler on a dedicated thread, whose runtime may stop while later requests
                 // still wait on this dispatcher.
                 let pending = Arc::downgrade(&self.pending);
+                let consumer = RecoveringConsumer::new(Arc::clone(conn), channel.clone(), consumer);
                 conn.runtime().spawn(dispatch_replies(consumer, pending));
 
                 Ok(ReqState { channel })
@@ -250,7 +251,7 @@ impl LapinRequester {
     }
 }
 
-async fn dispatch_replies(mut consumer: lapin::Consumer, pending: Weak<Pending>) {
+async fn dispatch_replies(mut consumer: RecoveringConsumer, pending: Weak<Pending>) {
     while let Some(delivery) = consumer.next().await {
         let Ok(delivery) = delivery else {
             // The channel is failing; consuming further would spin. Outstanding requests fail
