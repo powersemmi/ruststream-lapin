@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use futures::StreamExt;
+use futures::future::Either;
 use lapin::Channel;
 use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
 use lapin::types::{FieldTable, ShortString};
@@ -242,7 +244,16 @@ impl LapinRequester {
                 // handler on a dedicated thread, whose runtime may stop while later requests
                 // still wait on this dispatcher.
                 let pending = Arc::downgrade(&self.pending);
-                let consumer = RecoveringConsumer::new(Arc::clone(conn), channel.clone(), consumer);
+                // Replies only need to wait through reconnects when recovery is enabled.
+                let consumer = if conn.auto_recover() {
+                    Either::Right(RecoveringConsumer::new(
+                        Arc::clone(conn),
+                        channel.clone(),
+                        consumer,
+                    ))
+                } else {
+                    Either::Left(consumer)
+                };
                 conn.runtime().spawn(dispatch_replies(consumer, pending));
 
                 Ok(ReqState { channel })
@@ -251,8 +262,19 @@ impl LapinRequester {
     }
 }
 
-async fn dispatch_replies(mut consumer: RecoveringConsumer, pending: Weak<Pending>) {
-    while let Some(delivery) = consumer.next().await {
+async fn dispatch_replies(
+    mut consumer: Either<lapin::Consumer, RecoveringConsumer>,
+    pending: Weak<Pending>,
+) {
+    loop {
+        let delivery = match &mut consumer {
+            Either::Left(consumer) => consumer
+                .next()
+                .await
+                .map(|item| item.map_err(AmqpError::consume)),
+            Either::Right(consumer) => consumer.next().await,
+        };
+        let Some(delivery) = delivery else { return };
         let Ok(delivery) = delivery else {
             // The channel is failing; consuming further would spin. Outstanding requests fail
             // by timeout.

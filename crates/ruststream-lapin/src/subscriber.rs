@@ -5,9 +5,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::Stream;
-#[cfg(feature = "testing")]
 use futures::future::Either;
+use futures::{Stream, StreamExt};
 use lapin::{Channel, Consumer};
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
 
@@ -46,8 +45,20 @@ impl LapinSubscriber {
         batch_wait: Duration,
         delay: Option<DelayContext>,
     ) -> Self {
+        // Keep the usual consumer path free of recovery checks unless the service opts in.
+        let consumer = if connection.auto_recover() {
+            Either::Right(RecoveringConsumer::new(
+                Arc::clone(&connection),
+                channel.clone(),
+                consumer,
+            ))
+        } else {
+            Either::Left(consumer)
+        };
         let deliveries = Deliveries::Amqp(AmqpDeliveries {
-            consumer: RecoveringConsumer::new(connection, channel, consumer),
+            connection,
+            _channel: channel,
+            consumer,
             delay,
             #[cfg(feature = "testing")]
             queue: queue.clone(),
@@ -165,7 +176,10 @@ impl Subscriber for Deliveries {
 struct AmqpDeliveries {
     // Threaded into every delivery, so a settlement after shutdown is refused instead of waiting
     // on an answer lapin never gives.
-    consumer: RecoveringConsumer,
+    connection: Arc<AmqpConnection>,
+    // Keep the subscription's channel alive with either kind of consumer.
+    _channel: Channel,
+    consumer: Either<Consumer, RecoveringConsumer>,
     // Present only when the descriptor opted into a native delay queue; threaded into every
     // delivery so `nack_after` can re-publish to the waiting queue.
     delay: Option<DelayContext>,
@@ -180,21 +194,28 @@ impl AmqpDeliveries {
         let delay = self.delay.clone();
         #[cfg(feature = "testing")]
         let queue = self.queue.as_str();
+        let connection = &self.connection;
         futures::stream::unfold(
             (&mut self.consumer, delay),
             move |(consumer, delay)| async move {
-                let item = consumer.next().await?;
+                let item = match consumer {
+                    Either::Left(consumer) => consumer
+                        .next()
+                        .await
+                        .map(|item| item.map_err(AmqpError::consume)),
+                    Either::Right(consumer) => consumer.next().await,
+                }?;
                 let mapped = match item {
                     Ok(delivery) => Ok({
                         #[cfg(feature = "testing")]
-                        consumer.connection.routes().delivered(
+                        connection.routes().delivered(
                             delivery.exchange.as_str(),
                             delivery.routing_key.as_str(),
                             queue,
                         );
                         LapinMessage::from_delivery(
                             delivery,
-                            Some(Arc::clone(&consumer.connection)),
+                            Some(Arc::clone(connection)),
                             delay.clone(),
                         )
                     }),

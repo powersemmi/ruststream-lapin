@@ -118,6 +118,7 @@ pub(crate) struct AmqpConnection {
     closed: AtomicBool,
     connect_failed: Arc<AtomicBool>,
     recovery: watch::Sender<bool>,
+    auto_recover: bool,
     /// The runtime `connect` ran on. Every task the broker starts runs here, such as a
     /// requester's reply dispatcher, whichever thread makes the request that starts it.
     runtime: Handle,
@@ -133,6 +134,7 @@ impl AmqpConnection {
         publish_channel: Channel,
         runtime: Handle,
         connect_failed: Arc<AtomicBool>,
+        auto_recover: bool,
     ) -> Arc<Self> {
         let conn = Arc::new(Self {
             connection,
@@ -140,23 +142,31 @@ impl AmqpConnection {
             closed: AtomicBool::new(false),
             connect_failed,
             recovery: watch::channel(false).0,
+            auto_recover,
             runtime,
             #[cfg(feature = "testing")]
             routes: LiveRoutes::default(),
         });
-        let weak = Arc::downgrade(&conn);
-        conn.runtime.spawn(async move {
-            let mut check = tokio::time::interval(Duration::from_millis(100));
-            loop {
-                check.tick().await;
-                let Some(conn) = weak.upgrade() else { return };
-                if conn.is_closed() || conn.failed() {
-                    conn.recovery.send_replace(true);
-                    return;
+        // Only recovering consumers need these terminal-failure notifications.
+        if auto_recover {
+            let weak = Arc::downgrade(&conn);
+            conn.runtime.spawn(async move {
+                let mut check = tokio::time::interval(Duration::from_millis(100));
+                loop {
+                    check.tick().await;
+                    let Some(conn) = weak.upgrade() else { return };
+                    if conn.is_closed() || conn.failed() {
+                        conn.recovery.send_replace(true);
+                        return;
+                    }
                 }
-            }
-        });
+            });
+        }
         conn
+    }
+
+    pub(crate) const fn auto_recover(&self) -> bool {
+        self.auto_recover
     }
 
     /// Notifies consumers when recovery fails permanently or the broker shuts down.
@@ -318,6 +328,7 @@ pub struct LapinBroker {
     prefetch: Option<NonZeroU16>,
     declare: bool,
     auto_recover: bool,
+    recovery_retries: usize,
 }
 
 impl LapinBroker {
@@ -332,6 +343,7 @@ impl LapinBroker {
             prefetch: None,
             declare: false,
             auto_recover: false,
+            recovery_retries: 16,
         }
     }
 
@@ -343,11 +355,23 @@ impl LapinBroker {
 
     /// Enables automatic connection and topology recovery. Defaults to `false`.
     ///
-    /// When enabled, Lapin retries with exponential backoff (16 retries), including the initial
-    /// connection. Failed publishes are not replayed and outstanding RPC deadlines still apply.
+    /// When enabled, Lapin retries with exponential backoff, including the initial connection.
+    /// The limit defaults to 16 retries; see [`recovery_retries`](Self::recovery_retries).
+    /// Failed publishes are not replayed and outstanding RPC deadlines still apply.
     /// Server transactions require `auto_recover(false)` because their state is lost on reconnect.
+    #[must_use = "use the returned broker to apply the recovery setting"]
     pub fn auto_recover(mut self, enabled: bool) -> Self {
         self.auto_recover = enabled;
+        self
+    }
+
+    /// Sets the retry limit for initial connection and subsequent recovery. Defaults to 16.
+    ///
+    /// Only applies with [`auto_recover(true)`](Self::auto_recover). Zero allows the first
+    /// connection attempt but no retries. Successful connections reset the retry budget.
+    #[must_use = "use the returned broker to apply the retry limit"]
+    pub fn recovery_retries(mut self, retries: usize) -> Self {
+        self.recovery_retries = retries;
         self
     }
 
@@ -385,7 +409,11 @@ impl Broker for LapinBroker {
     ///
     /// Returns [`AmqpError::Connect`] when the URI cannot be parsed or the connection fails.
     async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        let retries = if self.auto_recover { 16 } else { 0 };
+        let retries = if self.auto_recover {
+            self.recovery_retries
+        } else {
+            0
+        };
         let mut properties = ConnectionProperties::default()
             .configure_backoff(|backoff| backoff.with_max_times(retries));
         if self.auto_recover {
@@ -406,6 +434,7 @@ impl Broker for LapinBroker {
                 publish_channel,
                 Handle::current(),
                 connect_failed,
+                self.auto_recover,
             )),
             uri: self.uri,
             prefetch: self.prefetch,

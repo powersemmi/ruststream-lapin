@@ -286,6 +286,7 @@ async fn shutdown_during_recovery_ends_streams_and_disables_aliases() {
         .await
         .expect("subscribe");
     let publisher = broker.publisher(LapinPublish::default());
+    let (original, _) = proxy.connections();
     proxy.offline();
     proxy.wait_for(|| !broker.is_connected()).await;
     tokio::time::timeout(Duration::from_secs(1), broker.shutdown())
@@ -299,7 +300,12 @@ async fn shutdown_during_recovery_ends_streams_and_disables_aliases() {
             .is_none()
     );
     proxy.online();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    proxy
+        .wait_for(|| {
+            let (accepted, active) = proxy.connections();
+            accepted > original && active == 0
+        })
+        .await;
     assert!(matches!(
         publisher
             .publish(OutgoingMessage::new(&name, b"closed"), None)
