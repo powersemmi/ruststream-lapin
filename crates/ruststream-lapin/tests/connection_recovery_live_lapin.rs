@@ -26,14 +26,20 @@ async fn initial_connection_retries_until_the_server_is_available() {
     let Some(url) = live::url("AMQP_TEST_URL") else {
         return;
     };
-    let proxy = proxy::Proxy::new(&url).await;
-    proxy.offline();
+    let proxy = proxy::Proxy::new_offline(&url).await;
+    let uri: lapin::uri::AMQPUri = proxy.url.parse().expect("proxy URI");
+    assert!(
+        tokio::net::TcpStream::connect((uri.authority.host.as_str(), uri.authority.port))
+            .await
+            .is_err(),
+        "startup outage must refuse TCP connections"
+    );
     let connecting = LapinBroker::new(&proxy.url).auto_recover(true).connect();
     tokio::pin!(connecting);
+    let early = tokio::time::timeout(Duration::from_millis(150), &mut connecting).await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(150), &mut connecting)
-            .await
-            .is_err()
+        early.is_err(),
+        "connection finished while offline: {early:?}"
     );
     proxy.online();
     let broker = tokio::time::timeout(WAIT, connecting)
