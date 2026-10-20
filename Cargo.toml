@@ -20,6 +20,7 @@ authors = ["RustStream contributors"]
 ruststream-lapin = { path = "crates/ruststream-lapin" }
 
 ruststream = { version = "0.7", default-features = false }
+allocation-counter = "0.8.1"
 
 lapin = { version = "4.12.1", default-features = false, features = ["tokio"] }
 # The channel a live handle keeps is read on every publish and replaced only when the broker has
