@@ -1531,8 +1531,10 @@ async fn publish_steps_reach_the_native_amqp_properties() {
         .expect("inspect close");
 }
 
-// A server transaction takes an oversized body in and refuses the commit, which then publishes
-// none of the transaction. The in-process transport holds to the same answer.
+// A server transaction with an oversized body publishes none of it. The server refuses the body
+// as it arrives and closes the channel, so whichever operation of the transaction comes after the
+// refusal reaches the client fails: a later publish or the commit. The in-process transport holds
+// to the same answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_transaction_with_an_oversized_body_commits_nothing() {
     let Some(url) = amqp_url() else { return };
@@ -1550,14 +1552,30 @@ async fn a_transaction_with_an_oversized_body_commits_nothing() {
     let big = vec![0u8; 16 * 1024 * 1024 + 1];
 
     publisher.begin_transaction().await.expect("begin");
-    for payload in [b"small".as_slice(), &big, b"after"] {
-        publisher
+    publisher
+        .publish(OutgoingMessage::new(&queue, b"small".as_slice()), None)
+        .await
+        .expect("a body within the limit is staged");
+    let mut refused = Vec::new();
+    for payload in [big.as_slice(), b"after"] {
+        if let Err(err) = publisher
             .publish(OutgoingMessage::new(&queue, payload), None)
             .await
-            .expect("the server stages the body and refuses it at the commit");
+        {
+            refused.push(err);
+        }
     }
-    let refused = publisher.commit().await;
-    assert!(matches!(refused, Err(AmqpError::Publish(_))), "{refused:?}");
+    if let Err(err) = publisher.commit().await {
+        refused.push(err);
+    }
+    assert!(
+        !refused.is_empty()
+            && refused
+                .iter()
+                .all(|err| matches!(err, AmqpError::Publish(_))),
+        "the oversized body fails the transaction at a later publish or at the commit: \
+         {refused:?}",
+    );
     let mut stream = Box::pin(subscriber.stream());
     assert!(
         tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
