@@ -235,7 +235,7 @@ impl AmqpConnection {
     pub(crate) async fn live_publish_channel(&self, target: &str) -> Result<Channel, AmqpError> {
         self.ensure_live(target)?;
         self.publish_channel
-            .get(|| async {
+            .get(async move || {
                 self.connection
                     .create_channel()
                     .await

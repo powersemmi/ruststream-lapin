@@ -219,7 +219,7 @@ impl LapinRequester {
     /// requester must not do is stop working for every later request too.
     async fn state(&self, conn: &Arc<AmqpConnection>, target: &str) -> Result<ReqState, AmqpError> {
         self.state
-            .get(|| async {
+            .get(async move || {
                 let channel = conn
                     .live_connection(target)?
                     .create_channel()

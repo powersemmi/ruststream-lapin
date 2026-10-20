@@ -874,9 +874,7 @@ async fn ctx_keys_resolve_against_the_in_process_transport() {
     let seen = Seen::default();
     let probe = seen.clone();
     let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
-        .on_startup(
-            move |()| async move { Ok::<_, std::convert::Infallible>(MetadataState { seen }) },
-        )
+        .on_startup(async move |()| Ok::<_, Infallible>(MetadataState { seen }))
         .with_broker(LapinBroker::new(URI), |b| {
             b.include(record_metadata);
         });

@@ -197,7 +197,7 @@ impl AmqpDeliveries {
         let connection = &self.connection;
         futures::stream::unfold(
             (&mut self.consumer, delay),
-            move |(consumer, delay)| async move {
+            async move |(consumer, delay)| {
                 let item = match consumer {
                     Either::Left(consumer) => consumer
                         .next()

@@ -217,7 +217,7 @@ impl ConfirmsPublisher {
     /// never send anything through this handle again.
     async fn channel(&self, conn: &AmqpConnection, target: &str) -> Result<Channel, AmqpError> {
         self.channel
-            .get(|| async {
+            .get(async move || {
                 let channel = conn
                     .live_connection(target)?
                     .create_channel()
@@ -529,7 +529,7 @@ impl ServerTxPublisher {
             });
         }
         self.channel
-            .get(|| async {
+            .get(async move || {
                 let channel = conn
                     .live_connection(target)?
                     .create_channel()

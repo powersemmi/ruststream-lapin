@@ -107,9 +107,7 @@ async fn rpc_pair() -> (TestApp<RpcState>, Decisions) {
     let decisions = Decisions::default();
     let recorded = decisions.clone();
     let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
-        .on_startup(
-            move |()| async move { Ok::<_, std::convert::Infallible>(RpcState { decisions }) },
-        )
+        .on_startup(async move |()| Ok::<_, Infallible>(RpcState { decisions }))
         .with_broker(LapinBroker::new(URI), |b| {
             b.include(place_order)
                 .out(DefaultSlot, Request::default())
