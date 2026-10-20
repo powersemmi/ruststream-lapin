@@ -504,6 +504,7 @@ impl ServerTxPublisher {
     pub(crate) fn new(connected: &ConnectedLapinBroker, options: PublishOptions) -> Self {
         Self {
             link: connected.link().clone(),
+            auto_recover: connected.auto_recover(),
             options,
             channel: Arc::new(ChannelCell::new()),
             open: Arc::new(Mutex::new(false)),
