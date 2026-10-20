@@ -74,15 +74,20 @@ The connection stays up, and a publisher opens a new channel on its next call.
 
 ## Connection loss
 
-When the connection to RabbitMQ is lost, by a server restart, a failover or an operator closing it, the service reconnects on its own.
-Each subscription dials the server again and opens its consumer again, with the same declaration and prefetch.
-It retries with a growing pause, from 100 ms doubling up to 10 s, logs a warning for each failed attempt and an info line once it is back.
-Publishers and the requester dial again on their next call, and return an error while the server is unreachable.
-The service's health stays `Running` during the outage.
+Connection recovery is disabled by default. Enable `LapinBroker::auto_recover(true)` to let Lapin reconnect with exponential backoff, including the initial connection.
+The default limit is 16 retries; `.recovery_retries(n)` changes it, and zero disables retries.
+Lapin restores channels, declared exchanges, queues, bindings, prefetch, publisher confirms and consumers through the existing handles. It does not restart the application or rerun startup hooks.
 
-Deliveries the service had taken and not settled go back to the queue when the connection drops, and RabbitMQ delivers them again, marked [`Redelivered`](../components/context/index.md).
-So a handler that was working on a message when the connection dropped may see it once more.
-A consumer that the server cancels on a live channel, because its queue was deleted, ends its subscription.
+Configure a heartbeat in the URI, such as `amqp://localhost:5672?heartbeat=30`, to detect silent connection loss.
+`ConnectedLapinBroker::is_connected()` checks the AMQP connection for a readiness endpoint: false during disconnection or after shutdown.
+A true result does not mean channel and topology recovery has finished or that workers are healthy; it is separate from the service's runtime health.
+
+Failed publishes are not replayed, and deadlines of RPC requests in flight keep running.
+`ServerTxPublish` requires `auto_recover(false)` because transaction state is lost on reconnect.
+If retries run out at startup, connection fails; after startup, the consumer stream yields a terminal consume error and ends.
+
+Unsettled deliveries in queues that survive the disconnect return to RabbitMQ and can be redelivered, marked [`Redelivered`](../components/context/index.md).
+Handlers must tolerate duplicates. A consumer cancelled by the server on a live channel, such as after its queue is deleted, ends its subscription.
 
 ## Shutdown
 
@@ -90,6 +95,8 @@ A consumer that the server cancels on a live channel, because its queue was dele
 The runtime stops the subscriptions and closes the connection with a clean handshake.
 RabbitMQ returns every delivery the service took and did not settle to its queue, so another instance takes it.
 A publisher or a requester that outlives the connection, for example one held by a background task, returns [`AmqpError::Closed`](../components/broker/shutdown.md) instead of sending into a closed connection.
+
+If shutdown begins during reconnect, waiting consumers are woken and broker shutdown does not wait for RabbitMQ to return. Existing handles are closed immediately; a later recovered connection is closed in the background, or cleanup ends when retries run out.
 
 ## Testing
 

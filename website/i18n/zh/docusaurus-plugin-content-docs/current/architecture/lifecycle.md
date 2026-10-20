@@ -47,3 +47,11 @@ export const words = {
 只消费的服务不再打开其他信道。第一次经由[发布者确认或事务策略](rabbitmq/publishing.md)的发布，以及第一个请求，各自打开所需的信道。
 
 停机时先把连接标记为关闭，这样仍持有它的发布者无法再塞进一条消息，然后用 AMQP 的关闭握手关闭连接。服务器把各个订阅持有而未结算的消息重新入队。[`ClosedLapinBroker::handshake`](api:ruststream_lapin::ClosedLapinBroker::handshake) 报告握手是否完成。停机后，比连接活得更久的发布者或请求方返回 [`AmqpError::Closed`](api:ruststream_lapin::AmqpError::Closed)，停机后才结算的投递返回错误，而不是报告一次从未发生的结算。
+
+## 连接恢复 {/* #connection-recovery */}
+
+恢复默认关闭。启用 `LapinBroker::auto_recover(true)` 后，已连接的 broker 可以处于已连接或正在重连的状态，而 Rust 类型不变。
+`is_connected()` 报告 AMQP 连接状态；即使返回 true，信道和拓扑恢复也可能仍在进行。
+Lapin 恢复现有信道及其拓扑，不会重新构建应用，也不会重新运行启动钩子。
+`recovery_retries(n)` 限制启动及后续恢复的重试次数（默认为 16）。次数耗尽时，消费者流以终止的消费错误结束。
+恢复期间停机会立即关闭现有句柄并唤醒等待的消费者；稍后重新连接的套接字会在后台关闭。

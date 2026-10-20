@@ -18,6 +18,7 @@ mod publish_policy;
 mod publish_step;
 mod publisher;
 mod queue;
+mod recovery;
 mod reply;
 mod requester;
 mod subscriber;

@@ -23,6 +23,10 @@ A quorum queue stamps a returned message with the `x-delivery-count` header; a c
 
 A retry under a [cap](./retries.md) and a [delayed retry](./retry-after.md) travel as copies instead of a requeue.
 
+After a connection loss, a delivery's old acknowledgement belongs to the old channel and can fail even if the connection has recovered.
+RabbitMQ requeues unsettled messages from queues that survive the disconnect and may deliver them again.
+Do not treat reconnection as proof that the old delivery was settled; handlers must tolerate redelivery when [recovery](../broker/connection.md#automatic-recovery) is enabled.
+
 ## Example
 
 An order is requeued the first time it arrives and acknowledged when it comes back redelivered. An order without a SKU is dropped.

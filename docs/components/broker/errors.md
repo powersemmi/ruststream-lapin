@@ -32,6 +32,10 @@ A failed startup carries it as the source of the runtime's error, and the servic
 A publish from a handler returns it inside the core's [`PublishError`](api:ruststream::runtime::PublishError), and the handler decides how the delivery settles.
 The enum is `#[non_exhaustive]`, so a `match` on it ends with a wildcard arm.
 
+With [automatic recovery](./connection.md#automatic-recovery) enabled, transient disconnects pause consumers.
+When retries run out, a consumer stream yields a terminal `AmqpError::Consume` and ends.
+Pairing `ServerTxPublish` with `auto_recover(true)` fails with `AmqpError::InvalidOptions`; direct server-transaction operations reject that combination too.
+
 ## Example
 
 A shipment the server refuses is logged with its cause, and the order is dropped to the queue's dead-letter exchange.

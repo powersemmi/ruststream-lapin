@@ -278,6 +278,11 @@ async fn a_requester_whose_channel_the_broker_closed_opens_another() {
         "no reply within the deadline is a timeout, got {unanswered:?}"
     );
 
+    assert!(
+        broker.is_connected(),
+        "a channel exception must not restart the connection"
+    );
+
     requester
         .publish(OutgoingMessage::new("anything", b"{}"), None)
         .await

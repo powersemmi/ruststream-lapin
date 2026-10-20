@@ -24,6 +24,11 @@ A publish outside a handler goes through [`after_startup`](api:ruststream::runti
 The policy holds the defaults of the per-message [properties](./properties/index.md).
 [`confirms`](api:ruststream_lapin::LapinPublish::confirms) and [`server_tx`](api:ruststream_lapin::LapinPublish::server_tx) move to the [transactional policies](../transactions/index.md) and keep these settings.
 
+[Automatic recovery](../broker/connection.md#automatic-recovery) restores publisher channels and confirms, but does not replay failed publishes.
+A publish during an outage can return an error, and the outcome of an in-flight publish can be uncertain.
+An application that retries must account for possible duplicates. Connection readiness alone does not mean every publisher channel has finished recovering.
+A recovered publisher channel can also precede binding restoration on another channel; a confirmed publish can then be unroutable and discarded, as described under [connection recovery](../broker/connection.md#automatic-recovery).
+
 ## Example
 
 Every order is answered with a confirmation, routed under the name the reply type declares. Once its subscriptions are open, the service announces itself.

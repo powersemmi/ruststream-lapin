@@ -24,6 +24,7 @@
     "Create nothing on the broker unless the service owns its topology: `LapinBroker::declare_topology(true)` is the opt-in, and a mount-site retry cap reaches a quorum queue's arguments only through it.",
     "Answer an RPC request by mounting `.out_reply(policy).transform(DirectReplyTo)` over a reply type that declares no `#[outgoing(name = \"..\")]`; the `reply(\"..\")` clause is the address a request without a `reply-to` header falls back to.",
     "Pair `.batch(n)` with a prefetch of at least `n` and tune `.batch_wait(..)`: AMQP pushes one delivery at a time, so the batch is assembled on the client.",
-    "Test the production app: with feature `testing`, `TestApp::start` runs the app `main` builds, `LapinBroker` in process (`tb.broker::<LapinBroker>()`); `TestApp::start_live` runs it on a real RabbitMQ: storage, prefetch, confirms, server transactions."
+    "Test the production app: with feature `testing`, `TestApp::start` runs the app `main` builds, `LapinBroker` in process (`tb.broker::<LapinBroker>()`); `TestApp::start_live` runs it on a real RabbitMQ: storage, prefetch, confirms, server transactions.",
+    "Connection recovery is disabled by default; opt in with LapinBroker::auto_recover(true), set recovery_retries(n) if needed (default 16), use is_connected() for connection readiness, and keep ServerTxPublish on auto_recover(false). Recovery does not replay publishes or reset RPC deadlines; a recovered publisher channel does not guarantee that bindings on other channels are restored."
   ]
 }

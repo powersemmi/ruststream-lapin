@@ -69,3 +69,11 @@ whatever the subscriptions held unsettled.
 the handshake ran. A publisher or a requester that outlives the connection answers
 [`AmqpError::Closed`](api:ruststream_lapin::AmqpError::Closed) after shutdown, and a delivery
 settled after shutdown reports an error instead of a settlement that never happened.
+
+## Connection recovery
+
+Recovery is disabled by default. With `LapinBroker::auto_recover(true)`, the connected broker can be connected or reconnecting without changing its Rust type.
+`is_connected()` reports the AMQP connection state; channel and topology restoration may still be running when it returns true.
+Lapin restores the existing channels and their topology instead of rebuilding the application. Startup hooks are not rerun.
+`recovery_retries(n)` limits retries for startup and later recovery (16 by default). Exhaustion ends a consumer with a terminal consume error.
+Shutdown during recovery marks handles closed and wakes waiting consumers immediately; a later reconnected socket is closed in the background.

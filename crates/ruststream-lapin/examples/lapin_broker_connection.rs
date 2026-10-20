@@ -19,7 +19,10 @@ async fn place(order: &Order) -> HandlerOutcome {
 /// The user `orders` on the virtual host `shop`; the management UI lists the connection as
 /// `orders-svc`.
 fn broker() -> LapinBroker {
-    LapinBroker::new("amqp://orders:secret@localhost:5672/shop").connection_name("orders-svc")
+    LapinBroker::new("amqp://orders:secret@localhost:5672/shop?heartbeat=30")
+        .connection_name("orders-svc")
+        .auto_recover(true)
+        .recovery_retries(32)
 }
 
 #[ruststream::app]

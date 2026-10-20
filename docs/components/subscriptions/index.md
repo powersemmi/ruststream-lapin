@@ -28,6 +28,10 @@ The manual form passes the name or the descriptor to [`subscriber(source, body)`
 Several instances of a service share one queue, and each message goes to one of them.
 The handler's outcome is a protocol frame: an ack removes the message, and a retry or a drop rejects it, as the [Settlement](../settlement/index.md) pages show.
 
+With [automatic recovery](../broker/connection.md#automatic-recovery) enabled, a subscription waits while Lapin restores its channel and consumer, then resumes through the same handle.
+Unsettled deliveries may be redelivered after an outage, so handlers must tolerate duplicates.
+When retries run out, the stream yields a consume error and ends. Recovery is disabled by default.
+
 ## Example
 
 An order with items is acknowledged; an empty order is dropped.
