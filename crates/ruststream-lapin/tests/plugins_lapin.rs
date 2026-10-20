@@ -12,13 +12,16 @@
 
 #![cfg(any(feature = "plugin-consistent-hash", feature = "plugin-dme"))]
 
+use std::process::id;
 use std::time::Duration;
 
 use futures::StreamExt;
+use lapin::options::ExchangeDeleteOptions;
 use ruststream::{
     Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
 };
 use ruststream_lapin::{LapinBroker, LapinPublish, RabbitQueue};
+use tokio::time::timeout as timeout_future;
 
 mod live;
 
@@ -32,7 +35,7 @@ fn unique(base: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("ruststream-plugin.{base}.{}-{n}", std::process::id())
+    format!("ruststream-plugin.{base}.{}-{n}", id())
 }
 
 /// Drains everything a subscriber delivers within a short quiet window, acking each.
@@ -40,9 +43,7 @@ fn unique(base: &str) -> String {
 async fn drain(sub: &mut ruststream_lapin::LapinSubscriber) -> u32 {
     let mut stream = Box::pin(sub.stream());
     let mut count = 0;
-    while let Ok(Some(Ok(msg))) =
-        tokio::time::timeout(Duration::from_millis(300), stream.next()).await
-    {
+    while let Ok(Some(Ok(msg))) = timeout_future(Duration::from_millis(300), stream.next()).await {
         count += 1;
         msg.ack().await.expect("ack");
     }
@@ -218,7 +219,7 @@ async fn delayed_message_exchange_holds_then_redelivers() {
         .expect("publish");
 
     let mut stream = Box::pin(subscriber.stream());
-    let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+    let first = timeout_future(Duration::from_secs(5), stream.next())
         .await
         .expect("delivery")
         .expect("stream has next")
@@ -230,13 +231,13 @@ async fn delayed_message_exchange_holds_then_redelivers() {
         .await
         .expect("nack_after");
 
-    let early = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
+    let early = timeout_future(Duration::from_millis(100), stream.next()).await;
     assert!(
         early.is_err(),
         "the delayed message must not return before its delay"
     );
 
-    let second = tokio::time::timeout(Duration::from_secs(5), stream.next())
+    let second = timeout_future(Duration::from_secs(5), stream.next())
         .await
         .expect("redelivery")
         .expect("stream has next")
@@ -256,7 +257,7 @@ async fn delayed_message_exchange_holds_then_redelivers() {
     channel
         .exchange_delete(
             format!("{queue}.delay").as_str().into(),
-            lapin::options::ExchangeDeleteOptions::default(),
+            ExchangeDeleteOptions::default(),
         )
         .await
         .expect("cleanup exchange delete");

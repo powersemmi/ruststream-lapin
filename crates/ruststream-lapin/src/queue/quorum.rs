@@ -13,6 +13,8 @@ use super::spec::{
     Binding, DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, DELIVERY_LIMIT, QueueKind, QueueSpec,
     queue_settings,
 };
+#[cfg(feature = "asyncapi")]
+use crate::bindings::{consumer_operation, queue_channel};
 use crate::broker::ConnectedLapinBroker;
 use crate::delay::Delay;
 use crate::error::AmqpError;
@@ -215,13 +217,13 @@ impl SubscriptionSource<ConnectedLapinBroker> for RabbitQuorumQueue {
     /// The queue this subscription consumes, as the `amqp` binding names its settings.
     #[cfg(feature = "asyncapi")]
     fn channel_bindings(&self) -> Bindings {
-        crate::bindings::queue_channel(&self.spec)
+        queue_channel(&self.spec)
     }
 
     /// The consumer's own half: this crate acknowledges by hand on every subscription.
     #[cfg(feature = "asyncapi")]
     fn operation_bindings(&self) -> Bindings {
-        crate::bindings::consumer_operation()
+        consumer_operation()
     }
 }
 

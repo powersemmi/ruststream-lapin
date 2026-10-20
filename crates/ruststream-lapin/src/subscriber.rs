@@ -1,11 +1,13 @@
 //! The subscriber: a stream of AMQP deliveries from one queue consumer, batched on the client for
 //! the handlers that take a batch.
 
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::Either;
+use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use lapin::{Channel, Consumer};
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
@@ -91,8 +93,8 @@ impl LapinSubscriber {
     }
 }
 
-impl std::fmt::Debug for LapinSubscriber {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for LapinSubscriber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LapinSubscriber")
             .field("queue", &self.queue)
             .finish_non_exhaustive()
@@ -154,7 +156,10 @@ enum Deliveries {
 }
 
 #[cfg(not(feature = "testing"))]
-const _: () = assert!(size_of::<Deliveries>() == size_of::<AmqpDeliveries>());
+const _: () = assert!(
+    size_of::<Deliveries>() == size_of::<AmqpDeliveries>(),
+    "production deliveries must have no in-process enum overhead"
+);
 
 impl Subscriber for Deliveries {
     type Message = LapinMessage;
@@ -195,7 +200,7 @@ impl AmqpDeliveries {
         #[cfg(feature = "testing")]
         let queue = self.queue.as_str();
         let connection = &self.connection;
-        futures::stream::unfold(
+        unfold(
             (&mut self.consumer, delay),
             async move |(consumer, delay)| {
                 let item = match consumer {

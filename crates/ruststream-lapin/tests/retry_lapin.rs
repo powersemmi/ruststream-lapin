@@ -12,16 +12,14 @@
 
 #![cfg(feature = "testing")]
 
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::{InProcess, TestApp, TestError};
-use ruststream::{
-    ConnectedBroker, FromRef, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
-    SubscriptionSource,
-};
+use ruststream::{ConnectedBroker, FromRef, OutgoingMessage, Subscriber, SubscriptionSource};
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{ConnectedLapinBroker, LapinMessage, LapinSubscriber};
 use serde::{Deserialize, Serialize};
@@ -361,7 +359,7 @@ async fn every_copy_the_waiting_queue_releases_counts_one_more_attempt() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
         .on_startup(move |()| {
             let seen = seen;
-            async move { Ok::<_, std::convert::Infallible>(seen) }
+            async move { Ok::<_, Infallible>(seen) }
         })
         .with_broker(LapinBroker::new(URI), |b| {
             b.include(record_the_count);

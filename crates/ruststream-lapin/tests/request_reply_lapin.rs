@@ -10,16 +10,15 @@
 
 #![cfg(feature = "testing")]
 
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ruststream::codec::{Codec, JsonCodec};
 use ruststream::testing::{InProcess, TestApp};
-use ruststream::{
-    ConnectedBroker, FromRef, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
-};
+use ruststream::{ConnectedBroker, FromRef, OutgoingMessage, Subscriber};
+use ruststream_lapin::AmqpError;
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::{AmqpError, LapinPublish, LapinRequest};
 use serde::{Deserialize, Serialize};
 
 /// The address the service's broker is built with; the in-process mode dials nothing.

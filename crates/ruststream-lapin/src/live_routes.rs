@@ -7,7 +7,7 @@
 //! whose server picks one queue by a hash, the queue each key was delivered to.
 
 use std::collections::HashSet;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use lapin::ExchangeKind;
 
@@ -47,9 +47,7 @@ impl LiveRoutes {
     fn seen(&self) -> MutexGuard<'_, Seen> {
         // A panic while the lock was held leaves sets that are still whole: each write is one
         // insert or one push.
-        self.seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.seen.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Notes the bindings `queue` declared.

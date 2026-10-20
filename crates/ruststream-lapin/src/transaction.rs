@@ -6,7 +6,8 @@
 //! borrowed [`TransactionalPublisher`](ruststream::TransactionalPublisher) the publisher also
 //! implements.
 
-use std::future::{Future, ready};
+use std::fmt;
+use std::future::ready;
 
 use ruststream::{OutgoingFor, OwnedTransactions, Take, Transaction};
 use tracing::warn;
@@ -78,8 +79,8 @@ pub struct ConfirmsTransaction {
     settled: bool,
 }
 
-impl std::fmt::Debug for ConfirmsTransaction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ConfirmsTransaction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConfirmsTransaction")
             .field("buffered", &self.buffered.len())
             .field("settled", &self.settled)

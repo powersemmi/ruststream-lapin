@@ -115,7 +115,7 @@ mod tests {
     use ruststream_lapin::AmqpError;
     use ruststream_lapin::prelude::*;
 
-    use std::future::{Future, ready};
+    use std::future::ready;
 
     use super::{Order, Shipment, app};
 
@@ -193,7 +193,8 @@ mod tests {
         });
 
         let failed = TestApp::start(app).await.err();
-        let mut cause: Option<&(dyn Error + 'static)> = failed.as_ref().map(|err| err as _);
+        let mut cause: Option<&(dyn Error + 'static)> =
+            failed.as_ref().map(|err| -> &(dyn Error + 'static) { err });
         while let Some(err) = cause {
             if let Some(amqp) = err.downcast_ref::<AmqpError>() {
                 assert!(matches!(amqp, AmqpError::Declare(_)), "{amqp}");

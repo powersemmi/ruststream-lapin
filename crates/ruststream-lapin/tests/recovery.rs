@@ -1,10 +1,13 @@
 //! Terminal recovery and socket cleanup through the public broker and subscriber APIs.
 
+use std::process::id;
 use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::{Broker, ConnectedBroker, OutgoingMessage, Publisher, Subscriber};
 use ruststream_lapin::{AmqpError, LapinBroker, LapinPublish, RabbitQueue};
+use tokio::net::TcpListener;
+use tokio::time::timeout as timeout_future;
 
 mod live;
 #[path = "live/proxy.rs"]
@@ -23,14 +26,14 @@ async fn exhausted_reconnects_end_the_consumer_instead_of_hanging() {
         .connect()
         .await
         .expect("connect");
-    let queue = format!("ruststream.exhausted-recovery.{}", std::process::id());
+    let queue = format!("ruststream.exhausted-recovery.{}", id());
     let mut consumer = broker
         .subscribe(RabbitQueue::new(&queue).durable(false).exclusive(true))
         .await
         .expect("consumer");
     drop(proxy);
     let mut stream = consumer.stream().boxed();
-    let result = tokio::time::timeout(Duration::from_secs(10), stream.next())
+    let result = timeout_future(Duration::from_secs(10), stream.next())
         .await
         .expect("bounded recovery must finish")
         .expect("terminal failure is reported");
@@ -54,7 +57,7 @@ async fn exhausted_handshake_retries_notify_the_consumer() {
         .connect()
         .await
         .expect("connect");
-    let queue = format!("ruststream.exhausted-handshake.{}", std::process::id());
+    let queue = format!("ruststream.exhausted-handshake.{}", id());
     let mut consumer = broker
         .subscribe(RabbitQueue::new(&queue).durable(false).exclusive(true))
         .await
@@ -62,7 +65,7 @@ async fn exhausted_handshake_retries_notify_the_consumer() {
     // TCP connects, but the proxy closes before the AMQP handshake can finish.
     proxy.offline();
     let mut stream = consumer.stream().boxed();
-    let result = tokio::time::timeout(Duration::from_secs(10), stream.next())
+    let result = timeout_future(Duration::from_secs(10), stream.next())
         .await
         .expect("bounded recovery must finish")
         .expect("terminal failure is reported");
@@ -75,12 +78,12 @@ async fn exhausted_handshake_retries_notify_the_consumer() {
 
 #[tokio::test]
 async fn zero_retries_fails_the_initial_connection_without_retrying() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("reserve port");
     let address = listener.local_addr().expect("local address");
     drop(listener);
-    let result = tokio::time::timeout(
+    let result = timeout_future(
         Duration::from_secs(5),
         LapinBroker::new(format!("amqp://{address}"))
             .auto_recover(true)

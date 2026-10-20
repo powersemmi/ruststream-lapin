@@ -9,6 +9,7 @@
 //!
 //! Every test is a no-op unless `AMQP_TEST_URL` points at a broker (see `just test-brokers`).
 
+use std::process::id;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ use ruststream::{
 use ruststream_lapin::{
     AmqpError, LapinBroker, LapinMessage, LapinPublish, LapinRequest, RabbitExchange, RabbitQueue,
 };
+use tokio::time::timeout as timeout_future;
 
 mod live;
 
@@ -41,14 +43,14 @@ fn amqp_url() -> Option<String> {
 fn unique(base: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("ruststream-recovery.{base}.{}-{n}", std::process::id())
+    format!("ruststream-recovery.{base}.{}-{n}", id())
 }
 
 async fn next<S>(stream: &mut S) -> LapinMessage
 where
     S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
-    tokio::time::timeout(WAIT, stream.next())
+    timeout_future(WAIT, stream.next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -179,7 +181,7 @@ async fn a_publish_to_a_missing_exchange_does_not_end_publishing_on_the_connecti
     // arrives in.
     let mut stream = Box::pin(subscriber.stream());
     assert!(
-        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        timeout_future(SILENCE, stream.next()).await.is_err(),
         "an exchange that does not exist routes nowhere",
     );
 

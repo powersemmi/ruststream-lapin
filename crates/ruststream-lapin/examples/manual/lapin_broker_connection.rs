@@ -5,7 +5,7 @@
 //! cargo test --example manual_lapin_broker_connection --features testing
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 
 use ruststream::runtime::cli::run_main;
@@ -102,7 +102,8 @@ mod tests {
         );
 
         let failed = TestApp::start(app).await.err();
-        let mut cause: Option<&(dyn Error + 'static)> = failed.as_ref().map(|err| err as _);
+        let mut cause: Option<&(dyn Error + 'static)> =
+            failed.as_ref().map(|err| -> &(dyn Error + 'static) { err });
         while let Some(err) = cause {
             if let Some(amqp) = err.downcast_ref::<AmqpError>() {
                 assert!(matches!(amqp, AmqpError::Connect(_)), "{amqp}");

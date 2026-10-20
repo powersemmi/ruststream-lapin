@@ -9,6 +9,7 @@
 
 #![cfg(feature = "testing")]
 
+use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -32,6 +33,7 @@ use ruststream_lapin::{
     RabbitQuorumQueue,
 };
 use serde::{Deserialize, Serialize};
+use tokio::time::timeout as timeout_future;
 
 const WAIT: Duration = Duration::from_secs(1);
 
@@ -61,7 +63,7 @@ async fn next_payload<S>(stream: &mut S) -> Vec<u8>
 where
     S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
-    let msg = tokio::time::timeout(WAIT, stream.next())
+    let msg = timeout_future(WAIT, stream.next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -216,7 +218,7 @@ async fn a_closing_consumer_spends_a_quorum_delivery() {
         .expect("publish");
     drop(leaving);
 
-    let returned = tokio::time::timeout(WAIT, Box::pin(staying.stream()).next())
+    let returned = timeout_future(WAIT, Box::pin(staying.stream()).next())
         .await
         .expect("a delivery within the wait")
         .expect("the stream has one")
@@ -277,8 +279,7 @@ async fn a_quorum_queue_without_a_limit_takes_the_servers_default() {
     let mut deliveries = 0;
     let mut stream = Box::pin(looping.stream());
     while deliveries < 30
-        && let Ok(Some(delivery)) =
-            tokio::time::timeout(Duration::from_millis(50), stream.next()).await
+        && let Ok(Some(delivery)) = timeout_future(Duration::from_millis(50), stream.next()).await
     {
         deliveries += 1;
         delivery
@@ -317,7 +318,7 @@ async fn a_dead_letter_does_not_route_on_its_native_priority() {
         .await
         .expect("publish");
 
-    let rejected = tokio::time::timeout(WAIT, Box::pin(work.stream()).next())
+    let rejected = timeout_future(WAIT, Box::pin(work.stream()).next())
         .await
         .expect("a delivery within the wait")
         .expect("the stream has one")
@@ -357,7 +358,7 @@ async fn a_dead_letter_to_a_headers_exchange_matches_the_message_headers() {
         .await
         .expect("publish");
 
-    let rejected = tokio::time::timeout(WAIT, Box::pin(work.stream()).next())
+    let rejected = timeout_future(WAIT, Box::pin(work.stream()).next())
         .await
         .expect("a delivery within the wait")
         .expect("the stream has one")
@@ -391,7 +392,7 @@ async fn a_requeue_goes_back_to_the_queue() {
         .expect("publish");
 
     let mut first_stream = Box::pin(first.stream());
-    let msg = tokio::time::timeout(WAIT, first_stream.next())
+    let msg = timeout_future(WAIT, first_stream.next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -400,7 +401,7 @@ async fn a_requeue_goes_back_to_the_queue() {
     msg.nack(true).await.expect("requeue");
 
     let mut second_stream = Box::pin(second.stream());
-    let redelivered = tokio::time::timeout(WAIT, second_stream.next())
+    let redelivered = timeout_future(WAIT, second_stream.next())
         .await
         .expect("redelivery within timeout")
         .expect("stream has next")
@@ -457,14 +458,14 @@ async fn nack_requeue_redelivers_to_same_subscriber() {
         .expect("publish");
 
     let mut stream = Box::pin(subscriber.stream());
-    let first = tokio::time::timeout(WAIT, stream.next())
+    let first = timeout_future(WAIT, stream.next())
         .await
         .expect("first delivery")
         .expect("stream has next")
         .expect("ok");
     first.nack(true).await.expect("nack requeue");
 
-    let second = tokio::time::timeout(WAIT, stream.next())
+    let second = timeout_future(WAIT, stream.next())
         .await
         .expect("redelivery")
         .expect("stream has next")
@@ -489,7 +490,7 @@ async fn headers_are_propagated_to_subscribers() {
     publisher.publish(outgoing, None).await.expect("publish");
 
     let mut stream = Box::pin(subscriber.stream());
-    let msg = tokio::time::timeout(WAIT, stream.next())
+    let msg = timeout_future(WAIT, stream.next())
         .await
         .expect("delivery")
         .expect("stream has next")
@@ -565,7 +566,7 @@ async fn partition_key_header_is_surfaced() {
         .expect("publish");
 
     let mut stream = Box::pin(sub.stream());
-    let msg = tokio::time::timeout(WAIT, stream.next())
+    let msg = timeout_future(WAIT, stream.next())
         .await
         .expect("delivery")
         .expect("item")
@@ -579,7 +580,7 @@ async fn partition_key_header_is_surfaced() {
         IncomingMessage::partition_key(&msg),
         Some(b"tenant-a".as_slice())
     );
-    msg.ack().await.ok();
+    let _ = msg.ack().await;
     broker.shutdown().await.expect("shutdown");
 }
 
@@ -598,13 +599,13 @@ async fn partition_key_absent_yields_none() {
         .expect("publish");
 
     let mut stream = Box::pin(sub.stream());
-    let msg = tokio::time::timeout(WAIT, stream.next())
+    let msg = timeout_future(WAIT, stream.next())
         .await
         .expect("delivery")
         .expect("item")
         .expect("ok");
     assert_eq!(Partitioned::partition_key(&msg), None);
-    msg.ack().await.ok();
+    let _ = msg.ack().await;
     broker.shutdown().await.expect("shutdown");
 }
 
@@ -791,7 +792,7 @@ async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> H
 // a publish drives the reaction to quiescence (every `enqueued` balanced by a `consumed`) before
 // it returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_app_drives_the_production_app_to_quiescence() {
+async fn app_drives_the_production_app_to_quiescence() {
     let app =
         RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(ack_order);
@@ -905,9 +906,9 @@ async fn ctx_keys_resolve_against_the_in_process_transport() {
 // A requeue re-enqueues a fresh delivery, so the harness must still reach quiescence: the
 // second delivery's ack balances the count. The handler is called exactly twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_app_requeue_stays_balanced() {
+async fn app_requeue_stays_balanced() {
     let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
-        .on_startup(|()| async { Ok::<_, std::convert::Infallible>(Attempts::default()) })
+        .on_startup(async |()| Ok::<_, Infallible>(Attempts::default()))
         .with_broker(LapinBroker::new(URI), |b| {
             b.include(retry_then_ack);
         });
@@ -1156,7 +1157,7 @@ async fn batches_are_capped_by_the_size_the_stream_is_opened_with() {
     let mut payloads: Vec<Vec<u8>> = Vec::new();
     let mut stream = Box::pin(subscriber.batches(nonzero!(2)));
     while payloads.len() < 5 {
-        let batch = tokio::time::timeout(WAIT, stream.next())
+        let batch = timeout_future(WAIT, stream.next())
             .await
             .expect("batch within timeout")
             .expect("stream has next")
@@ -1311,7 +1312,7 @@ async fn settling_after_the_connection_closed_is_refused() {
         .publish(OutgoingMessage::new("orders", b"o"), None)
         .await
         .expect("publish");
-    let msg = tokio::time::timeout(WAIT, Box::pin(subscriber.stream()).next())
+    let msg = timeout_future(WAIT, Box::pin(subscriber.stream()).next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -1330,7 +1331,7 @@ async fn settling_after_the_connection_closed_is_refused() {
 
 /// The next delivery on `subscriber`, or `None` when nothing arrives within a short wait.
 async fn delivered(subscriber: &mut LapinSubscriber) -> Option<Vec<u8>> {
-    let next = tokio::time::timeout(
+    let next = timeout_future(
         Duration::from_millis(50),
         Box::pin(subscriber.stream()).next(),
     )

@@ -11,7 +11,7 @@
 //! whoever opens a channel, so two callers racing on a dead one do not open two.
 
 use std::fmt;
-use std::future::Future;
+
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;

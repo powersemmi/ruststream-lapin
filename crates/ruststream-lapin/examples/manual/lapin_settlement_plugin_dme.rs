@@ -7,7 +7,7 @@
 //!     cargo test --example manual_lapin_settlement_plugin_dme --features testing,plugin-dme
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 use std::time::Duration;
 

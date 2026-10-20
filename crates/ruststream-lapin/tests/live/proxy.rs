@@ -7,9 +7,12 @@ use std::sync::{
 use std::time::Duration;
 
 use lapin::uri::AMQPUri;
+use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
+use tokio::task::yield_now;
 use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::timeout as timeout_future;
 
 pub(super) struct Proxy {
     pub(super) url: String,
@@ -65,7 +68,7 @@ impl Proxy {
                                 _ = disconnected.changed() => {}
                                 () = async {
                                     let mut server = TcpStream::connect(upstream).await.expect("proxy upstream");
-                                    let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+                                    let _ = copy_bidirectional(&mut client, &mut server).await;
                                 } => {}
                             }
                         });
@@ -115,9 +118,9 @@ impl Proxy {
     }
 
     pub(super) async fn wait_for(&self, condition: impl Fn() -> bool + Send + Sync) {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        timeout_future(Duration::from_secs(30), async {
             while !condition() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                yield_now().await;
             }
         })
         .await

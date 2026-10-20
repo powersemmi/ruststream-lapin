@@ -12,7 +12,6 @@ use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ruststream::runtime::Out;
 use ruststream::testing::TestApp;
 use ruststream::{OutSlot, Outgoing};
 use ruststream_lapin::PRIORITY_HEADER;

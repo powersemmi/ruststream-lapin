@@ -6,7 +6,7 @@
 //! cargo run --example manual_lapin_settlement_delay -- run
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 use std::time::Duration;
 

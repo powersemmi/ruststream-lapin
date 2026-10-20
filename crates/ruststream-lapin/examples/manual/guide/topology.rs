@@ -7,7 +7,7 @@
 //! ```
 
 use std::env;
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::{self, ExitCode};
 
 use ruststream::runtime::cli::run_main;

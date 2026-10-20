@@ -6,17 +6,17 @@
 //! the default exchange) or closes the channel (an exchange), so the subscription checks for it
 //! once, when it opens. Every test is a no-op unless `AMQP_TEST_URL` points at a broker.
 
+use std::process::id;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
 use lapin::options::{QueueDeclareOptions, QueueDeleteOptions};
-use lapin::types::{AMQPValue, FieldTable, ShortString};
-use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
-};
+use lapin::types::ShortString;
+use ruststream::{ConnectedBroker, OutgoingMessage, Subscriber};
+use ruststream_lapin::ConnectedLapinBroker;
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::{ConnectedLapinBroker, LapinPublish};
+use tokio::time::timeout as timeout_future;
 
 mod live;
 
@@ -30,7 +30,7 @@ fn amqp_url() -> Option<String> {
 fn unique(base: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("ruststream-delay.{base}.{}-{n}", std::process::id())
+    format!("ruststream-delay.{base}.{}-{n}", id())
 }
 
 /// Provisions `queue` the way an operator does, outside the service, with `arguments`.
@@ -136,7 +136,7 @@ async fn a_provisioned_waiting_queue_carries_a_delayed_retry() {
         .expect("publish");
 
     let mut stream = Box::pin(subscriber.stream());
-    let first = tokio::time::timeout(WAIT, stream.next())
+    let first = timeout_future(WAIT, stream.next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -145,7 +145,7 @@ async fn a_provisioned_waiting_queue_carries_a_delayed_retry() {
         .nack_after(Duration::from_millis(150))
         .await
         .expect("the waiting queue takes the copy");
-    let again = tokio::time::timeout(WAIT, stream.next())
+    let again = timeout_future(WAIT, stream.next())
         .await
         .expect("the copy comes back within timeout")
         .expect("stream has next")

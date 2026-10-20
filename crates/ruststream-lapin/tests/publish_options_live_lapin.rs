@@ -8,6 +8,7 @@
 //!
 //! Every test is a no-op unless `AMQP_TEST_URL` points at a broker (see `just test-brokers`).
 
+use std::process::id;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ use ruststream_lapin::{
     AMQPValue, AmqpError, LapinBroker, LapinMessage, LapinPublish, LapinPublishSteps, LapinRequest,
     PRIORITY_HEADER, RabbitQueue,
 };
+use tokio::time::timeout as timeout_future;
 
 mod live;
 
@@ -38,7 +40,7 @@ fn amqp_url() -> Option<String> {
 fn unique(base: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("ruststream-options.{base}.{}-{n}", std::process::id())
+    format!("ruststream-options.{base}.{}-{n}", id())
 }
 
 /// Payload bytes under a name of their own: these tests assert on what the broker did with a
@@ -56,7 +58,7 @@ async fn next<S>(stream: &mut S) -> LapinMessage
 where
     S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
-    tokio::time::timeout(WAIT, stream.next())
+    timeout_future(WAIT, stream.next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -261,9 +263,7 @@ async fn an_unconsumed_message_expires_into_the_dead_letter_queue() {
         .expect("subscribe the origin queue");
     let mut origin_stream = Box::pin(origin.stream());
     assert!(
-        tokio::time::timeout(SILENCE, origin_stream.next())
-            .await
-            .is_err(),
+        timeout_future(SILENCE, origin_stream.next()).await.is_err(),
         "the expired message must not still be on the queue it was published to",
     );
 
@@ -293,7 +293,7 @@ async fn consume_raw(channel: &Channel, queue: &str) -> Consumer {
 }
 
 async fn next_raw(consumer: &mut Consumer) -> Delivery {
-    tokio::time::timeout(WAIT, consumer.next())
+    timeout_future(WAIT, consumer.next())
         .await
         .expect("delivery within timeout")
         .expect("consumer has next")

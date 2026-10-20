@@ -7,7 +7,7 @@
 //! cargo run --example manual_guide_work_queues --features testing,ruststream/logging -- run
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 use std::time::Duration;
 

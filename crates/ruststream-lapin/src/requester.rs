@@ -8,7 +8,7 @@
 )]
 
 use std::collections::HashMap;
-use std::future::{Future, ready};
+use std::future::ready;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -22,6 +22,7 @@ use lapin::types::{FieldTable, ShortString};
 use ruststream::asyncapi::Bindings;
 use ruststream::{Lend, OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
 use tokio::sync::oneshot;
+use tokio::time::timeout as timeout_future;
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker, Link};
 use crate::channel::{ChannelCell, Holds};
@@ -457,7 +458,7 @@ impl RequestReply for LapinRequester {
             return Err(AmqpError::publish(err));
         }
 
-        match tokio::time::timeout(timeout, rx).await {
+        match timeout_future(timeout, rx).await {
             Ok(Ok(reply)) => Ok(reply),
             // The dispatch task dropped the sender: the reply channel died under us.
             Ok(Err(_)) => {

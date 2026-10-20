@@ -5,7 +5,7 @@
 //! cargo test --example manual_lapin_subscriptions_batches --features testing
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 use std::time::Duration;
 

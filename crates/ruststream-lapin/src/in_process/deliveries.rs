@@ -1,7 +1,9 @@
 //! The consuming half of the in-process transport: the stream of one consumer, and how a delivery
 //! taken from it settles.
 
+use futures::stream::poll_fn;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -9,6 +11,7 @@ use futures::Stream;
 use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::testing::Coordinator;
 use ruststream::{AckError, Subscriber};
+use tokio::time::sleep;
 
 use super::bus::{Bus, BusDelivery, ConsumerId, DeliveryReceiver};
 use crate::convert;
@@ -191,8 +194,8 @@ impl Drop for BusDeliveries {
     }
 }
 
-impl std::fmt::Debug for BusDeliveries {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for BusDeliveries {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BusDeliveries")
             .field("queue", &self.queue)
             .finish_non_exhaustive()
@@ -213,7 +216,7 @@ impl Subscriber for BusDeliveries {
             unsettled,
             ..
         } = self;
-        futures::stream::poll_fn(move |cx| {
+        poll_fn(move |cx| {
             receiver.poll_recv(cx).map(|delivery| {
                 delivery.map(|delivery| {
                     let tag = *next_tag;
@@ -366,7 +369,7 @@ impl Settlement {
             // dedicated thread settles from a runtime that may stop before the delay is out.
             None => {
                 self.bus.runtime().spawn(async move {
-                    tokio::time::sleep(delay).await;
+                    sleep(delay).await;
                     redeliver();
                 });
             }
@@ -391,8 +394,8 @@ impl Drop for Settlement {
     }
 }
 
-impl std::fmt::Debug for Settlement {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Settlement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Settlement")
             .field("queue", &self.queue)
             .finish_non_exhaustive()

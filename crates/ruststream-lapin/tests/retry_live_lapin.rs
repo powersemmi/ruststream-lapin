@@ -10,24 +10,30 @@
 //! tests below spend a message's attempts with.
 
 use std::convert::Infallible;
+use std::process::id;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use lapin::options::{QueueDeclareOptions, QueueDeleteOptions};
-use lapin::types::{AMQPValue, FieldTable, ShortString};
+use lapin::message::Delivery;
+use lapin::options::{
+    BasicAckOptions, BasicConsumeOptions, BasicNackOptions, BasicPublishOptions,
+    BasicRejectOptions, QueueDeclareOptions, QueueDeleteOptions,
+};
+use lapin::types::ShortString;
+use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, Consumer, Error};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
-    Broker, ConnectedBroker, FromRef, IncomingMessage, OutgoingMessage, Publisher,
-    RetryDeclaration, Subscriber, SubscriptionSource, nonzero,
+    ConnectedBroker, FromRef, OutgoingMessage, RetryDeclaration, Subscriber, SubscriptionSource,
+    nonzero,
 };
 use ruststream_lapin::prelude::*;
-use ruststream_lapin::{
-    AmqpError, ConnectedLapinBroker, LapinMessage, LapinPublish, RabbitQuorumQueue,
-};
+use ruststream_lapin::{AmqpError, ConnectedLapinBroker, LapinMessage};
 use serde::Deserialize;
 use tokio::sync::Notify;
+use tokio::task::yield_now;
+use tokio::time::timeout as timeout_future;
 
 mod live;
 
@@ -45,14 +51,14 @@ fn amqp_url() -> Option<String> {
 fn unique(base: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("ruststream-retry.{base}.{}-{n}", std::process::id())
+    format!("ruststream-retry.{base}.{}-{n}", id())
 }
 
 async fn next<S>(stream: &mut S) -> LapinMessage
 where
     S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
-    tokio::time::timeout(WAIT, stream.next())
+    timeout_future(WAIT, stream.next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -71,7 +77,7 @@ async fn publish(connected: &ConnectedLapinBroker, queue: &str, payload: &[u8]) 
 /// Deletes the queues a test declared: a quorum queue is durable and never auto-deletes, so it
 /// outlives the connection that created it.
 async fn delete_queues(url: &str, queues: &[&str]) {
-    let cleanup = lapin::Connection::connect(url, lapin::ConnectionProperties::default())
+    let cleanup = Connection::connect(url, ConnectionProperties::default())
         .await
         .expect("cleanup connect");
     let channel = cleanup.create_channel().await.expect("cleanup channel");
@@ -117,7 +123,7 @@ async fn a_declaration_becomes_the_queues_own_arguments() {
         .await
         .expect("subscribe declares the queue");
 
-    let check = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+    let check = Connection::connect(&url, ConnectionProperties::default())
         .await
         .expect("check connect");
     let channel = check.create_channel().await.expect("check channel");
@@ -164,11 +170,7 @@ fn quorum_arguments(dead: &str, returns: i64) -> FieldTable {
 ///
 /// A refused declaration closes the channel it ran on, so a test that asserts both answers needs
 /// a channel per answer.
-async fn redeclare(
-    channel: &lapin::Channel,
-    queue: &str,
-    arguments: FieldTable,
-) -> Result<(), lapin::Error> {
+async fn redeclare(channel: &Channel, queue: &str, arguments: FieldTable) -> Result<(), Error> {
     channel
         .queue_declare(
             queue.into(),
@@ -219,7 +221,7 @@ async fn the_queues_own_delivery_limit_spends_one_delivery_more_than_it_counts()
         delivery.nack(true).await.expect("the handler asks again");
     }
     assert!(
-        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        timeout_future(SILENCE, stream.next()).await.is_err(),
         "one return is two deliveries, so there must be no third",
     );
 
@@ -271,7 +273,7 @@ async fn a_quorum_queue_without_a_limit_takes_the_servers_default() {
         delivery.nack(true).await.expect("the handler asks again");
     }
     assert!(
-        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        timeout_future(SILENCE, stream.next()).await.is_err(),
         "twenty returns are twenty-one deliveries, so there must be no twenty-second",
     );
 
@@ -290,7 +292,7 @@ async fn a_quorum_queue_without_a_limit_takes_the_servers_default() {
 
 /// How many messages `queue` holds, as the server counts them.
 async fn ready_messages(url: &str, queue: &str) -> u32 {
-    let probe = lapin::Connection::connect(url, lapin::ConnectionProperties::default())
+    let probe = Connection::connect(url, ConnectionProperties::default())
         .await
         .expect("probe connect");
     let channel = probe.create_channel().await.expect("probe channel");
@@ -336,7 +338,7 @@ async fn a_delivery_limit_with_no_dead_letter_route_drops_the_spent_message() {
         delivery.nack(true).await.expect("the handler asks again");
     }
     assert!(
-        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        timeout_future(SILENCE, stream.next()).await.is_err(),
         "the deliveries are spent, so the queue must not hand the message out again",
     );
 
@@ -379,7 +381,7 @@ async fn a_mount_sites_cap_is_written_over_the_descriptors_own_limit() {
         .await
         .expect("subscribe declares the queue");
 
-    let check = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+    let check = Connection::connect(&url, ConnectionProperties::default())
         .await
         .expect("check connect");
     let channel = check.create_channel().await.expect("check channel");
@@ -460,7 +462,7 @@ async fn a_spent_delivery_leaves_for_the_dead_letter_queue() {
         .expect("subscribe");
     let mut stream = Box::pin(spent.stream());
     assert!(
-        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        timeout_future(SILENCE, stream.next()).await.is_err(),
         "the attempts are spent, so the queue must not hand the message out again",
     );
     drop(stream);
@@ -675,7 +677,7 @@ async fn a_retried_delivery_leaves_for_the_dead_letter_queue_at_the_cap() {
         delivery.nack(true).await.expect("the handler asks again");
     }
     assert!(
-        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        timeout_future(SILENCE, stream.next()).await.is_err(),
         "the deliveries are spent, so the queue must not hand the message out again",
     );
 
@@ -819,10 +821,10 @@ async fn the_runtimes_cap_ends_a_retry_loop_on_a_classic_queue() {
         .connect()
         .await
         .expect("connect");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_consumer(&url, CAPPED).await;
     publish(&publisher, CAPPED, br#"{"id":11}"#).await;
 
-    tokio::time::timeout(WAIT, running)
+    timeout_future(WAIT, running)
         .await
         .expect("the cap ends the loop and the app shuts down")
         .expect("app task did not panic")
@@ -948,10 +950,10 @@ async fn the_runtimes_cap_ends_a_delayed_retry_loop_on_a_waiting_queue() {
         .connect()
         .await
         .expect("connect");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_consumer(&url, DELAYED).await;
     publish(&publisher, DELAYED, br#"{"id":12}"#).await;
 
-    tokio::time::timeout(WAIT, running)
+    timeout_future(WAIT, running)
         .await
         .expect("the cap ends the loop and the app shuts down")
         .expect("app task did not panic")
@@ -968,7 +970,7 @@ async fn the_runtimes_cap_ends_a_delayed_retry_loop_on_a_waiting_queue() {
 }
 
 /// The `x-delivery-count` the server stamped, read straight off the wire.
-fn delivery_count(delivery: &lapin::message::Delivery) -> Option<i64> {
+fn delivery_count(delivery: &Delivery) -> Option<i64> {
     let value = delivery
         .properties
         .headers()
@@ -984,8 +986,39 @@ fn delivery_count(delivery: &lapin::message::Delivery) -> Option<i64> {
     }
 }
 
-async fn raw_next(consumer: &mut lapin::Consumer) -> lapin::message::Delivery {
-    tokio::time::timeout(WAIT, consumer.next())
+async fn wait_for_consumer(url: &str, queue: &str) {
+    let connection = Connection::connect(url, ConnectionProperties::default())
+        .await
+        .expect("readiness connection");
+    timeout_future(WAIT, async {
+        loop {
+            let channel = connection
+                .create_channel()
+                .await
+                .expect("readiness channel");
+            let declared = channel
+                .queue_declare(
+                    queue.into(),
+                    QueueDeclareOptions {
+                        passive: true,
+                        ..QueueDeclareOptions::default()
+                    },
+                    FieldTable::default(),
+                )
+                .await;
+            if declared.is_ok_and(|queue| queue.consumer_count() > 0) {
+                break;
+            }
+            yield_now().await;
+        }
+    })
+    .await
+    .expect("the service consumer starts");
+    drop(connection);
+}
+
+async fn raw_next(consumer: &mut Consumer) -> Delivery {
+    timeout_future(WAIT, consumer.next())
         .await
         .expect("delivery within timeout")
         .expect("consumer has next")
@@ -1016,7 +1049,7 @@ async fn a_nack_is_not_a_delivery_the_queue_counts() {
 
     // The two frames are the same operation on a single delivery, so only a raw client can send
     // the one this crate never sends.
-    let raw = lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+    let raw = Connection::connect(&url, ConnectionProperties::default())
         .await
         .expect("raw connect");
     let channel = raw.create_channel().await.expect("raw channel");
@@ -1024,7 +1057,7 @@ async fn a_nack_is_not_a_delivery_the_queue_counts() {
         .basic_consume(
             queue.as_str().into(),
             ShortString::default(),
-            lapin::options::BasicConsumeOptions::default(),
+            BasicConsumeOptions::default(),
             FieldTable::default(),
         )
         .await
@@ -1033,9 +1066,9 @@ async fn a_nack_is_not_a_delivery_the_queue_counts() {
         .basic_publish(
             ShortString::default(),
             queue.as_str().into(),
-            lapin::options::BasicPublishOptions::default(),
+            BasicPublishOptions::default(),
             b"settled",
-            lapin::BasicProperties::default(),
+            BasicProperties::default(),
         )
         .await
         .expect("raw publish");
@@ -1045,7 +1078,7 @@ async fn a_nack_is_not_a_delivery_the_queue_counts() {
     channel
         .basic_nack(
             first.delivery_tag,
-            lapin::options::BasicNackOptions {
+            BasicNackOptions {
                 requeue: true,
                 multiple: false,
             },
@@ -1060,10 +1093,7 @@ async fn a_nack_is_not_a_delivery_the_queue_counts() {
         "a nack must not raise the counter the delivery limit reads"
     );
     channel
-        .basic_reject(
-            second.delivery_tag,
-            lapin::options::BasicRejectOptions { requeue: true },
-        )
+        .basic_reject(second.delivery_tag, BasicRejectOptions { requeue: true })
         .await
         .expect("reject");
 
@@ -1074,10 +1104,7 @@ async fn a_nack_is_not_a_delivery_the_queue_counts() {
         "a rejection is the attempt the queue counts"
     );
     channel
-        .basic_ack(
-            third.delivery_tag,
-            lapin::options::BasicAckOptions::default(),
-        )
+        .basic_ack(third.delivery_tag, BasicAckOptions::default())
         .await
         .expect("ack");
 

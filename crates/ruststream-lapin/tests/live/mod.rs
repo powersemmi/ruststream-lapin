@@ -11,12 +11,14 @@
 //! `AMQP_PLUGINS_TEST_URL` for the plugin-enabled one. Each job sets the flag next to its own, so
 //! a job that loses its address fails instead of passing empty.
 
+use std::env;
+
 /// The variable a job sets to say it started a broker, so skipping past it is a defect.
 pub(crate) const REQUIRE_LIVE: &str = "RUSTSTREAM_REQUIRE_LIVE";
 
 /// Whether this run is required to reach a live broker.
 fn required() -> bool {
-    std::env::var(REQUIRE_LIVE).is_ok_and(|value| !value.is_empty())
+    env::var(REQUIRE_LIVE).is_ok_and(|value| !value.is_empty())
 }
 
 /// The broker address from `name`, or `None` to skip the test.
@@ -27,7 +29,7 @@ fn required() -> bool {
 /// lost its address is a broken job, and the tests behind it would have reported `ok` without
 /// running.
 pub(crate) fn url(name: &str) -> Option<String> {
-    match std::env::var(name) {
+    match env::var(name) {
         Ok(value) if !value.is_empty() => Some(value),
         _ => {
             assert!(

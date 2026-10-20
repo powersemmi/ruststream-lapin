@@ -297,7 +297,7 @@ impl DelayContext {
                 exchange,
                 routing_key,
             } => {
-                use lapin::types::{AMQPValue, FieldTable};
+                use lapin::types::AMQPValue;
 
                 let mut properties = convert::properties_for_publish(headers, &options)?;
                 let mut table = properties

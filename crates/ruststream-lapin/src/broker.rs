@@ -11,14 +11,16 @@
     allow(clippy::infallible_destructuring_match)
 )]
 
+use std::fmt;
 #[cfg(feature = "testing")]
-use std::future::{Future, ready};
+use std::future::ready;
 use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use futures::StreamExt;
 use lapin::options::{BasicConsumeOptions, BasicQosOptions};
+use lapin::runtime::default_runtime;
 use lapin::types::{FieldTable, ShortString};
 #[cfg(feature = "testing")]
 use lapin::uri::AMQPUri;
@@ -63,7 +65,7 @@ pub(crate) async fn dial(
     let recovery = watch::channel(false).0;
     let terminal = recovery.clone();
     let failures = AtomicUsize::new(0);
-    let runtime = lapin::runtime::default_runtime().map_err(AmqpError::connect)?;
+    let runtime = default_runtime().map_err(AmqpError::connect)?;
     let connection = Connection::connector(
         uri,
         runtime,
@@ -258,8 +260,8 @@ impl AmqpConnection {
     }
 }
 
-impl std::fmt::Debug for AmqpConnection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for AmqpConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AmqpConnection")
             .field("closed", &self.closed.load(Ordering::Relaxed))
             .finish_non_exhaustive()
@@ -282,7 +284,10 @@ pub(crate) enum Link {
 // The zero-cost promise of the in-process mode, held by the compiler: a build without it gives the
 // link exactly the size of the connection handle it wraps.
 #[cfg(not(feature = "testing"))]
-const _: () = assert!(size_of::<Link>() == size_of::<Arc<AmqpConnection>>());
+const _: () = assert!(
+    size_of::<Link>() == size_of::<Arc<AmqpConnection>>(),
+    "the production link must stay pointer-sized"
+);
 
 /// A `RabbitMQ` broker backed by [`lapin`](https://docs.rs/lapin): configuration captured, no I/O
 /// performed yet.

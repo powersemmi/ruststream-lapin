@@ -16,14 +16,13 @@ use std::time::Duration;
 use futures::{Stream, StreamExt};
 use lapin::options::QueueDeleteOptions;
 use lapin::{Connection, ConnectionProperties};
-use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
-};
+use ruststream::{ConnectedBroker, OutgoingMessage, Subscriber};
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{AmqpError, LapinMessage};
 use serde::{Deserialize, Serialize};
 use tokio::runtime;
 use tokio::sync::{Notify, oneshot};
+use tokio::time::timeout as timeout_future;
 
 mod live;
 
@@ -72,7 +71,7 @@ async fn next<S>(stream: &mut S) -> LapinMessage
 where
     S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
-    tokio::time::timeout(WAIT, stream.next())
+    timeout_future(WAIT, stream.next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -177,7 +176,7 @@ async fn a_responder_answers_the_requester_and_falls_back_to_the_mount_site_name
     answered.ack().await.expect("ack");
 
     stop.notify_one();
-    tokio::time::timeout(WAIT, running)
+    timeout_future(WAIT, running)
         .await
         .expect("the responder shuts down")
         .expect("app task did not panic")
@@ -239,7 +238,7 @@ async fn a_request_resolves_after_the_first_one_came_from_a_stopped_runtime() {
     assert!(!stock.available, "the reply must answer this request");
 
     stop.notify_one();
-    tokio::time::timeout(WAIT, running)
+    timeout_future(WAIT, running)
         .await
         .expect("the responder shuts down")
         .expect("app task did not panic")
