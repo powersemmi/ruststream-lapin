@@ -508,7 +508,6 @@ impl ServerTxPublisher {
             options,
             channel: Arc::new(ChannelCell::new()),
             open: Arc::new(Mutex::new(false)),
-            auto_recover: connected.auto_recover(),
             #[cfg(feature = "testing")]
             staged: Arc::new(Mutex::new(Vec::new())),
         }
