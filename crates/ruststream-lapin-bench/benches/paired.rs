@@ -57,6 +57,7 @@
 use std::convert::Infallible;
 use std::env;
 use std::fmt::Write as _;
+use std::fs::write;
 use std::hint::black_box;
 use std::iter::repeat_n;
 use std::num::{NonZeroU16, NonZeroUsize};
@@ -72,7 +73,6 @@ use lapin::options::{
 };
 use lapin::types::ShortString;
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
-use ruststream::runtime::RunningApp;
 use ruststream::{ConnectedBroker, OutgoingMessage, Subscriber, SubscriptionSource};
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{ConnectedLapinBroker, LapinSubscriber};
@@ -127,7 +127,7 @@ const PUBLISHERS: usize = 4;
 /// run in the broker before the consumer had drained a tenth of it, and the number would be about
 /// a queue draining rather than about a consumer consuming. 32768 bodies is 16 MiB outstanding,
 /// far more than either half of a pair is ever behind.
-const IN_FLIGHT: usize = 32_768;
+const IN_FLIGHT: usize = 0x8000;
 /// How often a feed checks that ceiling.
 const CHECK_EVERY: usize = 512;
 /// Requests the round-trip probe times.
@@ -179,7 +179,7 @@ fn json_body(size: usize) -> Vec<u8> {
         } else {
             room
         };
-        body.push_str(&key[..key.len() - 1]);
+        body.push_str(key.strip_suffix('"').expect("field key ends with a quote"));
         body.extend(repeat_n('x', width));
         body.push('"');
         field += 1;
@@ -717,7 +717,7 @@ struct Stats {
 
 impl Stats {
     fn of(rates: &[f64]) -> Self {
-        assert_ne!(rates, &[] as &[f64], "no round was run");
+        assert!(!rates.is_empty(), "no benchmark round was run");
         let mut sorted = rates.to_vec();
         sorted.sort_by(f64::total_cmp);
         let middle = sorted.len() / 2;
@@ -945,6 +945,6 @@ fn main() {
         );
     }
 
-    std::fs::write(&out, document(&measured, round_trip)).expect("the summary is written");
+    write(&out, document(&measured, round_trip)).expect("the summary is written");
     println!("\nwrote {out}");
 }
