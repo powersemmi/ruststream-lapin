@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkruststream_lapin_website=self.webpackChunkruststream_lapin_website||[]).push([["8304"],{6883(e,s,t){t.d(s,{createInfoServices:()=>a.v});var a=t(6744);t(184)}}]);

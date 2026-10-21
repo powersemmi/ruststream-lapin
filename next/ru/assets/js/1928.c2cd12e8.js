@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkruststream_lapin_website=self.webpackChunkruststream_lapin_website||[]).push([["1928"],{6443(e,s,t){t.d(s,{AskAIWidget:()=>a});var n=t(6540),r=t(941);let a=(0,n.forwardRef)(function(e,s){return(0,n.useImperativeHandle)(s,()=>({open:()=>(0,r.gD)(),close:r.K3,openWithNewSession:e=>(0,r.gD)(e)})),null})}}]);
