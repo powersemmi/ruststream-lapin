@@ -50,6 +50,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+allocation-counter.workspace = true
 ruststream = { workspace = true, features = [
     "conformance",
     "testing",

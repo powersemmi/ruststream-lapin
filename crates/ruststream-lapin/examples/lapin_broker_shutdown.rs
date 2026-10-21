@@ -7,6 +7,7 @@
 
 use std::convert::Infallible;
 use std::time::Duration;
+use tokio::time::interval;
 
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +24,7 @@ async fn place(order: &Order) -> HandlerOutcome {
 /// Announces the service every 30 seconds until a publish fails; after shutdown that failure is
 /// `AmqpError::Closed`.
 async fn heartbeat(publisher: LapinPublisher) {
-    let mut ticks = tokio::time::interval(Duration::from_secs(30));
+    let mut ticks = interval(Duration::from_secs(30));
     loop {
         ticks.tick().await;
         let beat = Heartbeat {

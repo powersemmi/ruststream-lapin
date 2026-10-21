@@ -6,7 +6,7 @@
 //! cargo run --example manual_lapin_request_direct_reply_to -- run
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 
 use ruststream::runtime::cli::run_main;

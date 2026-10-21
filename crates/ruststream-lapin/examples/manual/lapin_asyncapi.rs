@@ -12,7 +12,7 @@
 
 use std::any::type_name;
 use std::env;
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 use std::time::Duration;
 

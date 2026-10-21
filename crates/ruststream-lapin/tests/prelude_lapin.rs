@@ -29,7 +29,7 @@ fn the_uniform_policy_names_resolve_to_this_crates_policies() {
     // Aliases, not separate types: a router may write either spelling, and the options builders
     // are the ones the prefixed originals carry.
     let plain: LapinPublish = Publish::default().exchange("orders");
-    let transactional: ConfirmsPublish = TransactionalPublish::default().persistent(false);
+    let transactional = TransactionalPublish::default().persistent(false);
     let requester: LapinRequest = Request::default();
     let queue = RabbitQueue::new("orders");
 

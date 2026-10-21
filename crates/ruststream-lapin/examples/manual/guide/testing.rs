@@ -7,7 +7,7 @@
 //!   cargo test --example manual_guide_testing --features testing -- --test-threads=1
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 use std::time::Duration;
 

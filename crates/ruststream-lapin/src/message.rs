@@ -224,7 +224,7 @@ impl IncomingMessage for LapinMessage {
             return settle.ack();
         }
         self.settle(
-            |acker| async move { acker.ack(BasicAckOptions::default()).await },
+            async move |acker| acker.ack(BasicAckOptions::default()).await,
             "basic.ack",
         )
         .await
@@ -258,7 +258,7 @@ impl IncomingMessage for LapinMessage {
             return settle.reject(self.into_bus_delivery(), requeue);
         }
         self.settle(
-            |acker| async move { acker.reject(BasicRejectOptions { requeue }).await },
+            async move |acker| acker.reject(BasicRejectOptions { requeue }).await,
             "basic.reject",
         )
         .await
@@ -335,7 +335,7 @@ impl IncomingMessage for LapinMessage {
             .map_err(|err| AckError::Broker(Box::new(err)))?;
 
         self.settle(
-            |acker| async move { acker.ack(BasicAckOptions::default()).await },
+            async move |acker| acker.ack(BasicAckOptions::default()).await,
             "basic.ack",
         )
         .await

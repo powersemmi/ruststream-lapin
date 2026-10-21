@@ -6,7 +6,7 @@
 //! cargo run --example manual_lapin_settlement_retries -- run
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 
 use ruststream::nonzero;

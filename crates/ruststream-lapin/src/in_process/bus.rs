@@ -2,6 +2,8 @@
 //! the service's descriptors describe, what was declared, and the publish log.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::fmt;
+use std::mem::take;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -277,7 +279,7 @@ impl Bus {
         // reach the new consumer ahead of the messages the queue kept for it.
         let mut routes = self.routes();
         let opened = self.register(&mut routes, queue.to_owned());
-        let waiting = std::mem::take(
+        let waiting = take(
             &mut routes
                 .stored
                 .entry(queue.to_owned())
@@ -574,8 +576,8 @@ impl Bus {
     }
 }
 
-impl std::fmt::Debug for Bus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Bus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Bus")
             .field("closed", &self.is_closed())
             .finish_non_exhaustive()

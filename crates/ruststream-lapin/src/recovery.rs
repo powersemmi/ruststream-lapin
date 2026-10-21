@@ -36,7 +36,7 @@ impl Drop for RecoveringConsumer {
     fn drop(&mut self) {
         if self.ended && !self.channel.status().connected() {
             // shortcut: suppress cancellation of a removed consumer; remove when Lapin fixes drop after channel errors.
-            self.consumer.set_delegate(|_| async {});
+            self.consumer.set_delegate(async move |_| {});
         }
     }
 }

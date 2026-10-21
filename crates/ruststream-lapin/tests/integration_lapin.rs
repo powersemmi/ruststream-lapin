@@ -13,14 +13,22 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
+use std::process::id;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
+use lapin::Consumer;
+use lapin::message::Delivery;
+use lapin::options::{
+    BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions, QueueDeleteOptions,
+};
 use lapin::types::ShortString;
 use serde::Deserialize;
 use tokio::sync::Notify;
+use tokio::task::try_id;
+use tokio::time::{sleep, timeout as timeout_future};
 
 use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, PublishExt, RustStream, State};
 use ruststream::{
@@ -50,7 +58,7 @@ fn amqp_url() -> Option<String> {
 fn unique(base: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("ruststream-it.{base}.{}-{n}", std::process::id())
+    format!("ruststream-it.{base}.{}-{n}", id())
 }
 
 /// A throwaway queue that vanishes with the test's connection: exclusive, because `RabbitMQ` 4
@@ -63,7 +71,7 @@ async fn next<S>(stream: &mut S) -> LapinMessage
 where
     S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
-    tokio::time::timeout(WAIT, stream.next())
+    timeout_future(WAIT, stream.next())
         .await
         .expect("delivery within timeout")
         .expect("stream has next")
@@ -74,7 +82,7 @@ async fn expect_silence<S>(stream: &mut S)
 where
     S: Stream<Item = Result<LapinMessage, AmqpError>> + Unpin,
 {
-    let outcome = tokio::time::timeout(SILENCE, stream.next()).await;
+    let outcome = timeout_future(SILENCE, stream.next()).await;
     assert!(outcome.is_err(), "expected no delivery, got one");
 }
 
@@ -422,10 +430,7 @@ async fn quorum_queue_declares_and_delivers() {
         .expect("cleanup connect");
     let channel = cleanup.create_channel().await.expect("cleanup channel");
     channel
-        .queue_delete(
-            queue.as_str().into(),
-            lapin::options::QueueDeleteOptions::default(),
-        )
+        .queue_delete(queue.as_str().into(), QueueDeleteOptions::default())
         .await
         .expect("cleanup queue delete");
     cleanup
@@ -587,7 +592,7 @@ async fn prefetch_caps_a_batch_below_its_size() {
     let mut received: Vec<Vec<u8>> = Vec::new();
     let mut stream = Box::pin(subscriber.batches(nonzero!(3)));
     while received.len() < 3 {
-        let batch = tokio::time::timeout(WAIT, stream.next())
+        let batch = timeout_future(WAIT, stream.next())
             .await
             .expect("batch within timeout")
             .expect("stream has next")
@@ -814,7 +819,7 @@ async fn nack_after_redelivers_through_the_delay_queue() {
         .expect("nack_after");
 
     // It must not return before the TTL fires.
-    let early = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
+    let early = timeout_future(Duration::from_millis(100), stream.next()).await;
     assert!(
         early.is_err(),
         "the delayed message must not return before its TTL"
@@ -837,7 +842,7 @@ async fn nack_after_redelivers_through_the_delay_queue() {
     channel
         .queue_delete(
             format!("{queue}.retry").as_str().into(),
-            lapin::options::QueueDeleteOptions::default(),
+            QueueDeleteOptions::default(),
         )
         .await
         .expect("cleanup queue delete");
@@ -952,7 +957,7 @@ impl Lanes {
         let inner = &self.0;
         // The handler is awaited inline in its lane's task, so the task id is a stable per-lane
         // fingerprint: a key that always hashes to the same lane must always report the same id.
-        let worker = tokio::task::try_id().map_or_else(|| "?".to_owned(), |id| id.to_string());
+        let worker = try_id().map_or_else(|| "?".to_owned(), |id| id.to_string());
         inner
             .workers
             .lock()
@@ -998,7 +1003,7 @@ struct KeyedState {
 async fn keyed_handler(order: &KeyedOrder, State(lanes): State<Lanes>) -> HandlerOutcome {
     lanes.enter(&order.tenant, order.id);
     // Widen the window so an erroneous same-key overlap would actually collide in `active`.
-    tokio::time::sleep(Duration::from_millis(25)).await;
+    sleep(Duration::from_millis(25)).await;
     lanes.leave(&order.tenant);
     HandlerOutcome::ack()
 }
@@ -1012,15 +1017,12 @@ async fn declare_empty_keyed_queue(url: &str) {
         .expect("setup connect");
     let channel = setup.create_channel().await.expect("setup channel");
     let _ = channel
-        .queue_delete(
-            KEYED_LANES_QUEUE.into(),
-            lapin::options::QueueDeleteOptions::default(),
-        )
+        .queue_delete(KEYED_LANES_QUEUE.into(), QueueDeleteOptions::default())
         .await;
     channel
         .queue_declare(
             KEYED_LANES_QUEUE.into(),
-            lapin::options::QueueDeclareOptions {
+            QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
             },
@@ -1111,10 +1113,7 @@ async fn delete_keyed_queue(url: &str) {
         .expect("cleanup connect");
     let channel = cleanup.create_channel().await.expect("cleanup channel");
     channel
-        .queue_delete(
-            KEYED_LANES_QUEUE.into(),
-            lapin::options::QueueDeleteOptions::default(),
-        )
+        .queue_delete(KEYED_LANES_QUEUE.into(), QueueDeleteOptions::default())
         .await
         .expect("cleanup queue delete");
     cleanup
@@ -1146,7 +1145,7 @@ async fn keyed_lanes_pin_each_partition_to_one_ordered_worker() {
     // The app shuts itself down once every delivery has settled, bounded so a broken routing that
     // never reaches the count fails the test instead of hanging.
     let app_task = tokio::spawn(app.run_until(async move { signal.done.notified().await }));
-    tokio::time::timeout(Duration::from_secs(20), app_task)
+    timeout_future(Duration::from_secs(20), app_task)
         .await
         .expect("app reached the expected count and shut down in time")
         .expect("app task did not panic")
@@ -1275,15 +1274,12 @@ async fn ctx_extractors_inject_delivery_fields() {
         .expect("setup connect");
     let channel = setup.create_channel().await.expect("setup channel");
     let _ = channel
-        .queue_delete(
-            CTX_DI_QUEUE.into(),
-            lapin::options::QueueDeleteOptions::default(),
-        )
+        .queue_delete(CTX_DI_QUEUE.into(), QueueDeleteOptions::default())
         .await;
     channel
         .queue_declare(
             CTX_DI_QUEUE.into(),
-            lapin::options::QueueDeclareOptions {
+            QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
             },
@@ -1297,7 +1293,7 @@ async fn ctx_extractors_inject_delivery_fields() {
             .basic_publish(
                 "".into(),
                 CTX_DI_QUEUE.into(),
-                lapin::options::BasicPublishOptions::default(),
+                BasicPublishOptions::default(),
                 payload.as_bytes(),
                 lapin::BasicProperties::default(),
             )
@@ -1326,7 +1322,7 @@ async fn ctx_extractors_inject_delivery_fields() {
         });
 
     let app_task = tokio::spawn(app.run_until(async move { done.notified().await }));
-    tokio::time::timeout(Duration::from_secs(20), app_task)
+    timeout_future(Duration::from_secs(20), app_task)
         .await
         .expect("app consumed the prequeued deliveries in time")
         .expect("app task did not panic")
@@ -1359,7 +1355,7 @@ async fn ctx_extractors_inject_delivery_fields() {
 /// Declares a durable probe queue on `channel`, removing any leftover from an aborted run.
 async fn declare_probe_queue(channel: &lapin::Channel, queue: &str, max_priority: Option<u8>) {
     let _ = channel
-        .queue_delete(queue.into(), lapin::options::QueueDeleteOptions::default())
+        .queue_delete(queue.into(), QueueDeleteOptions::default())
         .await;
     let mut arguments = FieldTable::default();
     if let Some(max_priority) = max_priority {
@@ -1371,7 +1367,7 @@ async fn declare_probe_queue(channel: &lapin::Channel, queue: &str, max_priority
     channel
         .queue_declare(
             queue.into(),
-            lapin::options::QueueDeclareOptions {
+            QueueDeclareOptions {
                 durable: true,
                 ..Default::default()
             },
@@ -1381,20 +1377,20 @@ async fn declare_probe_queue(channel: &lapin::Channel, queue: &str, max_priority
         .expect("probe queue declare");
 }
 
-async fn next_delivery(consumer: &mut lapin::Consumer) -> lapin::message::Delivery {
-    tokio::time::timeout(WAIT, consumer.next())
+async fn next_delivery(consumer: &mut Consumer) -> Delivery {
+    timeout_future(WAIT, consumer.next())
         .await
         .expect("delivery within timeout")
         .expect("consumer has next")
         .expect("delivery ok")
 }
 
-async fn consume_probe_queue(channel: &lapin::Channel, queue: &str) -> lapin::Consumer {
+async fn consume_probe_queue(channel: &lapin::Channel, queue: &str) -> Consumer {
     channel
         .basic_consume(
             queue.into(),
             ShortString::default(),
-            lapin::options::BasicConsumeOptions {
+            BasicConsumeOptions {
                 no_ack: true,
                 ..Default::default()
             },
@@ -1404,7 +1400,7 @@ async fn consume_probe_queue(channel: &lapin::Channel, queue: &str) -> lapin::Co
         .expect("probe consume")
 }
 
-fn expiration_of(delivery: &lapin::message::Delivery) -> Option<String> {
+fn expiration_of(delivery: &Delivery) -> Option<String> {
     delivery
         .properties
         .expiration()
@@ -1518,10 +1514,7 @@ async fn publish_steps_reach_the_native_amqp_properties() {
     broker.shutdown().await.expect("shutdown");
     for queue in [&stepped_queue, &headers_queue] {
         channel
-            .queue_delete(
-                queue.as_str().into(),
-                lapin::options::QueueDeleteOptions::default(),
-            )
+            .queue_delete(queue.as_str().into(), QueueDeleteOptions::default())
             .await
             .expect("cleanup queue delete");
     }
@@ -1578,7 +1571,7 @@ async fn a_transaction_with_an_oversized_body_commits_nothing() {
     );
     let mut stream = Box::pin(subscriber.stream());
     assert!(
-        tokio::time::timeout(SILENCE, stream.next()).await.is_err(),
+        timeout_future(SILENCE, stream.next()).await.is_err(),
         "a refused commit publishes nothing",
     );
 

@@ -11,6 +11,7 @@ use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
+use tokio::task::yield_now;
 
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream_lapin::prelude::*;
@@ -37,7 +38,7 @@ struct Processor {
 
 impl Processor {
     async fn refund(&self, card: &str) -> Result<(), Refusal> {
-        tokio::task::yield_now().await;
+        yield_now().await;
         if self.offline.load(Ordering::Relaxed) {
             return Err(Refusal::Unavailable);
         }

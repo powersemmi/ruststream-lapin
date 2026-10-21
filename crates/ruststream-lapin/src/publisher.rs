@@ -10,7 +10,9 @@
     allow(clippy::infallible_destructuring_match)
 )]
 
-use std::future::{Future, ready};
+use std::future::ready;
+#[cfg(feature = "testing")]
+use std::mem::take;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -217,7 +219,7 @@ impl ConfirmsPublisher {
     /// never send anything through this handle again.
     async fn channel(&self, conn: &AmqpConnection, target: &str) -> Result<Channel, AmqpError> {
         self.channel
-            .get(|| async {
+            .get(async move || {
                 let channel = conn
                     .live_connection(target)?
                     .create_channel()
@@ -502,10 +504,10 @@ impl ServerTxPublisher {
     pub(crate) fn new(connected: &ConnectedLapinBroker, options: PublishOptions) -> Self {
         Self {
             link: connected.link().clone(),
-            auto_recover: connected.auto_recover(),
             options,
             channel: Arc::new(ChannelCell::new()),
             open: Arc::new(Mutex::new(false)),
+            auto_recover: connected.auto_recover(),
             #[cfg(feature = "testing")]
             staged: Arc::new(Mutex::new(Vec::new())),
         }
@@ -529,7 +531,7 @@ impl ServerTxPublisher {
             });
         }
         self.channel
-            .get(|| async {
+            .get(async move || {
                 let channel = conn
                     .live_connection(target)?
                     .create_channel()
@@ -674,7 +676,7 @@ impl TransactionalPublisher for ServerTxPublisher {
             #[cfg(feature = "testing")]
             Link::InProcess(bus) => {
                 bus.ensure_live(TX_TARGET)?;
-                let staged = std::mem::take(
+                let staged = take(
                     &mut *self
                         .staged
                         .lock()

@@ -6,9 +6,10 @@
 //! ```
 
 use std::convert::Infallible;
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 use std::time::Duration;
+use tokio::time::interval;
 
 use ruststream::runtime::cli::run_main;
 use ruststream::schemars::JsonSchema;
@@ -35,7 +36,7 @@ impl Handle<Order> for Place {
 /// Announces the service every 30 seconds until a publish fails; after shutdown that failure is
 /// `AmqpError::Closed`.
 async fn heartbeat(publisher: LapinPublisher) {
-    let mut ticks = tokio::time::interval(Duration::from_secs(30));
+    let mut ticks = interval(Duration::from_secs(30));
     loop {
         ticks.tick().await;
         let beat = Heartbeat {

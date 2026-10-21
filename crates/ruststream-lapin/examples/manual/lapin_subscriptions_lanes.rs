@@ -5,7 +5,7 @@
 //! cargo test --example manual_lapin_subscriptions_lanes --features testing
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 
 use ruststream::runtime::cli::run_main;
@@ -73,6 +73,7 @@ impl MessageHeaders for Order {
 mod tests {
     use std::error::Error;
     use std::time::Duration;
+    use tokio::time::sleep;
 
     use ruststream::testing::TestApp;
     use ruststream_lapin::PARTITION_KEY_HEADER;
@@ -108,7 +109,7 @@ mod tests {
         Out(placements): Out<impl Publisher, Placements>,
     ) -> HandlerOutcome {
         let work = if order.id == 1 { 30 } else { 1 };
-        tokio::time::sleep(Duration::from_millis(work)).await;
+        sleep(Duration::from_millis(work)).await;
         let placed = Placed {
             id: order.id,
             tenant: order.tenant.clone(),

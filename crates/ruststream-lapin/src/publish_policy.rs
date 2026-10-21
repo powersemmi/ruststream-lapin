@@ -7,7 +7,7 @@
 //! [`LapinPublish::confirms`] and [`LapinPublish::server_tx`] move to the transactional policies,
 //! keeping the options.
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::time::Duration;
 
 #[cfg(feature = "asyncapi")]
@@ -30,12 +30,14 @@ pub(crate) mod sealed {
     /// Seals [`LapinPublishPolicy`](super::LapinPublishPolicy): pairing an AMQP publisher opens
     /// no channel of its own, and the synchronous
     /// [`publisher`](crate::ConnectedLapinBroker::publisher) accessor depends on that.
+    use crate::requester::LapinRequest;
+
     pub trait Sealed {}
 
     impl Sealed for super::LapinPublish {}
     impl Sealed for super::ConfirmsPublish {}
     impl Sealed for super::ServerTxPublish {}
-    impl Sealed for crate::requester::LapinRequest {}
+    impl Sealed for LapinRequest {}
 }
 
 /// What every `RabbitMQ` publish policy carries: where to publish, and the per-message properties

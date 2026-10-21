@@ -9,6 +9,7 @@
 //! call site. A delivery still reports them back as headers, under [`PRIORITY_HEADER`] and
 //! [`EXPIRATION_HEADER`], so a handler reads them where it reads everything else.
 
+use std::str::from_utf8;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -61,7 +62,7 @@ pub(crate) fn short(value: &str, what: &str) -> Result<ShortString, AmqpError> {
 pub(crate) fn redelivery_options(headers: &HeaderMap) -> LapinPublishOptions {
     let priority = headers
         .get(PRIORITY_HEADER)
-        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| from_utf8(value).ok())
         .and_then(|text| text.parse::<u8>().ok());
     LapinPublishOptions {
         priority,

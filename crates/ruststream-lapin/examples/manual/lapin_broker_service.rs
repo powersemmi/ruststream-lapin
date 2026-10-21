@@ -6,7 +6,7 @@
 //! cargo test --example manual_lapin_broker_service --features testing
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 
 use ruststream::runtime::cli::run_main;

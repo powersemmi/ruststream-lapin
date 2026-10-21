@@ -7,7 +7,7 @@
 //! cargo test --example manual_lapin_testing_in_process --features testing
 //! ```
 
-use std::future::{Future, ready};
+use std::future::ready;
 use std::process::ExitCode;
 
 use ruststream::runtime::cli::run_main;

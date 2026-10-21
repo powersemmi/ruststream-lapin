@@ -47,7 +47,6 @@
 
 use std::convert::Infallible;
 use std::env;
-use std::future::Future;
 use std::hint::black_box;
 use std::num::NonZeroU16;
 use std::sync::Arc;
