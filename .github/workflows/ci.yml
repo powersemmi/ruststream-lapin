@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# No debug info: no step reads it, and it is most of the size of every linked test binary. A
+# failing test still reports the file and line of its panic.
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -131,6 +136,9 @@ jobs:
           !cancelled()
           && (env.RUST_CHANGED == 'true' || env.TEMPLATES_CHANGED == 'true')
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-hack
         if: "!cancelled() && env.RUST_CHANGED == 'true'"
@@ -216,16 +224,21 @@ jobs:
 
       # Minimum dependencies on the minimum compiler: the worst case a user can assemble.
       # Resolution above needs nightly, so only this step drops to the floor.
+      # It builds into a target directory of its own, deleted afterwards, so its artifacts stay
+      # out of the cache.
       - name: Build and test against minimal versions
         id: minimal-test
         if: "!cancelled() && steps.minimal-pin.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: |
-          cargo check --locked --workspace --exclude ruststream-lapin-bench --all-targets \
-            --all-features
           cargo check --locked -p ruststream-lapin-bench --all-targets
           cargo test --locked --workspace --all-features --no-fail-fast
+
+      - name: Delete the minimal versions build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-minimal"
 
   rust:
     name: Build and test
@@ -235,12 +248,14 @@ jobs:
     # once stable passed as a whole: a break stable already reports is not worth two more
     # builds. Releases between the floor and stable add nothing: what fails on a later one fails
     # on the floor too. Stable is the default through `rust-toolchain.toml`; the later steps
-    # name theirs through RUSTUP_TOOLCHAIN, which outranks the file.
+    # name theirs through RUSTUP_TOOLCHAIN, which outranks the file. Each of the two builds into a
+    # target directory of its own, deleted when its leg ends: it never stacks on the stable build,
+    # and the cache holds the stable build alone.
     runs-on: ubuntu-latest
     steps:
-      # Three toolchains build every test target here, and their artifacts outgrow the runner's
-      # free disk by the floor's test run. The runner image ships SDKs this job never uses;
-      # removing them frees about 30 GB without touching the build cache.
+      # The safety margin: the stable build shares the disk with one later toolchain's build at a
+      # time. The runner image ships SDKs this job never uses; removing them frees about 30 GB
+      # without touching the build cache.
       - name: Free the runner's disk
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
@@ -261,6 +276,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The crate-root missing_docs deny covers item docs; this gate catches what rustc
       # cannot: broken intra-doc links and redundant targets only rustdoc resolves.
@@ -272,14 +290,10 @@ jobs:
       - name: cargo check (no default features)
         run: cargo check --workspace --no-default-features
 
-      # The benchmark package is left out of every all-features check on purpose: it is built
-      # with the feature set a service ships, and the framework's harness feature is a compile
-      # error in it. Its own check follows, so it stays compiled.
-      - name: cargo check (all features)
-        run: |
-          cargo check --workspace --exclude ruststream-lapin-bench --all-targets \
-            --all-features
-          cargo check -p ruststream-lapin-bench --all-targets
+      # The benchmark package is built with the feature set a service ships, so it gets a check of
+      # its own. The test step below builds every other target with all features.
+      - name: cargo check (benchmarks)
+        run: cargo check -p ruststream-lapin-bench --all-targets
 
       # The in-process suite: the live tests skip themselves without AMQP_TEST_URL, and the
       # broker-integration and plugin-integration jobs run them against RabbitMQ.
@@ -298,6 +312,7 @@ jobs:
         continue-on-error: true
         env:
           RUSTUP_TOOLCHAIN: beta
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
         run: |
           cargo clippy --workspace --exclude ruststream-lapin-bench --all-targets \
             --all-features -- -D warnings
@@ -307,43 +322,51 @@ jobs:
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
         run: cargo check --workspace --no-default-features
 
-      - name: cargo check (all features, beta)
+      - name: cargo check (benchmarks, beta)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
-        run: |
-          cargo check --workspace --exclude ruststream-lapin-bench --all-targets \
-            --all-features
-          cargo check -p ruststream-lapin-bench --all-targets
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
+        run: cargo check -p ruststream-lapin-bench --all-targets
 
       - name: cargo test (beta)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
         run: cargo test --workspace --all-features --no-fail-fast
+
+      - name: Delete the beta build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-beta"
 
       - name: cargo check (no default features, 1.95)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
         run: cargo check --workspace --no-default-features
 
-      - name: cargo check (all features, 1.95)
+      - name: cargo check (benchmarks, 1.95)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
-        run: |
-          cargo check --workspace --exclude ruststream-lapin-bench --all-targets \
-            --all-features
-          cargo check -p ruststream-lapin-bench --all-targets
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
+        run: cargo check -p ruststream-lapin-bench --all-targets
 
       - name: cargo test (1.95)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
         run: cargo test --workspace --all-features --no-fail-fast
+
+      - name: Delete the floor build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-floor"
 
   broker-integration:
     name: "Broker integration (RabbitMQ)"
@@ -360,6 +383,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # `--wait` blocks until the healthcheck reports the node ready.
       - name: Start RabbitMQ
@@ -398,6 +424,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Builds the plugin-enabled image (consistent-hash + delayed-message-exchange) and waits
       # for it to be healthy.
@@ -410,7 +439,8 @@ jobs:
         env:
           AMQP_PLUGINS_TEST_URL: amqp://127.0.0.1:5673
           RUSTSTREAM_REQUIRE_LIVE: "1"
-        run: cargo test -p ruststream-lapin --features plugin-consistent-hash,plugin-dme --test plugins_lapin -- --test-threads=1
+        run: |
+          cargo test -p ruststream-lapin --features plugin-consistent-hash,plugin-dme --test suite plugins_lapin:: -- --test-threads=1
 
       - name: Stop the plugin-enabled RabbitMQ
         if: always()
@@ -451,6 +481,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The API links on the pages resolve against this rustdoc, the one docs.rs renders for the
       # same code; an item it lacks fails the build below.
