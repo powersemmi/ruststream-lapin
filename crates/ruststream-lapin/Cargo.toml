@@ -11,6 +11,8 @@ authors.workspace = true
 readme = "../../README.md"
 keywords = ["rabbitmq", "amqp", "messaging", "broker", "ruststream"]
 categories = ["asynchronous", "network-programming"]
+# Every file under `tests/` is a module of one test binary: one link instead of one per file.
+autotests = false
 
 [lints]
 workspace = true
@@ -66,6 +68,10 @@ tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
 all-features = true
 
 # --- examples: comp-a ---
+
+[[test]]
+name = "suite"
+path = "tests/main.rs"
 
 [[example]]
 name = "lapin_broker_service"

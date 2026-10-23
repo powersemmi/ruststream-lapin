@@ -24,7 +24,7 @@ use ruststream_lapin::prelude::*;
 use ruststream_lapin::{ConnectedLapinBroker, LapinMessage, LapinSubscriber};
 use serde::{Deserialize, Serialize};
 
-mod live;
+use crate::live;
 
 /// The address the service's broker is built with; the in-process mode dials nothing.
 const URI: &str = "amqp://localhost:5672";

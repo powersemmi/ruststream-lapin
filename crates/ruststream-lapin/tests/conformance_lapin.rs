@@ -36,7 +36,7 @@ use ruststream_lapin::{
     RabbitQuorumQueue,
 };
 
-mod live;
+use crate::live;
 
 /// The broker address, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing address
 /// fails the suite instead of skipping it.

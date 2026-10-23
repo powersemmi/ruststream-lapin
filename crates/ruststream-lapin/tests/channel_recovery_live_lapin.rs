@@ -28,7 +28,7 @@ use ruststream_lapin::{
 };
 use tokio::time::timeout as timeout_future;
 
-mod live;
+use crate::live;
 
 const WAIT: Duration = Duration::from_secs(5);
 const SILENCE: Duration = Duration::from_millis(300);

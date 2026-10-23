@@ -25,9 +25,7 @@ use tokio::net::TcpStream;
 use tokio::task::yield_now;
 use tokio::time::timeout as timeout_future;
 
-mod live;
-#[path = "live/proxy.rs"]
-mod proxy;
+use crate::{live, proxy};
 
 const WAIT: Duration = Duration::from_secs(30);
 

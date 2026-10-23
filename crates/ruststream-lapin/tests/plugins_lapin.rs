@@ -23,7 +23,7 @@ use ruststream::{
 use ruststream_lapin::{LapinBroker, LapinPublish, RabbitQueue};
 use tokio::time::timeout as timeout_future;
 
-mod live;
+use crate::live;
 
 /// The plugin stand's address, or `None` to skip. Under `RUSTSTREAM_REQUIRE_LIVE` a missing
 /// address fails the suite instead of skipping it.
