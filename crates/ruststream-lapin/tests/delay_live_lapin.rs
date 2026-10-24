@@ -18,7 +18,7 @@ use ruststream_lapin::ConnectedLapinBroker;
 use ruststream_lapin::prelude::*;
 use tokio::time::timeout as timeout_future;
 
-mod live;
+use crate::live;
 
 const WAIT: Duration = Duration::from_secs(5);
 

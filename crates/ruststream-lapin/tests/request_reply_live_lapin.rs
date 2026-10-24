@@ -24,7 +24,7 @@ use tokio::runtime;
 use tokio::sync::{Notify, oneshot};
 use tokio::time::timeout as timeout_future;
 
-mod live;
+use crate::live;
 
 const WAIT: Duration = Duration::from_secs(10);
 

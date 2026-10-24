@@ -43,7 +43,7 @@ use ruststream_lapin::{
     RabbitQueue, RabbitQuorumQueue,
 };
 
-mod live;
+use crate::live;
 
 const WAIT: Duration = Duration::from_secs(5);
 const SILENCE: Duration = Duration::from_millis(200);

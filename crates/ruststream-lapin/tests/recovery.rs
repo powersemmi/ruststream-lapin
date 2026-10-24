@@ -9,9 +9,7 @@ use ruststream_lapin::{AmqpError, LapinBroker, LapinPublish, RabbitQueue};
 use tokio::net::TcpListener;
 use tokio::time::timeout as timeout_future;
 
-mod live;
-#[path = "live/proxy.rs"]
-mod proxy;
+use crate::{live, proxy};
 
 #[tokio::test]
 async fn exhausted_reconnects_end_the_consumer_instead_of_hanging() {
