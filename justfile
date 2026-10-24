@@ -63,7 +63,7 @@ test-plugins: plugins-up
     AMQP_PLUGINS_TEST_URL=amqp://127.0.0.1:5673 \
     RUSTSTREAM_REQUIRE_LIVE=1 \
         cargo test -p ruststream-lapin --features plugin-consistent-hash,plugin-dme \
-        --test plugins_lapin -- --test-threads=1
+        --test suite plugins_lapin:: -- --test-threads=1
 
 # What this crate, and then the runtime above it, cost over the lapin client they wrap: two
 # scenarios, each run three times over (the raw client, this crate's own consumer and publisher,
