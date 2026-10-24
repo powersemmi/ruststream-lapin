@@ -61,6 +61,10 @@ ruststream = { workspace = true, features = [
     "asyncapi",
 ] }
 serde = { version = "1", features = ["derive"] }
+# Builds the examples' tests into one test binary (`tests/examples.rs`) instead of a test binary
+# per example. It lives in the core repository and is not published: a dev-dependency without a
+# version is dropped on publish.
+ruststream-example-suite = { git = "https://github.com/powersemmi/ruststream", branch = "main" }
 serde_json = "1"
 tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
 
@@ -73,482 +77,401 @@ all-features = true
 name = "suite"
 path = "tests/main.rs"
 
+# The tests of the examples, one module per example, in a binary of their own beside the suite.
+[[test]]
+name = "examples"
+path = "tests/examples.rs"
+
 [[example]]
 name = "lapin_broker_service"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_broker_service"
 path = "examples/manual/lapin_broker_service.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_broker_connection"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_broker_connection"
 path = "examples/manual/lapin_broker_connection.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_broker_tls"
 required-features = ["testing", "tls-rustls-ring"]
-test = true
 
 [[example]]
 name = "manual_lapin_broker_tls"
 path = "examples/manual/lapin_broker_tls.rs"
 required-features = ["testing", "tls-rustls-ring"]
-test = true
 
 [[example]]
 name = "lapin_broker_declare_topology"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_broker_declare_topology"
 path = "examples/manual/lapin_broker_declare_topology.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_broker_shutdown"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_broker_shutdown"
 path = "examples/manual/lapin_broker_shutdown.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_broker_prelude"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_broker_prelude"
 path = "examples/manual/lapin_broker_prelude.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_broker_errors"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_broker_errors"
 path = "examples/manual/lapin_broker_errors.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_subscriptions_queue"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_subscriptions_queue"
 path = "examples/manual/lapin_subscriptions_queue.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_subscriptions_rabbit_queue"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_subscriptions_rabbit_queue"
 path = "examples/manual/lapin_subscriptions_rabbit_queue.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_subscriptions_quorum"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_subscriptions_quorum"
 path = "examples/manual/lapin_subscriptions_quorum.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_subscriptions_prefetch"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_subscriptions_prefetch"
 path = "examples/manual/lapin_subscriptions_prefetch.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_subscriptions_arguments"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_subscriptions_arguments"
 path = "examples/manual/lapin_subscriptions_arguments.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_subscriptions_batches"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_subscriptions_batches"
 path = "examples/manual/lapin_subscriptions_batches.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_subscriptions_lanes"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_subscriptions_lanes"
 path = "examples/manual/lapin_subscriptions_lanes.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_exchanges_direct"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_exchanges_direct"
 path = "examples/manual/lapin_exchanges_direct.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_exchanges_topic"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_exchanges_topic"
 path = "examples/manual/lapin_exchanges_topic.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_exchanges_fanout"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_exchanges_fanout"
 path = "examples/manual/lapin_exchanges_fanout.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_exchanges_headers"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_exchanges_headers"
 path = "examples/manual/lapin_exchanges_headers.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_exchanges_consistent_hash"
 required-features = ["testing", "plugin-consistent-hash"]
-test = true
 
 [[example]]
 name = "manual_lapin_exchanges_consistent_hash"
 path = "examples/manual/lapin_exchanges_consistent_hash.rs"
 required-features = ["testing", "plugin-consistent-hash"]
-test = true
 
 [[example]]
 name = "lapin_context"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_context"
 path = "examples/manual/lapin_context.rs"
 required-features = ["testing"]
-test = true
 
 # --- examples: comp-b ---
 
 [[example]]
 name = "lapin_settlement_outcomes"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_settlement_outcomes"
 path = "examples/manual/lapin_settlement_outcomes.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_settlement_dead_letter"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_settlement_dead_letter"
 path = "examples/manual/lapin_settlement_dead_letter.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_settlement_retries"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_settlement_retries"
 path = "examples/manual/lapin_settlement_retries.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_settlement_delivery_limit"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_settlement_delivery_limit"
 path = "examples/manual/lapin_settlement_delivery_limit.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_settlement_retry_after"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_settlement_retry_after"
 path = "examples/manual/lapin_settlement_retry_after.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_settlement_delay"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_settlement_delay"
 path = "examples/manual/lapin_settlement_delay.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_settlement_plugin_dme"
 required-features = ["testing", "plugin-dme"]
-test = true
 
 [[example]]
 name = "manual_lapin_settlement_plugin_dme"
 path = "examples/manual/lapin_settlement_plugin_dme.rs"
 required-features = ["testing", "plugin-dme"]
-test = true
 
 [[example]]
 name = "lapin_publishing_publish"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_publishing_publish"
 path = "examples/manual/lapin_publishing_publish.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_publishing_exchange"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_publishing_exchange"
 path = "examples/manual/lapin_publishing_exchange.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_publishing_headers"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_publishing_headers"
 path = "examples/manual/lapin_publishing_headers.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_publishing_properties"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_publishing_properties"
 path = "examples/manual/lapin_publishing_properties.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_publishing_priority"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_publishing_priority"
 path = "examples/manual/lapin_publishing_priority.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_publishing_expiration"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_publishing_expiration"
 path = "examples/manual/lapin_publishing_expiration.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_publishing_persistent"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_publishing_persistent"
 path = "examples/manual/lapin_publishing_persistent.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_transactions_scope"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_transactions_scope"
 path = "examples/manual/lapin_transactions_scope.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_transactions_confirms"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_transactions_confirms"
 path = "examples/manual/lapin_transactions_confirms.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_transactions_server_tx"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_transactions_server_tx"
 path = "examples/manual/lapin_transactions_server_tx.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_transactions_owned"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_transactions_owned"
 path = "examples/manual/lapin_transactions_owned.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_request_request"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_request_request"
 path = "examples/manual/lapin_request_request.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_request_direct_reply_to"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_request_direct_reply_to"
 path = "examples/manual/lapin_request_direct_reply_to.rs"
 required-features = ["testing"]
-test = true
 
 # --- examples: comp-c ---
 
 [[example]]
 name = "lapin_testing_in_process"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_testing_in_process"
 path = "examples/manual/lapin_testing_in_process.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_testing_live"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_lapin_testing_live"
 path = "examples/manual/lapin_testing_live.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "lapin_asyncapi"
 required-features = ["asyncapi"]
-test = true
 
 [[example]]
 name = "manual_lapin_asyncapi"
 path = "examples/manual/lapin_asyncapi.rs"
 required-features = ["asyncapi"]
-test = true
 
 # --- examples: guides ---
 
@@ -558,108 +481,90 @@ test = true
 name = "guide_getting_started"
 path = "examples/guide/getting_started.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_getting_started"
 path = "examples/manual/guide/getting_started.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_work_queues"
 path = "examples/guide/work_queues.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_work_queues"
 path = "examples/manual/guide/work_queues.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_routing"
 path = "examples/guide/routing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_routing"
 path = "examples/manual/guide/routing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_topology"
 path = "examples/guide/topology.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_topology"
 path = "examples/manual/guide/topology.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_retries"
 path = "examples/guide/retries.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_retries"
 path = "examples/manual/guide/retries.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_publishing"
 path = "examples/guide/publishing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_publishing"
 path = "examples/manual/guide/publishing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_rpc"
 path = "examples/guide/rpc.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_rpc"
 path = "examples/manual/guide/rpc.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_testing"
 path = "examples/guide/testing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_testing"
 path = "examples/manual/guide/testing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_production"
 path = "examples/guide/production.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_production"
 path = "examples/manual/guide/production.rs"
 required-features = ["testing"]
-test = true
 
 # --- examples: architecture ---

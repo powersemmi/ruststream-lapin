@@ -234,7 +234,9 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: |
           cargo check --locked -p ruststream-lapin-bench --all-targets
-          cargo test --locked --workspace --all-features --no-fail-fast
+          cargo check --locked --workspace --exclude ruststream-lapin-bench --examples --all-features
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the minimal versions build
         if: always()
@@ -298,7 +300,11 @@ jobs:
       # The in-process suite: the live tests skip themselves without AMQP_TEST_URL, and the
       # broker-integration and plugin-integration jobs run them against RabbitMQ.
       - name: cargo test (in-process only, no live broker)
-        run: cargo test --workspace --all-features
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --workspace --all-features --tests
+          cargo test --workspace --all-features --doc
 
       # The gate the later toolchains wait on: it succeeds only when every stable step did.
       - name: Stable passed
@@ -337,7 +343,12 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: beta
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own; the first line compiles each example.
+        run: |
+          cargo check --workspace --exclude ruststream-lapin-bench --examples --all-features
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the beta build
         if: always()
@@ -362,7 +373,12 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: "1.95"
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own; the first line compiles each example.
+        run: |
+          cargo check --workspace --exclude ruststream-lapin-bench --examples --all-features
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the floor build
         if: always()
@@ -403,7 +419,7 @@ jobs:
         env:
           AMQP_TEST_URL: amqp://127.0.0.1:5672
           RUSTSTREAM_REQUIRE_LIVE: "1"
-        run: cargo test -p ruststream-lapin --features testing,asyncapi -- --test-threads=1
+        run: cargo test -p ruststream-lapin --features testing,asyncapi --tests -- --test-threads=1
 
       - name: Stop RabbitMQ
         if: always()
