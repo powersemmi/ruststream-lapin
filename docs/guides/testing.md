@@ -12,9 +12,9 @@ A test runs the service's own app with [`TestApp`](api:ruststream::testing::Test
 
 The service under test charges card payments.
 A payment arrives on the `card-payments` queue, and the handler replies with a receipt on `card-receipts`.
-A payment without an amount is dropped.
+A payment without an amount is dropped, and the queue moves it to `card-payments.review`.
 A payment over the bank's instant limit is held: the handler asks for it again in a minute with [`retry_after`](../components/settlement/retry-after.md).
-After three deliveries a payment goes to `card-payments.review`.
+The minute passes in the queue's waiting queue, `card-payments.retry`.
 The app is built by `service(broker)`, so a test chooses the broker and `main` uses the production one.
 The tests need the `testing` feature of `ruststream-lapin` in `[dev-dependencies]`.
 
@@ -82,9 +82,8 @@ The body takes the started app as an argument, so the live test below runs it to
 
 The test starts on a paused clock, and [`advance`](api:ruststream::testing::TestApp::advance) moves it forward.
 A minute of `HOLD` costs nothing.
-The queue has no `delay`, so the service holds the copy and publishes it back to `card-payments` when the delay ends.
-The copy carries the retry count in a header, and `published` shows it next to the test's own message.
-The third delivery is the last one the mount site allows, so the payment goes to `card-payments.review` as it arrived.
+The queue has a [`delay`](../components/settlement/delay.md), so the in-process RabbitMQ holds the copy in the waiting queue and releases it to `card-payments` when the delay ends.
+The copy is the broker's, so `published` shows the test's own message alone.
 Each held delivery is recorded as `Outcome::Nack`.
 
 ## What the in-process RabbitMQ models
@@ -96,7 +95,7 @@ It models RabbitMQ rather than a generic queue:
 - The default, direct, topic, fanout and headers exchanges route by the bindings the descriptors declare.
 - Competing consumers share a queue, and a requeue goes back through it.
 - A queue keeps what reaches it while nobody consumes it, and a consumer that closes returns what it took and did not settle.
-- A quorum queue counts deliveries and dead-letters a spent one through its route.
+- A dropped message leaves through its queue's dead-letter route, and a quorum queue counts deliveries and dead-letters a spent one the same way.
 - A waiting queue releases a delayed copy, and direct reply-to gives every request an address of its own.
 - A transaction stays invisible until it commits.
 

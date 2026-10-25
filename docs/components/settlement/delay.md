@@ -18,7 +18,7 @@ When the TTL fires, it dead-letters the copy back to the origin queue on the def
 The copy lives on the broker, so it survives a restart of the service.
 The waiting queue is `<queue>.retry`; [`Delay::dlx_ttl_named`](api:ruststream_lapin::Delay::dlx_ttl_named) names another.
 The released copy is a new message to the server, and it carries `x-ruststream-retry-count` raised by one.
-So a [retry cap](./retries.md) ends a delayed loop the way it ends an immediate one.
+A quorum queue counts the copy from zero, so a [retry cap](./retries.md) ends immediate retries only.
 
 A waiting queue releases expired messages only from its head, so a short delay waits behind a long one.
 Mixed delays take one waiting queue per delay class, or the [delayed-message plugin](./plugin-dme.md).

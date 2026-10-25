@@ -41,12 +41,14 @@ and opens the shared publish channel. A server that refuses the connection fails
 Each subscription's descriptor resolves once, against the connected broker, and the start fails
 on the first one that cannot open:
 
-1. A quorum queue checks its retry declaration. `max_attempts` and `dead_letter` become the
-   queue's own arguments, so they need each other and a broker that declares the queue.
+1. The queue checks its retry declaration. `max_attempts` and `dead_letter` become the queue's
+   own arguments. A quorum queue needs both and a broker that declares the queue; a classic queue
+   takes `dead_letter` alone; a bare queue name takes neither.
 2. The subscription opens its channel.
 3. Under [`declare_topology(true)`](api:ruststream_lapin::LapinBroker::declare_topology) it
    declares its exchanges, its queue, its bindings and its delay target. A declaration that
-   differs from what the server holds is refused with `PRECONDITION_FAILED`.
+   differs from what the server holds is refused with `PRECONDITION_FAILED`, and the error names
+   the queue and the arguments sent.
 4. It sends `basic.qos` with its prefetch window, when one is set.
 5. A [`delay`](api:ruststream_lapin::RabbitQueue::delay) the broker does not declare is checked
    to exist: its waiting queue or its delayed exchange. A missing one fails the start and names

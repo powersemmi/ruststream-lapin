@@ -20,8 +20,10 @@ The type decides what a retry does, so each type has a descriptor of its own:
 
 | Descriptor | Queue | A retry is |
 |---|---|---|
-| [`RabbitQueue`](./rabbit-queue.md) | classic, on one node | counted by the runtime, on the copies it publishes back |
+| [`RabbitQueue`](./rabbit-queue.md) | classic, on one node | a requeue, with no count and no cap |
 | [`RabbitQuorumQueue`](./rabbit-quorum-queue.md) | quorum, replicated | counted by the server, which ends a message that spent its deliveries |
+
+A bare queue name carries no queue arguments, so it takes none of the [retry steps](../settlement/retries.md): a registration that declares one names its queue with a descriptor.
 
 A descriptor goes where the name goes, as the attribute's first argument, and every one of its steps returns the descriptor.
 The manual form passes the name or the descriptor to [`subscriber(source, body)`](api:ruststream::runtime::subscriber).

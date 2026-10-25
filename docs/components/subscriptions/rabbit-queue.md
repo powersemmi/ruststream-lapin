@@ -33,6 +33,8 @@ Bindings, the dead-letter route and the arguments reach the server when the brok
 
 A classic queue keeps no count of a message's deliveries.
 A retry puts the message back on the queue, and its next delivery carries the `redelivered` flag, which a handler reads through the [`Redelivered`](../context/index.md) key.
+Of the [retry steps](../settlement/retries.md) at the mount site, a classic queue takes `dead_letter(name)`, which becomes its dead-letter route.
+It has no cap, so `max_attempts(n)` stops the service at startup; a quorum queue takes it.
 
 ## Example
 

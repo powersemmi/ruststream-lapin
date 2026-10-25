@@ -21,7 +21,8 @@ The dead-letter exchange routes like any other exchange: a queue bound to it und
 Both settings are queue arguments.
 The queue gets them when the service declares it, with [`declare_topology(true)`](api:ruststream_lapin::LapinBroker::declare_topology) on the broker.
 A queue the operator provisions carries the arguments it was declared with.
-The [`dead_letter(name)`](api:ruststream::runtime::Mounting::dead_letter) step of the mount chain is a different thing: the destination of a registration's [retry cap](./retries.md).
+The [`dead_letter(name)`](api:ruststream::runtime::Mounting::dead_letter) step of the mount chain writes the same route from the registration: the default exchange, with `name` as the routing key.
+It is the step a classic queue takes from the [retry steps](./retries.md).
 
 ## Example
 

@@ -64,6 +64,7 @@ The request and the reply are bytes here, so `ask_stock` encodes and decodes the
 `RPC_TIMEOUT` bounds the wait.
 When nobody answers in time, the call fails with [`AmqpError::RequestTimeout`](../components/broker/errors.md).
 `place_order` then asks for the order again in 30 seconds with `retry_after`, instead of guessing the stock.
+The order waits those seconds in the queue's waiting queue, `orders.retry`, which [`delay`](../components/settlement/delay.md) gives it.
 An item out of stock is a business answer, so the order is dropped.
 
 The policy takes the settings of a publish: [`exchange`](api:ruststream_lapin::LapinRequest::exchange), `priority` and `expiration`.
