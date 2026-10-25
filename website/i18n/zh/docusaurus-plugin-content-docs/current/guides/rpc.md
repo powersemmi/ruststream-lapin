@@ -65,6 +65,7 @@ id 相同的回复完成这次调用；id 不同的回复被丢弃。
 `RPC_TIMEOUT` 限定等待时间。
 没有人及时应答时，调用返回 [`AmqpError::RequestTimeout`](../components/broker/errors.md) 错误。
 这时 `place_order` 用 `retry_after` 要求 30 秒后再投递这个订单，而不是去猜测库存。
+订单在队列的等待队列 `orders.retry` 中等待这几秒，该等待队列由 [`delay`](../components/settlement/delay.md) 提供。
 商品缺货是业务上的答复，所以订单被丢弃。
 
 这个策略接受发布所用的设置：[`exchange`](api:ruststream_lapin::LapinRequest::exchange)、`priority` 和 `expiration`。

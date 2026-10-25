@@ -41,6 +41,6 @@ export const words = {
 
 队列类型是一个描述符类型，因为它决定了重试做什么：[`RabbitQueue`](api:ruststream_lapin::RabbitQueue) 对应经典队列，[`RabbitQuorumQueue`](api:ruststream_lapin::RabbitQuorumQueue) 对应仲裁队列。仲裁队列的描述符没有 `durable`、`exclusive` 和 `auto_delete` 步骤，因为仲裁队列总是持久的、共享的。
 
-本 crate 用 `basic.reject` 结算否定的结果，从不使用 `basic.nack`。对单次投递，这两个帧做的事相同，而在仲裁队列上只有拒绝才计数。因此处理器的 `retry()` 会用掉消息的一次投递，队列的上限会结束一条一直失败的消息。[结算与重试](../settlement.md)用图说明了每种类型如何响应重试。
+本 crate 用 `basic.reject` 结算否定的结果，从不使用 `basic.nack`。对单次投递，这两个帧做的事相同，而在仲裁队列上只有拒绝才计数。因此处理器的 `retry()` 会用掉消息的一次投递，队列的上限会结束一条一直失败的消息。在两种队列上，死信都由服务器自己移动：注册时的 `dead_letter` 会成为队列的死信路线，服务不发布副本。经典队列没有上限，所以不接受 `max_attempts`。[结算与重试](../settlement.md)用图说明了每种类型如何响应重试。
 
 队列的规则来自 RabbitMQ（[经典队列](https://www.rabbitmq.com/docs/classic-queues)、[仲裁队列](https://www.rabbitmq.com/docs/quorum-queues)、[毒消息处理](https://www.rabbitmq.com/docs/quorum-queues#poison-message-handling)、[死信交换机](https://www.rabbitmq.com/docs/dlx)）。
