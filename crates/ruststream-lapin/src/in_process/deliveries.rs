@@ -29,8 +29,7 @@ const QUORUM_DEFAULT_DELIVERY_LIMIT: u64 = 20;
 /// produced the way a server reads them off the queue.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct QueueBehaviour {
-    /// The descriptor named a waiting queue, so a delayed redelivery is the broker's rather than
-    /// the runtime's deferred copy.
+    /// The descriptor named a waiting queue, so a delayed redelivery is the broker's.
     pub(crate) delays: bool,
     /// The queue counts the deliveries a message has spent, as a quorum queue does and a classic
     /// queue never does.
@@ -333,8 +332,8 @@ impl Settlement {
     ///
     /// # Errors
     ///
-    /// Returns [`AckError::Unsupported`] when the descriptor named no waiting queue, which is what
-    /// tells the runtime to publish its own deferred copy.
+    /// Returns [`AckError::Unsupported`] when the descriptor named no waiting queue, as the live
+    /// delivery does.
     pub(crate) fn nack_after(
         &self,
         delivery: BusDelivery,

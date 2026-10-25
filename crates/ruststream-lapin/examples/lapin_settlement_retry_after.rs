@@ -1,5 +1,5 @@
-//! `retry_after` on a queue with no delay of its own: the service holds the copy over the delay
-//! and publishes it back to the queue, with the retry count raised by one.
+//! `retry_after` on a queue with a waiting queue: the broker holds the copy over the delay and
+//! releases it back to the queue, with the retry count raised by one.
 //!
 //! ```text
 //! cargo test --example lapin_settlement_retry_after --features testing
@@ -24,7 +24,7 @@ const RECHECK: Duration = Duration::from_secs(30);
 // --8<-- [start:retry_after]
 /// The first delivery finds the payment unsettled and asks for the refund again in 30 seconds.
 /// The copy that comes back carries the retry count, and the refund goes through.
-#[subscriber(RabbitQueue::new("refunds"))]
+#[subscriber(RabbitQueue::new("refunds").delay(Delay::dlx_ttl()))]
 async fn issue_refund(refund: &Refund, ctx: &mut Context<'_>) -> HandlerOutcome {
     if ctx.headers().get_str(RETRY_COUNT_HEADER).is_none() {
         tracing::info!(refund.id, "payment not settled yet");
@@ -37,7 +37,7 @@ async fn issue_refund(refund: &Refund, ctx: &mut Context<'_>) -> HandlerOutcome 
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("refunds", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
+        LapinBroker::new("amqp://localhost:5672").declare_topology(true),
         |b| {
             b.include(issue_refund);
         },
@@ -49,7 +49,6 @@ fn app() -> impl App {
 mod tests {
     use std::error::Error;
 
-    use ruststream::runtime::RETRY_COUNT_HEADER;
     use ruststream::testing::TestApp;
     use ruststream_lapin::prelude::*;
 
@@ -73,11 +72,10 @@ mod tests {
             .subscriber("refunds")
             .assert_called(2)
             .settled(HandlerOutcome::ack());
-        // The service published the copy itself, back under the queue's name.
+        // The waiting queue held the copy: the one publish to `refunds` is the test's own.
         tb.broker::<LapinBroker>()
             .published::<Refund>("refunds")
-            .assert_called(2)
-            .with_header(RETRY_COUNT_HEADER, "1");
+            .assert_called_once();
         tb.shutdown().await?;
         Ok(())
     }

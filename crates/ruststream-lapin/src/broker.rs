@@ -28,7 +28,8 @@ use lapin::{Channel, ChannelState, Connection, ConnectionProperties, ConnectionS
 #[cfg(feature = "testing")]
 use ruststream::testing::{Coordinator, InProcess, TestableBroker};
 use ruststream::{
-    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
+    Broker, BrokerMoves, ConnectedBroker, DeclareRetryError, DefaultPublish, DescribeServer,
+    RetryDeclaration, ServerSpec, Subscribe,
 };
 #[cfg(feature = "testing")]
 use ruststream::{OutgoingMessage, RawMessage};
@@ -717,26 +718,35 @@ impl ConnectedBroker for ConnectedLapinBroker {
 impl Subscribe for ConnectedLapinBroker {
     type Subscriber = LapinSubscriber;
 
-    /// A queue name is an address as well as a subscription: on the default exchange a routing key
-    /// addresses the queue that carries it, so the service publishes a delayed redelivery back
-    /// under the name it subscribed to.
-    ///
-    /// The copy reaches the queue as long as the retry publisher sends on the default exchange,
-    /// which is what [`LapinPublish`] does unless [`exchange`](LapinPublish::exchange) says
-    /// otherwise; pointing that publisher at a topic exchange with no binding under the queue name
-    /// would send the copy nowhere, so bind it there or leave the retry publisher on the default
-    /// exchange.
-    type Copies = AddressedCopies;
+    /// A queue opened by name is a classic queue, and the server moves a rejected delivery to its
+    /// dead-letter route itself, with nothing published by this process.
+    type Copies = BrokerMoves;
 
     /// Subscribes to the queue `name` with descriptor defaults (durable, shared).
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         ConnectedLapinBroker::subscribe(self, RabbitQueue::new(name)).await
     }
 
-    // `declare_retry` keeps the default, which accepts the declaration and leaves the runtime to
-    // apply it. A cap RabbitMQ enforces itself is `x-delivery-limit` with a dead-letter route, and
-    // a queue takes both at declaration time: a name arriving here is a queue that already exists,
-    // so there is nothing to declare them on. `RabbitQuorumQueue` is where they become topology.
+    /// Refuses any declaration: a name carries no queue arguments to put a dead-letter route or a
+    /// delivery limit into, so a registration that declares them names its queue with a
+    /// descriptor.
+    fn declare_retry(
+        &self,
+        name: &str,
+        declaration: &RetryDeclaration,
+    ) -> Result<(), DeclareRetryError> {
+        if declaration.declares_nothing() {
+            return Ok(());
+        }
+        Err(DeclareRetryError::Broker(Box::new(
+            AmqpError::InvalidOptions(format!(
+                "queue {name:?} is mounted by name, which carries no queue arguments for \
+                 `max_attempts(..)` or `dead_letter(..)`: name it with \
+                 `RabbitQueue::new({name:?})` for a dead-letter route, or with \
+                 `RabbitQuorumQueue::new({name:?})` for a cap and a dead-letter route"
+            )),
+        )))
+    }
 }
 
 impl DefaultPublish for ConnectedLapinBroker {

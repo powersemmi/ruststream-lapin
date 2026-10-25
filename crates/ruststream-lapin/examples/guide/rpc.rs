@@ -80,7 +80,8 @@ async fn ask_stock(
     Ok(JsonCodec.decode(reply.payload())?)
 }
 
-#[subscriber("orders")]
+/// A delayed order waits in the broker's waiting queue, `orders.retry`.
+#[subscriber(RabbitQueue::new("orders").delay(Delay::dlx_ttl()))]
 async fn place_order(order: &Order, Out(inventory): Out<impl RequestReply>) -> HandlerOutcome {
     match ask_stock(inventory, order).await {
         Ok(stock) if stock.available => {

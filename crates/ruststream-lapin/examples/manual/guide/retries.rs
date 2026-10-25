@@ -1,6 +1,7 @@
 //! The refunds service of the Acknowledgements, retries and dead letters guide: refunds on a
-//! classic queue with a waiting queue for delays, payouts on a quorum queue that counts its own
-//! deliveries, five deliveries at most, then a dead-letter queue; written without the macros.
+//! classic queue with a waiting queue for delays and a dead-letter queue for declined cards,
+//! payouts on a quorum queue that counts its own deliveries, five at most, then a dead-letter
+//! queue; written without the macros.
 //!
 //! ```text
 //! docker compose -f docker-compose.test.yml up -d rabbitmq
@@ -15,7 +16,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::task::yield_now;
 
-use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::runtime::cli::run_main;
 use ruststream::schemars::JsonSchema;
 use ruststream_lapin::prelude::*;
@@ -90,12 +90,11 @@ impl Handle<Refund, (), (), (), Clients> for ProcessRefund {
     ) -> Result<(), HandlerOutcome> {
         match ctx.state().processor.refund(&refund.card).await {
             Ok(()) => Ok(()),
-            // Past the rate limit: a delivery right now would be refused again.
-            Err(Refusal::Busy) => Err(HandlerOutcome::retry_after(BACKOFF)),
-            // No answer: try again at once, up to the attempt cap.
-            Err(Refusal::Unavailable) => Err(HandlerOutcome::retry()),
+            // Past the rate limit or silent: a delivery right now would fail again.
+            Err(Refusal::Busy | Refusal::Unavailable) => Err(HandlerOutcome::retry_after(BACKOFF)),
+            // Another try gets the same answer: the queue moves the refund to its dead letters.
             Err(Refusal::Declined) => {
-                tracing::warn!(refund.id, "card declined, refund dropped");
+                tracing::warn!(refund.id, "card declined, refund set aside");
                 Err(HandlerOutcome::drop())
             }
         }
@@ -148,10 +147,9 @@ impl Handle<Refund, (), (), (), Clients> for ReviewRefund {
         &self,
         refund: &Refund,
         _outs: &(),
-        ctx: &mut Context<'_, (), Clients>,
+        _ctx: &mut Context<'_, (), Clients>,
     ) -> impl Future<Output = Result<(), HandlerOutcome>> {
-        let deliveries = ctx.headers().get_str(RETRY_COUNT_HEADER).unwrap_or("1");
-        tracing::error!(refund.id, deliveries, "refund needs a person to look at it");
+        tracing::error!(refund.id, "refund needs a person to look at it");
         ready(Ok(()))
     }
 }
@@ -176,9 +174,8 @@ fn service(broker: LapinBroker) -> impl App<State = Clients> {
     RustStream::new(AppInfo::new("refunds", "0.1.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(Clients::default()))
         .with_broker(broker, |b| {
-            // The runtime counts these five deliveries, on the copies it publishes back.
+            // The queue moves a dropped refund here: this becomes its dead-letter route.
             b.include(subscriber(refunds_queue(), ProcessRefund).build())
-                .max_attempts(nonzero!(5u32))
                 .dead_letter("refunds.dead");
             b.include(subscriber("refunds.dead", ReviewRefund).build());
             // The server counts these: they become the queue's delivery limit and route.
@@ -204,7 +201,6 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
-    use ruststream::runtime::RETRY_COUNT_HEADER;
     use ruststream::testing::{Outcome, TestApp};
     use ruststream_lapin::prelude::*;
 
@@ -256,34 +252,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_silent_processor_sends_the_refund_to_the_dead_letter_queue()
-    -> Result<(), Box<dyn Error>> {
-        let tb = TestApp::with_state(app(), |_| with_processor(0, true)).await?;
-
-        tb.broker::<LapinBroker>()
-            .message(&refund(2))
-            .to("refunds")
-            .publish()
-            .await?;
-
-        tb.broker::<LapinBroker>()
-            .subscriber("refunds")
-            .assert_called(5);
-        tb.broker::<LapinBroker>()
-            .published::<Refund>("refunds.dead")
-            .assert_called_once()
-            .with(&refund(2))
-            .with_header(RETRY_COUNT_HEADER, "5");
-        tb.broker::<LapinBroker>()
-            .subscriber("refunds.dead")
-            .assert_called_once()
-            .settled(HandlerOutcome::ack());
-        tb.shutdown().await?;
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_declined_card_is_dropped() -> Result<(), Box<dyn Error>> {
+    async fn a_declined_card_goes_to_the_dead_letter_queue() -> Result<(), Box<dyn Error>> {
         let tb = TestApp::start(app()).await?;
         let declined = Refund {
             card: String::new(),
@@ -302,6 +271,11 @@ mod tests {
             .settled(HandlerOutcome::drop());
         tb.broker::<LapinBroker>()
             .subscriber("refunds.dead")
+            .assert_called_once()
+            .with(&declined);
+        // The server moved it: the service published nothing to the dead-letter queue.
+        tb.broker::<LapinBroker>()
+            .published::<Refund>("refunds.dead")
             .assert_not_called();
         tb.shutdown().await?;
         Ok(())

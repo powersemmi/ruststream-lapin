@@ -75,7 +75,6 @@ fn document() -> Value {
         )
         .with_broker(LapinBroker::new("amqp://rabbit:5672"), |b| {
             b.include(check)
-                .max_attempts(nonzero!(3u32))
                 .dead_letter("inventory.dead")
                 .out_reply(
                     Publish::default()
@@ -199,21 +198,24 @@ fn a_reply_reports_the_exchange_it_leaves_through() {
     assert!(channel["queue"].is_null());
 }
 
+// The queue moves a dropped delivery to its dead-letter route itself, so the document reports
+// where the message goes and no publish of the service's: the copy is the server's, and the
+// properties it carries are the ones the message arrived with.
 #[test]
-fn a_dead_letter_reports_the_properties_its_copies_carry() {
+fn a_dead_letter_reports_its_destination_and_no_publish_of_the_services() {
     let value = document();
-    let channel = &value["channels"]["inventory.dead"]["bindings"]["amqp"];
 
-    // The dead-letter copy leaves through the broker's default publish policy, which publishes on
-    // the default exchange: there the routing key is the queue it lands in. The policy holds no
-    // destination, so the name can only be the one the mount site declared.
-    assert_eq!(channel["is"], "queue");
-    assert_eq!(channel["queue"]["name"], "inventory.dead");
-
-    let operation = &value["operations"]["send_inventory_check_inventory_dead"]["bindings"]["amqp"];
-    assert_eq!(operation["deliveryMode"], 2);
-    assert!(operation["priority"].is_null());
-    assert!(operation["expiration"].is_null());
+    assert_eq!(
+        value["channels"]["inventory.dead"]["address"],
+        "inventory.dead"
+    );
+    let operation = &value["operations"]["send_inventory_check_inventory_dead"];
+    assert_eq!(operation["action"], "send");
+    assert!(operation["bindings"].is_null(), "{operation}");
+    assert_eq!(
+        value["operations"]["receive_inventory_check"]["x-ruststream-retry"]["deadLetter"],
+        "inventory.dead",
+    );
 }
 
 #[test]

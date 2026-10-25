@@ -1,11 +1,10 @@
 //! What a registration declares about its retries, driven in process.
 //!
-//! The two queue descriptors answer it differently, and both are here. A classic queue counts
-//! nothing, so the copies are the service's and the declaration is the runtime's to apply: the cap
-//! counts the deliveries and the dead-letter destination takes the spent one, the same on a
-//! descriptor as on a bare queue name. A quorum queue counts the deliveries itself, so the same
-//! two steps become its own arguments and the queue carries a spent delivery away with nothing
-//! published by the service.
+//! Both queue descriptors move a delivery to its dead-letter route themselves, so the declaration
+//! becomes the queue's own arguments and the service publishes no copy. A classic queue takes the
+//! destination and refuses a cap, because it counts nothing. A quorum queue counts the deliveries
+//! too, so it takes both steps and carries a spent delivery away at the cap. A bare queue name
+//! carries no arguments at all, and refuses both.
 //!
 //! The transport's own half is here too: a descriptor that names a waiting queue makes the delay
 //! the broker's, and the copy it releases is a new message counted from zero.
@@ -44,19 +43,25 @@ struct Order {
     id: u64,
 }
 
-/// Never ready: every delivery asks to come back later, which is what runs a cap down.
-#[subscriber(RabbitQueue::new("orders.capped"))]
-async fn never_ready(order: &Order) -> HandlerOutcome {
+/// Sets aside every order it is handed: the queue's dead-letter route takes it from there.
+#[subscriber(RabbitQueue::new("orders.dropped"))]
+async fn set_aside(order: &Order) -> HandlerOutcome {
     let _ = order.id;
-    HandlerOutcome::retry_after(RETRY_DELAY)
+    HandlerOutcome::drop()
 }
 
-/// The same handler over the bare-name form, whose copy path comes from the broker rather than
-/// from a descriptor.
-#[subscriber("orders.capped.by-name")]
-async fn never_ready_by_name(order: &Order) -> HandlerOutcome {
+/// The same handler over the bare-name form, which carries no queue arguments.
+#[subscriber("orders.dropped.by-name")]
+async fn set_aside_by_name(order: &Order) -> HandlerOutcome {
     let _ = order.id;
-    HandlerOutcome::retry_after(RETRY_DELAY)
+    HandlerOutcome::drop()
+}
+
+/// Never ready: every delivery asks to come back.
+#[subscriber(RabbitQueue::new("orders.classic"))]
+async fn never_ready_on_a_classic_queue(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::retry()
 }
 
 /// The same handler over a quorum queue, retried immediately: the queue counts the deliveries and
@@ -75,69 +80,106 @@ async fn never_ready_on_a_waiting_queue(order: &Order) -> HandlerOutcome {
     HandlerOutcome::retry_after(RETRY_DELAY)
 }
 
-/// Runs one registration down to its cap: the first delivery, then one more per elapsed delay.
-async fn exhaust<S: Send + Sync + 'static>(tb: &TestApp<S>, queue: &str, order: &Order) {
+// A classic queue dead-letters a dropped delivery itself: the destination the mount site declared
+// is the queue's own route, so the message reaches the dead-letter queue with nothing published by
+// the service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_delivery_leaves_for_the_declared_dead_letter_queue() {
+    let broker = LapinBroker::new(URI).declare_topology(true);
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        b.include(set_aside).dead_letter(DEAD);
+        b.include(bury);
+    });
+    let tb = TestApp::start(app).await.expect("start");
+
     tb.broker::<LapinBroker>()
-        .message(order)
-        .to(queue)
+        .message(&Order { id: 1 })
+        .to("orders.dropped")
         .publish()
         .await
-        .expect("publish drives the first delivery to quiescence");
-    for _ in 1..ATTEMPTS {
-        tb.advance(RETRY_DELAY).await.expect("the deferred copy");
-    }
-}
-
-// The cap is the registration's word, and it reads the same on a descriptor as it does anywhere
-// else in the family: three deliveries, then the delivery leaves for the dead-letter queue instead
-// of coming back a fourth time.
-#[tokio::test(start_paused = true)]
-async fn a_declared_cap_ends_a_retry_loop_on_a_descriptor() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(never_ready)
-                .max_attempts(nonzero!(ATTEMPTS))
-                .dead_letter(DEAD);
-        });
-    let tb = TestApp::start(app).await.expect("start");
-
-    exhaust(&tb, "orders.capped", &Order { id: 1 }).await;
+        .expect("publish drives the delivery to quiescence");
 
     tb.broker::<LapinBroker>()
-        .subscriber("orders.capped")
-        .assert_called(ATTEMPTS as usize);
-    tb.broker::<LapinBroker>()
-        .published::<Order>(DEAD)
+        .subscriber("orders.dropped")
         .assert_called_once()
-        .decoded_as::<Order>()
+        .settled(HandlerOutcome::drop());
+    tb.broker::<LapinBroker>()
+        .subscriber(DEAD)
+        .assert_called_once()
         .with(&Order { id: 1 });
+    tb.broker::<LapinBroker>()
+        .published::<Order>(DEAD)
+        .assert_not_called();
 
     tb.shutdown().await.expect("shutdown");
 }
 
-// The bare-name form takes the queue's own copy path, so the same two steps end the same loop.
-#[tokio::test(start_paused = true)]
-async fn a_declared_cap_ends_a_retry_loop_on_a_bare_queue_name() {
+// A classic queue keeps no delivery count, so nothing would apply a cap declared on it: the
+// registration does not start, and the refusal names the queue that has one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cap_on_a_classic_queue_refuses_to_start() {
+    let broker = LapinBroker::new(URI).declare_topology(true);
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        b.include(never_ready_on_a_classic_queue)
+            .max_attempts(nonzero!(ATTEMPTS))
+            .dead_letter(DEAD);
+    });
+
+    let err = TestApp::start(app)
+        .await
+        .expect_err("a classic queue has nothing to apply a cap with");
+    let message = err.to_string();
+    assert!(message.contains("orders.classic"), "{message}");
+    assert!(message.contains("RabbitQuorumQueue"), "{message}");
+}
+
+// A bare queue name carries no queue arguments, so a dead-letter destination declared on it would
+// reach no route: the registration does not start, and the refusal names the descriptor to use.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declaration_on_a_bare_queue_name_refuses_to_start() {
     let app =
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(never_ready_by_name)
-                .max_attempts(nonzero!(ATTEMPTS))
-                .dead_letter(DEAD);
+            b.include(set_aside_by_name).dead_letter(DEAD);
         });
-    let tb = TestApp::start(app).await.expect("start");
 
-    exhaust(&tb, "orders.capped.by-name", &Order { id: 2 }).await;
+    let err = TestApp::start(app)
+        .await
+        .expect_err("a bare name has no arguments to carry the route");
+    let message = err.to_string();
+    assert!(message.contains("orders.dropped.by-name"), "{message}");
+    assert!(message.contains("RabbitQueue::new"), "{message}");
+}
 
-    tb.broker::<LapinBroker>()
-        .subscriber("orders.capped.by-name")
-        .assert_called(ATTEMPTS as usize);
-    tb.broker::<LapinBroker>()
-        .published::<Order>(DEAD)
-        .assert_called_once()
-        .decoded_as::<Order>()
-        .with(&Order { id: 2 });
+/// Two registrations of one queue, each declaring a dead-letter route of its own.
+#[subscriber(RabbitQueue::new("orders.routed"))]
+async fn set_aside_here(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::drop()
+}
 
-    tb.shutdown().await.expect("shutdown");
+#[subscriber(RabbitQueue::new("orders.routed"))]
+async fn set_aside_there(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::drop()
+}
+
+// A queue carries one dead-letter route: the second declaration names another, which the server
+// refuses as inequivalent, and the refusal names the queue and both sets of arguments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_route_for_one_queue_refuses_to_start() {
+    let broker = LapinBroker::new(URI).declare_topology(true);
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        b.include(set_aside_here).dead_letter(DEAD);
+        b.include(set_aside_there).dead_letter("orders.elsewhere");
+    });
+
+    let err = TestApp::start(app)
+        .await
+        .expect_err("one queue cannot carry two dead-letter routes");
+    let message = err.to_string();
+    assert!(message.contains("orders.routed"), "{message}");
+    assert!(message.contains(DEAD), "{message}");
+    assert!(message.contains("orders.elsewhere"), "{message}");
 }
 
 // A waiting queue is the broker's own delay, so the delayed copy is the transport's and the
@@ -366,39 +408,22 @@ async fn every_copy_the_waiting_queue_releases_counts_one_more_attempt() {
         });
     let tb = TestApp::start(app).await.expect("start");
 
-    exhaust(&tb, "orders.counted", &Order { id: 5 }).await;
+    tb.broker::<LapinBroker>()
+        .message(&Order { id: 5 })
+        .to("orders.counted")
+        .publish()
+        .await
+        .expect("publish drives the first delivery to quiescence");
+    for _ in 1..ATTEMPTS {
+        tb.advance(RETRY_DELAY)
+            .await
+            .expect("the waiting queue releases the copy");
+    }
 
     assert_eq!(
         *recorded.lock().expect("counts mutex poisoned"),
         vec![None, Some("1".to_owned()), Some("2".to_owned())],
     );
-
-    tb.shutdown().await.expect("shutdown");
-}
-
-// The cap over a waiting queue. The broker releases the copy, so the queue counts nothing and the
-// framework's count on the copy is the only record of the round: the runtime reads it on the
-// delayed path too, and the cap ends the loop at the dead-letter queue.
-#[tokio::test(start_paused = true)]
-async fn a_declared_cap_ends_a_delayed_retry_loop() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(never_ready_on_a_waiting_queue)
-                .max_attempts(nonzero!(ATTEMPTS))
-                .dead_letter(DEAD);
-        });
-    let tb = TestApp::start(app).await.expect("start");
-
-    exhaust(&tb, "orders.waiting", &Order { id: 6 }).await;
-
-    tb.broker::<LapinBroker>()
-        .subscriber("orders.waiting")
-        .assert_called(ATTEMPTS as usize);
-    tb.broker::<LapinBroker>()
-        .published::<Order>(DEAD)
-        .assert_called_once()
-        .decoded_as::<Order>()
-        .with(&Order { id: 6 });
 
     tb.shutdown().await.expect("shutdown");
 }

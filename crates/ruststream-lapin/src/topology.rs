@@ -7,11 +7,28 @@
 use lapin::Channel;
 use lapin::options::{ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions};
 use lapin::types::{AMQPValue, FieldTable, ShortString};
+use thiserror::Error;
 
 use crate::convert;
 use crate::delay::{Delay, DelayTarget};
 use crate::error::AmqpError;
-use crate::queue::{DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, QueueSpec};
+use crate::queue::{DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, QueueSpec, describe_arguments};
+
+/// A queue the server refused to declare, with the arguments it was declared with.
+///
+/// The usual cause is a queue that already exists with other arguments, which the server refuses
+/// as inequivalent (`PRECONDITION_FAILED`): a dead-letter route the mount site declared that the
+/// queue on the server does not carry, for one.
+#[derive(Debug, Error)]
+#[error(
+    "queue {queue:?} was declared with arguments {arguments}, and the server refused: {source}"
+)]
+struct DeclareQueueError {
+    queue: String,
+    arguments: String,
+    #[source]
+    source: lapin::Error,
+}
 
 /// Declares the exchanges, queue, bindings, and delay backend `spec` describes, with `arguments`
 /// as the descriptor and the registration between them asked for.
@@ -42,6 +59,7 @@ pub(crate) async fn declare(
             .map_err(AmqpError::declare)?;
     }
 
+    let described = describe_arguments(&arguments);
     channel
         .queue_declare(
             convert::short(&spec.name, "queue name")?,
@@ -54,7 +72,13 @@ pub(crate) async fn declare(
             arguments,
         )
         .await
-        .map_err(AmqpError::declare)?;
+        .map_err(|source| {
+            AmqpError::Declare(Box::new(DeclareQueueError {
+                queue: spec.name.clone(),
+                arguments: described,
+                source,
+            }))
+        })?;
 
     for binding in &spec.bindings {
         channel

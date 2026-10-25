@@ -248,7 +248,7 @@ mod tests {
             &declaration,
         );
 
-        let arguments = declared_arguments(queue.spec(), Some(queue.retry()));
+        let arguments = declared_arguments(queue.spec(), queue.retry());
 
         let argument = |name: &str| arguments.inner().get(&ShortString::from(name)).cloned();
         assert_eq!(

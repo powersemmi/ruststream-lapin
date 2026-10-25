@@ -9,10 +9,8 @@
 //! `basic.reject` rather than `basic.nack`, which `RabbitMQ` 4.3 does not count, and it is what the
 //! tests below spend a message's attempts with.
 
-use std::convert::Infallible;
 use std::process::id;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
@@ -25,14 +23,10 @@ use lapin::types::ShortString;
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, Consumer, Error};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
-    ConnectedBroker, FromRef, OutgoingMessage, RetryDeclaration, Subscriber, SubscriptionSource,
-    nonzero,
+    ConnectedBroker, OutgoingMessage, RetryDeclaration, Subscriber, SubscriptionSource, nonzero,
 };
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{AmqpError, ConnectedLapinBroker, LapinMessage};
-use serde::Deserialize;
-use tokio::sync::Notify;
-use tokio::task::yield_now;
 use tokio::time::timeout as timeout_future;
 
 use crate::live;
@@ -747,99 +741,6 @@ async fn a_declaration_on_a_queue_this_service_does_not_declare_refuses_to_start
     connected.shutdown().await.expect("shutdown");
 }
 
-/// The queue the capped service consumes, and where a spent delivery goes. The attribute takes a
-/// literal, so these two are fixed names the test cleans up after itself.
-const CAPPED: &str = "ruststream-retry.classic-capped";
-const CAPPED_DEAD: &str = "ruststream-retry.classic-capped.dead";
-
-/// What each delivery of the capped queue said about the attempts spent on it, in order.
-type Attempts = Arc<Mutex<Vec<Option<String>>>>;
-
-#[derive(Clone, FromRef)]
-struct Capped {
-    attempts: Attempts,
-    done: Arc<Notify>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Order {
-    id: u64,
-}
-
-/// Never ready, and it writes down what the delivery says about its own attempts.
-#[subscriber(RabbitQueue::new(CAPPED))]
-async fn never_ready(
-    order: &Order,
-    ctx: &mut Context<'_>,
-    State(attempts): State<Attempts>,
-) -> HandlerOutcome {
-    let _ = order.id;
-    attempts
-        .lock()
-        .expect("attempts mutex poisoned")
-        .push(ctx.headers().get_str(RETRY_COUNT_HEADER).map(str::to_owned));
-    HandlerOutcome::retry()
-}
-
-/// The end of the run: the message the cap spent lands here.
-#[subscriber(RabbitQueue::new(CAPPED_DEAD))]
-async fn capped_out(order: &Order, State(done): State<Arc<Notify>>) -> HandlerOutcome {
-    let _ = order.id;
-    done.notify_one();
-    HandlerOutcome::ack()
-}
-
-// A classic queue counts nothing, so the runtime counts: every immediate retry is a copy carrying
-// the framework's retry count one higher, and the cap ends the loop at the dead-letter queue.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_runtimes_cap_ends_a_retry_loop_on_a_classic_queue() {
-    let Some(url) = amqp_url() else { return };
-    delete_queues(&url, &[CAPPED, CAPPED_DEAD]).await;
-
-    let state = Capped {
-        attempts: Attempts::default(),
-        done: Arc::new(Notify::new()),
-    };
-    let recorded = Arc::clone(&state.attempts);
-    let finished = Arc::clone(&state.done);
-    let app = RustStream::new(AppInfo::new("capped", "0.1.0"))
-        .on_startup(move |()| {
-            let state = state;
-            async move { Ok::<_, Infallible>(state) }
-        })
-        .with_broker(LapinBroker::new(url.clone()).declare_topology(true), |b| {
-            b.include(never_ready)
-                .max_attempts(nonzero!(ATTEMPTS))
-                .dead_letter(CAPPED_DEAD);
-            b.include(capped_out);
-        });
-    let running = tokio::spawn(app.run_until(async move { finished.notified().await }));
-
-    // Published after the app is up, through a connection of its own: the queues exist by then,
-    // because the subscriptions declared them.
-    let publisher = LapinBroker::new(url.clone())
-        .connect()
-        .await
-        .expect("connect");
-    wait_for_consumer(&url, CAPPED).await;
-    publish(&publisher, CAPPED, br#"{"id":11}"#).await;
-
-    timeout_future(WAIT, running)
-        .await
-        .expect("the cap ends the loop and the app shuts down")
-        .expect("app task did not panic")
-        .expect("run_until succeeded");
-
-    assert_eq!(
-        *recorded.lock().expect("attempts mutex poisoned"),
-        vec![None, Some("1".to_owned()), Some("2".to_owned())],
-        "each copy carries the framework's count one higher",
-    );
-
-    publisher.shutdown().await.expect("shutdown");
-    delete_queues(&url, &[CAPPED, CAPPED_DEAD]).await;
-}
-
 // A waiting queue releases a new message, and the server counts a new message from zero, so the
 // framework's retry count is the only record of the round; the copy carries it one higher each
 // time it comes back.
@@ -885,90 +786,6 @@ async fn a_copy_the_waiting_queue_releases_carries_the_count() {
     delete_queues(&url, &[&queue, &waiting]).await;
 }
 
-/// The queue whose delay is the broker's, the queue a copy waits in, and where a spent delivery
-/// goes. The attribute takes a literal, so these are fixed names the test cleans up after itself.
-const DELAYED: &str = "ruststream-retry.delayed-capped";
-const DELAYED_WAIT: &str = "ruststream-retry.delayed-capped.retry";
-const DELAYED_DEAD: &str = "ruststream-retry.delayed-capped.dead";
-
-/// Short enough that three rounds fit inside the test's timeout.
-const DELAY: Duration = Duration::from_millis(150);
-
-/// Never ready, and it asks for the delay the waiting queue holds the copy for.
-#[subscriber(RabbitQueue::new(DELAYED).delay(Delay::dlx_ttl()))]
-async fn never_ready_later(
-    order: &Order,
-    ctx: &mut Context<'_>,
-    State(attempts): State<Attempts>,
-) -> HandlerOutcome {
-    let _ = order.id;
-    attempts
-        .lock()
-        .expect("attempts mutex poisoned")
-        .push(ctx.headers().get_str(RETRY_COUNT_HEADER).map(str::to_owned));
-    HandlerOutcome::retry_after(DELAY)
-}
-
-/// The end of the run: the message the cap spent lands here.
-#[subscriber(RabbitQueue::new(DELAYED_DEAD))]
-async fn delayed_out(order: &Order, State(done): State<Arc<Notify>>) -> HandlerOutcome {
-    let _ = order.id;
-    done.notify_one();
-    HandlerOutcome::ack()
-}
-
-// The waiting queue releases a new message, which the server counts from zero, so the framework's
-// count on the copy is the only record of the round. The runtime reads it on this path too, so the
-// cap ends the loop here as it does on an immediate retry.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_runtimes_cap_ends_a_delayed_retry_loop_on_a_waiting_queue() {
-    let Some(url) = amqp_url() else { return };
-    delete_queues(&url, &[DELAYED, DELAYED_WAIT, DELAYED_DEAD]).await;
-
-    let state = Capped {
-        attempts: Attempts::default(),
-        done: Arc::new(Notify::new()),
-    };
-    let recorded = Arc::clone(&state.attempts);
-    let finished = Arc::clone(&state.done);
-    let app = RustStream::new(AppInfo::new("delayed", "0.1.0"))
-        .on_startup(move |()| {
-            let state = state;
-            async move { Ok::<_, Infallible>(state) }
-        })
-        .with_broker(LapinBroker::new(url.clone()).declare_topology(true), |b| {
-            b.include(never_ready_later)
-                .max_attempts(nonzero!(ATTEMPTS))
-                .dead_letter(DELAYED_DEAD);
-            b.include(delayed_out);
-        });
-    let running = tokio::spawn(app.run_until(async move { finished.notified().await }));
-
-    // Published after the app is up, through a connection of its own: the queues exist by then,
-    // because the subscriptions declared them.
-    let publisher = LapinBroker::new(url.clone())
-        .connect()
-        .await
-        .expect("connect");
-    wait_for_consumer(&url, DELAYED).await;
-    publish(&publisher, DELAYED, br#"{"id":12}"#).await;
-
-    timeout_future(WAIT, running)
-        .await
-        .expect("the cap ends the loop and the app shuts down")
-        .expect("app task did not panic")
-        .expect("run_until succeeded");
-
-    assert_eq!(
-        *recorded.lock().expect("attempts mutex poisoned"),
-        vec![None, Some("1".to_owned()), Some("2".to_owned())],
-        "each copy the waiting queue releases carries the count one higher",
-    );
-
-    publisher.shutdown().await.expect("shutdown");
-    delete_queues(&url, &[DELAYED, DELAYED_WAIT, DELAYED_DEAD]).await;
-}
-
 /// The `x-delivery-count` the server stamped, read straight off the wire.
 fn delivery_count(delivery: &Delivery) -> Option<i64> {
     let value = delivery
@@ -984,37 +801,6 @@ fn delivery_count(delivery: &Delivery) -> Option<i64> {
         AMQPValue::ShortShortInt(count) => Some(i64::from(*count)),
         _ => None,
     }
-}
-
-async fn wait_for_consumer(url: &str, queue: &str) {
-    let connection = Connection::connect(url, ConnectionProperties::default())
-        .await
-        .expect("readiness connection");
-    timeout_future(WAIT, async {
-        loop {
-            let channel = connection
-                .create_channel()
-                .await
-                .expect("readiness channel");
-            let declared = channel
-                .queue_declare(
-                    queue.into(),
-                    QueueDeclareOptions {
-                        passive: true,
-                        ..QueueDeclareOptions::default()
-                    },
-                    FieldTable::default(),
-                )
-                .await;
-            if declared.is_ok_and(|queue| queue.consumer_count() > 0) {
-                break;
-            }
-            yield_now().await;
-        }
-    })
-    .await
-    .expect("the service consumer starts");
-    drop(connection);
 }
 
 async fn raw_next(consumer: &mut Consumer) -> Delivery {

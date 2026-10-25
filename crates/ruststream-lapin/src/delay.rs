@@ -4,9 +4,9 @@
 //! `retry_after(delay)` (a handler returning
 //! [`HandlerOutcome::retry_after`](ruststream::runtime::HandlerOutcome::retry_after), or a message
 //! `nack_after`-ed) asks the broker to redeliver a message no sooner than `delay`. AMQP has no
-//! native per-message delay, so without a delay queue the runtime falls back to core's
-//! broker-agnostic deferred re-publish, which is at-most-once over the delay window and keeps the
-//! delayed copy in the service process.
+//! native per-message delay, so without a delay queue a `retry_after` requeues the delivery at once
+//! and the delay is dropped: the server moves this crate's deliveries itself, and the service
+//! publishes no copy of its own. The runtime logs a warning when that happens.
 //!
 //! A subscription that opts in with [`RabbitQueue::delay`](crate::RabbitQueue::delay) makes
 //! `nack_after` native (`supports_nack_after` reports `true`) and keeps the delayed copy on the
@@ -263,8 +263,7 @@ impl DelayContext {
     ///
     /// The copy carries the framework's retry count, raised by one. The waiting queue releases a
     /// new message, and the server counts a new message from zero, so this header is the only
-    /// record that the delivery has been round before - the same record the runtime keeps on the
-    /// copies it publishes itself.
+    /// record that the delivery has been round before.
     pub(crate) async fn republish(
         &self,
         payload: &[u8],

@@ -8,6 +8,7 @@ mod asyncapi_lapin;
 mod channel_recovery_live_lapin;
 mod conformance_lapin;
 mod connection_recovery_live_lapin;
+mod dead_letter_live_lapin;
 mod delay_live_lapin;
 mod harness_lapin;
 mod in_process_lapin;

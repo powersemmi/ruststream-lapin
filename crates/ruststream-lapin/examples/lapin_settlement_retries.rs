@@ -1,5 +1,5 @@
-//! A retry cap on a classic queue: the runtime counts the deliveries in a header of the copies it
-//! publishes back to the queue, and sends the last one to a dead-letter queue.
+//! A retry cap on a quorum queue: `max_attempts` and `dead_letter` at the mount site become the
+//! queue's delivery limit and dead-letter route, and the server moves the spent message.
 //!
 //! ```text
 //! cargo test --example lapin_settlement_retries --features testing
@@ -7,7 +7,6 @@
 //! ```
 
 use ruststream::nonzero;
-use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream_lapin::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +19,7 @@ struct Payment {
 
 // --8<-- [start:retries]
 /// A card the gateway declines is asked for again, at once.
-#[subscriber(RabbitQueue::new("payments"))]
+#[subscriber(RabbitQuorumQueue::new("payments"))]
 async fn charge(payment: &Payment) -> HandlerOutcome {
     if payment.card.starts_with("0000") {
         tracing::warn!(payment.id, "card declined, retrying");
@@ -29,24 +28,23 @@ async fn charge(payment: &Payment) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-/// The payments that ran out of deliveries, with the count the runtime kept.
+/// The payments that ran out of deliveries.
 #[subscriber("payments.dead")]
-async fn bury(payment: &Payment, ctx: &mut Context<'_>) -> HandlerOutcome {
-    let deliveries = ctx.headers().get_str(RETRY_COUNT_HEADER).unwrap_or("1");
-    tracing::error!(payment.id, deliveries, "payment dead-lettered");
+async fn bury(payment: &Payment) -> HandlerOutcome {
+    tracing::error!(payment.id, "payment dead-lettered");
     HandlerOutcome::ack()
 }
 
 #[ruststream::app]
 fn app() -> impl App {
-    let broker = LapinBroker::new("amqp://localhost:5672");
+    // The cap becomes the queue's own arguments, so this service declares the queue.
+    let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        // Three deliveries, the first included, then the payment goes to `payments.dead`. The
-        // copies leave through the confirms policy, which waits for the broker to confirm each.
+        // Three deliveries, the first included, then the queue moves the payment to
+        // `payments.dead`.
         b.include(charge)
             .max_attempts(nonzero!(3u32))
-            .dead_letter("payments.dead")
-            .out_retry(TransactionalPublish::default());
+            .dead_letter("payments.dead");
         b.include(bury);
     })
 }
@@ -56,7 +54,6 @@ fn app() -> impl App {
 mod tests {
     use std::error::Error;
 
-    use ruststream::runtime::RETRY_COUNT_HEADER;
     use ruststream::testing::TestApp;
     use ruststream_lapin::prelude::*;
 
@@ -81,18 +78,14 @@ mod tests {
             .subscriber("payments")
             .assert_called(3)
             .with(&declined());
-        tb.broker::<LapinBroker>()
-            .published::<Payment>("payments")
-            .assert_called(3)
-            .with_header(RETRY_COUNT_HEADER, "2");
+        // The queue moved the payment: the service published nothing to the dead-letter queue.
         tb.broker::<LapinBroker>()
             .published::<Payment>("payments.dead")
-            .assert_called_once()
-            .with(&declined())
-            .with_header(RETRY_COUNT_HEADER, "3");
+            .assert_not_called();
         tb.broker::<LapinBroker>()
             .subscriber("payments.dead")
             .assert_called_once()
+            .with(&declined())
             .settled(HandlerOutcome::ack());
         tb.shutdown().await?;
         Ok(())

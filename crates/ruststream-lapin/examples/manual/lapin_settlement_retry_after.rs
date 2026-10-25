@@ -49,9 +49,15 @@ impl Handle<Refund> for IssueRefund {
 
 fn app() -> impl App {
     RustStream::new(AppInfo::new("refunds", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
+        LapinBroker::new("amqp://localhost:5672").declare_topology(true),
         |b| {
-            b.include(subscriber(RabbitQueue::new("refunds"), IssueRefund).build());
+            b.include(
+                subscriber(
+                    RabbitQueue::new("refunds").delay(Delay::dlx_ttl()),
+                    IssueRefund,
+                )
+                .build(),
+            );
         },
     )
 }
@@ -65,7 +71,6 @@ fn main() -> ExitCode {
 mod tests {
     use std::error::Error;
 
-    use ruststream::runtime::RETRY_COUNT_HEADER;
     use ruststream::testing::TestApp;
     use ruststream_lapin::prelude::*;
 
@@ -89,11 +94,10 @@ mod tests {
             .subscriber("refunds")
             .assert_called(2)
             .settled(HandlerOutcome::ack());
-        // The service published the copy itself, back under the queue's name.
+        // The waiting queue held the copy: the one publish to `refunds` is the test's own.
         tb.broker::<LapinBroker>()
             .published::<Refund>("refunds")
-            .assert_called(2)
-            .with_header(RETRY_COUNT_HEADER, "1");
+            .assert_called_once();
         tb.shutdown().await?;
         Ok(())
     }
