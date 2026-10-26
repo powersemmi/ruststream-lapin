@@ -15,7 +15,8 @@ Every receive operation carries `ack: true`.
 This crate acknowledges each delivery by hand, so the handler's outcome settles it.
 
 A slot entry and a dead-letter destination each have a send operation.
-Its binding carries the properties every message through the policy takes.
+A slot's binding carries the properties every message through the policy takes.
+A dead-letter destination's operation has no binding: the queue moves the message with the properties it arrived with.
 `deliveryMode` is `2`, persistent, unless the policy sets [`persistent(false)`](../publishing/properties/persistent.md), which gives `1`.
 `priority` and `expiration`, in milliseconds, appear when the policy fixes a [priority](../publishing/properties/priority.md) or an [expiration](../publishing/properties/expiration.md).
 The document describes the declaration, so a step that adjusts one message leaves it as it is.

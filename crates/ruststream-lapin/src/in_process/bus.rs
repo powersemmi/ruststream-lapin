@@ -20,7 +20,7 @@ use super::matching::{headers_match, topic_matches};
 use crate::convert;
 use crate::error::AmqpError;
 use crate::publish_step::{EXPIRATION_HEADER, LapinPublishOptions, PRIORITY_HEADER};
-use crate::queue::{QueueKind, QueueSpec};
+use crate::queue::{QueueKind, QueueSpec, describe_arguments};
 
 /// The largest message body a server accepts: `RabbitMQ`'s `max_message_size`, 16 MiB unless the
 /// operator changed it. A publish over it closes the channel, and a confirming publisher reports
@@ -652,8 +652,10 @@ fn declare(routes: &mut Routes, spec: &QueueSpec, arguments: &FieldTable) -> Res
     match routes.queues.get(&spec.name) {
         Some(existing) if *existing != declared => Err(refused(format!(
             "queue {:?} is declared again with other settings, which the server refuses as \
-             inequivalent",
-            spec.name
+             inequivalent: arguments {}, where it carries {}",
+            spec.name,
+            describe_arguments(arguments),
+            describe_arguments(&existing.arguments),
         ))),
         Some(_) => Ok(()),
         None => {

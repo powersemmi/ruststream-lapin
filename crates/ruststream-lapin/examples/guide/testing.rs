@@ -1,5 +1,5 @@
 //! The service the Testing guide tests: card payments with a receipt for each, a hold for the
-//! large ones and a review queue for the payments the bank keeps holding.
+//! large ones and a review queue for the payments it drops.
 //!
 //! ```text
 //! cargo test --example guide_testing --features testing
@@ -36,7 +36,7 @@ struct Receipt {
 }
 
 /// Charges a payment and replies with its receipt.
-#[subscriber(RabbitQueue::new("card-payments"), reply)]
+#[subscriber(RabbitQueue::new("card-payments").delay(Delay::dlx_ttl()), reply)]
 async fn charge(payment: &Payment) -> Result<Receipt, HandlerOutcome> {
     if payment.amount_cents == 0 {
         tracing::warn!(payment.id, "payment without an amount dropped");
@@ -56,7 +56,6 @@ async fn charge(payment: &Payment) -> Result<Receipt, HandlerOutcome> {
 fn service(broker: LapinBroker) -> RustStream {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
         b.include(charge)
-            .max_attempts(nonzero!(3u32))
             .dead_letter("card-payments.review")
             .out_reply(Publish::default());
     })
@@ -71,7 +70,6 @@ fn app() -> impl App {
 mod tests {
     use std::error::Error;
 
-    use ruststream::runtime::RETRY_COUNT_HEADER;
     use ruststream::testing::{Outcome, TestApp};
     use ruststream_lapin::prelude::*;
 
@@ -138,7 +136,7 @@ mod tests {
 
     // --8<-- [start:held]
     #[tokio::test(start_paused = true)]
-    async fn a_payment_the_bank_keeps_holding_goes_to_review() -> Result<(), Box<dyn Error>> {
+    async fn a_held_payment_comes_back_after_the_hold() -> Result<(), Box<dyn Error>> {
         let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
         let tb = TestApp::start(service(broker)).await?;
         let held = Payment {
@@ -152,26 +150,22 @@ mod tests {
             .assert_called_once()
             .settled(HandlerOutcome::retry_after(HOLD));
 
-        // The service holds the copy and publishes it back to the queue after `HOLD`.
+        // The waiting queue holds the copy and releases it to `card-payments` after `HOLD`.
         tb.advance(HOLD).await?;
         tb.broker::<LapinBroker>()
-            .published::<Payment>("card-payments")
+            .subscriber("card-payments")
             .assert_called(2)
-            .with(&held)
-            .with_header(RETRY_COUNT_HEADER, "1");
-
-        // The third delivery is the last one: it goes to the review queue as it arrived.
-        tb.advance(HOLD).await?;
+            .with(&held);
         assert_eq!(
             tb.broker::<LapinBroker>()
                 .subscriber("card-payments")
                 .outcomes(),
-            [Outcome::Nack, Outcome::Nack, Outcome::Nack],
+            [Outcome::Nack, Outcome::Nack],
         );
+        // The broker kept the copy: the one publish to `card-payments` is the test's own.
         tb.broker::<LapinBroker>()
-            .published::<Payment>("card-payments.review")
-            .assert_called_once()
-            .with(&held);
+            .published::<Payment>("card-payments")
+            .assert_called_once();
         tb.shutdown().await?;
         Ok(())
     }

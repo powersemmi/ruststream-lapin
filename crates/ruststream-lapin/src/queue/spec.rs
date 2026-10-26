@@ -112,35 +112,35 @@ impl QueueSpec {
 ///
 /// The registration is the more specific statement about the retries of the handler mounted on
 /// it, so `max_attempts(n).dead_letter(..)` wins over a `delivery_limit(n)` on the descriptor.
-pub(crate) fn declared_arguments(spec: &QueueSpec, retry: Option<&RetryDeclaration>) -> FieldTable {
+pub(crate) fn declared_arguments(spec: &QueueSpec, retry: &RetryDeclaration) -> FieldTable {
     let mut arguments = spec.arguments.clone();
     arguments.insert(
         ShortString::from(QUEUE_TYPE),
         AMQPValue::LongString(spec.kind.as_str().into()),
     );
-    if let Some(declared) = retry {
-        write_retry(&mut arguments, declared);
-    }
+    write_retry(&mut arguments, retry);
     arguments
 }
 
-/// Writes the registration's retry declaration into a quorum queue's arguments, so the server
-/// counts the deliveries and carries a spent one away on its own.
+/// Writes the registration's retry declaration into the queue's arguments, so the server carries
+/// a delivery away on its own.
 ///
-/// Only a declaration that names both halves is written: `RabbitMQ` dead-letters a spent delivery
-/// only when the queue says where to, and a delivery limit on its own would drop it instead of
-/// carrying it away. Subscribing refuses a half declaration rather than declaring one.
+/// The destination becomes the dead-letter route on either queue type. The cap becomes a quorum
+/// queue's delivery limit; subscribing refuses one on a classic queue, and refuses it on a quorum
+/// queue without a destination, because a delivery limit on its own drops the spent delivery
+/// instead of carrying it away.
 fn write_retry(arguments: &mut FieldTable, declared: &RetryDeclaration) {
-    let (Some(max_attempts), Some(dead_letter)) = (declared.max_attempts(), declared.dead_letter())
-    else {
+    if let Some(max_attempts) = declared.max_attempts() {
+        // The server counts returns, not deliveries: it carries a message away once it has been
+        // returned more often than the limit, so a limit of two is three deliveries.
+        arguments.insert(
+            ShortString::from(DELIVERY_LIMIT),
+            AMQPValue::LongLongInt(i64::from(max_attempts.get()) - 1),
+        );
+    }
+    let Some(dead_letter) = declared.dead_letter() else {
         return;
     };
-    // The server counts returns, not deliveries: it carries a message away once it has been
-    // returned more often than the limit, so a limit of two is three deliveries.
-    arguments.insert(
-        ShortString::from(DELIVERY_LIMIT),
-        AMQPValue::LongLongInt(i64::from(max_attempts.get()) - 1),
-    );
     // A destination is a routing key in this crate's vocabulary, so a dead letter leaves through
     // the default exchange and lands in the queue of that name - unless the descriptor named an
     // exchange of its own, which stays the queue's word on where its rejections go.
@@ -157,6 +157,30 @@ fn write_retry(arguments: &mut FieldTable, declared: &RetryDeclaration) {
         ShortString::from(DEAD_LETTER_ROUTING_KEY),
         AMQPValue::LongString(dead_letter.to_owned().into()),
     );
+}
+
+/// The arguments of a queue declaration as one line, for an error that has to name them: the
+/// server refuses a queue declared again with arguments other than the ones it carries, and the
+/// operator reads which ones from the refusal.
+pub(crate) fn describe_arguments(arguments: &FieldTable) -> String {
+    let entries: Vec<String> = arguments
+        .inner()
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                AMQPValue::LongString(text) => format!("{:?}", text.to_string()),
+                AMQPValue::ShortString(text) => format!("{:?}", text.as_str()),
+                AMQPValue::LongLongInt(number) => number.to_string(),
+                AMQPValue::LongInt(number) => number.to_string(),
+                AMQPValue::ShortInt(number) => number.to_string(),
+                AMQPValue::ShortShortInt(number) => number.to_string(),
+                AMQPValue::Boolean(flag) => flag.to_string(),
+                other => format!("{other:?}"),
+            };
+            format!("{}: {value}", name.as_str())
+        })
+        .collect();
+    format!("{{{}}}", entries.join(", "))
 }
 
 /// Writes the settings both descriptors share onto `$queue`, whose only field is a [`QueueSpec`]
@@ -304,13 +328,12 @@ macro_rules! queue_settings {
             }
 
             /// Makes `retry_after` / `nack_after` native, routing delayed redeliveries through a
-            /// broker waiting queue instead of the core in-process fallback.
+            /// broker waiting queue.
             ///
-            /// Without this the runtime handles a delay with its broker-agnostic deferred
-            /// re-publish (at-most-once over the delay window, held in the service). With it, a
-            /// delayed message is re-published to the [`Delay`] waiting queue with a per-message
-            /// TTL and dead-lettered back to this queue when it fires, so the delayed copy lives
-            /// on the broker.
+            /// With it, a delayed message is re-published to the [`Delay`] waiting queue with a
+            /// per-message TTL and dead-lettered back to this queue when it fires, so the delayed
+            /// copy lives on the broker. Without it, a `retry_after` requeues the delivery at once
+            /// and the delay is dropped, with a warning in the log.
             ///
             /// The copy the waiting queue releases is a new message, which the server counts from
             /// zero; the framework's own retry count is what survives the round.

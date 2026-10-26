@@ -23,6 +23,7 @@ On a quorum queue the pair becomes an `x-delivery-limit` of `n - 1` and a dead-l
 The pair reaches the queue only when the service declares it, so the broker sets [`declare_topology(true)`](api:ruststream_lapin::LapinBroker::declare_topology).
 On a broker that declares nothing the subscription refuses to start, and so does half of the pair.
 [`out_retry(policy)`](api:ruststream::runtime::Mounting::out_retry) does not compile on a quorum queue, because no copy leaves this process.
+A classic queue has no delivery limit, so `max_attempts(n)` is for a quorum queue only.
 
 ## Example
 

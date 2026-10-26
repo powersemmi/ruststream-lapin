@@ -60,8 +60,10 @@ durable and shared.
 The crate settles a negative outcome with `basic.reject`, never with `basic.nack`. On one delivery
 the two frames do the same thing, and only the rejection counts on a quorum queue. A handler's
 `retry()` therefore spends one of the message's deliveries, and the queue's limit ends a message
-that keeps failing. [Settlement and retries](../settlement.md) draws how each type answers a
-retry.
+that keeps failing. On both types the server moves a dead letter itself: a registration's
+`dead_letter` becomes the queue's dead-letter route, and the service publishes no copy. A classic
+queue has no limit, so it takes no `max_attempts`. [Settlement and retries](../settlement.md)
+draws how each type answers a retry.
 
 The queue rules are RabbitMQ's
 ([classic queues](https://www.rabbitmq.com/docs/classic-queues),

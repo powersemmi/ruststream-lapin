@@ -13,9 +13,9 @@ import TabItem from '@theme/TabItem';
 
 被测服务负责银行卡扣款。
 付款到达 `card-payments` 队列，处理器在 `card-receipts` 上以一张收据作为回复。
-没有金额的付款被丢弃。
+没有金额的付款被丢弃，队列把它移到 `card-payments.review`。
 超出银行即时限额的付款会被暂缓：处理器用 [`retry_after`](../components/settlement/retry-after.md) 要求一分钟后再投递它。
-经过三次投递后，付款进入 `card-payments.review`。
+这一分钟在队列的等待队列 `card-payments.retry` 中度过。
 应用由 `service(broker)` 构建，所以测试可以选择 Broker，而 `main` 使用生产环境的 Broker。
 测试需要在 `[dev-dependencies]` 中启用 `ruststream-lapin` 的 `testing` feature。
 
@@ -83,9 +83,8 @@ URI 会像建立连接时那样被解析，但从不拨号。
 
 测试从暂停的时钟开始，[`advance`](api:ruststream::testing::TestApp::advance) 把时钟向前拨。
 一分钟的 `HOLD` 不花任何时间。
-队列没有 `delay`，所以服务持有副本，延迟结束时把它发布回 `card-payments`。
-副本在消息头中带着重试次数，`published` 把它显示在测试自己发布的消息旁边。
-第三次投递是挂载点允许的最后一次，所以付款按到达时的样子进入 `card-payments.review`。
+队列设置了 [`delay`](../components/settlement/delay.md)，所以进程内 RabbitMQ 把副本留在等待队列中，延迟结束时把它释放到 `card-payments`。
+副本属于 Broker，所以 `published` 只显示测试自己发布的消息。
 每次被暂缓的投递都记录为 `Outcome::Nack`。
 
 ## 进程内 RabbitMQ 模拟了什么 {/* #what-the-in-process-rabbitmq-models */}
@@ -97,7 +96,7 @@ URI 会像建立连接时那样被解析，但从不拨号。
 - 默认、direct、topic、fanout 和 headers 交换机按描述符声明的绑定进行路由。
 - 竞争消费者共享一个队列，重新入队的消息再次经过这个队列。
 - 没有人消费时，队列保留到达它的消息；关闭的消费者把它取走而未结算的消息交还。
-- 仲裁队列统计投递次数，并把用尽次数的消息经由其路线转为死信。
+- 被丢弃的消息经由其队列的死信路线离开；仲裁队列统计投递次数，并以同样的方式把用尽次数的消息转为死信。
 - 等待队列释放延迟副本，direct reply-to 为每个请求分配它自己的地址。
 - 事务在提交之前不可见。
 

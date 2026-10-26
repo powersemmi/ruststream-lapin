@@ -64,6 +64,7 @@ import TabItem from '@theme/TabItem';
 `RPC_TIMEOUT` ограничивает ожидание.
 Если вовремя никто не ответил, вызов возвращает ошибку [`AmqpError::RequestTimeout`](../components/broker/errors.md).
 Тогда `place_order` не угадывает остаток, а просит обработать заказ снова через 30 секунд с `retry_after`.
+Эти секунды заказ ждёт в очереди ожидания `orders.retry`, которую очереди задаёт [`delay`](../components/settlement/delay.md).
 Отсутствие товара - ответ бизнес-логики, поэтому такой заказ отбрасывается.
 
 Политика принимает настройки публикации: [`exchange`](api:ruststream_lapin::LapinRequest::exchange), `priority` и `expiration`.

@@ -20,7 +20,7 @@ The server counts each delivery of a message, and a retry spends one.
 A quorum delivery reports its count, where a classic delivery reports only the `redelivered` flag.
 Past the queue's delivery limit the server takes the message off the queue: it dead-letters the message when the queue has a [dead-letter exchange](../settlement/dead-letter-exchange.md), and drops it otherwise.
 RabbitMQ 4 gives a quorum queue a limit of 20 when it names none, so a message that keeps failing gets 21 deliveries.
-[`delivery_limit`](../settlement/delivery-limit.md) sets another limit; `max_attempts` with `dead_letter` at the mount site sets it from the registration.
+[`delivery_limit`](../settlement/delivery-limit.md) sets another limit; [`max_attempts` with `dead_letter`](../settlement/retries.md) at the mount site sets it from the registration.
 
 The queue type is part of the declaration, so a quorum queue is created by an operator or by a broker that [declares the topology](../broker/declare-topology.md).
 A quorum queue refuses some classic arguments: a declaration with `x-max-priority` fails with [`AmqpError::Declare`](api:ruststream_lapin::AmqpError::Declare).

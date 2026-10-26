@@ -1,17 +1,17 @@
 import type {Box, Link} from './flow';
 import {lines, word, type Words} from './words';
 
-// The three places a delayed retry waits, left to right, and the centre of each column.
+// What a delayed retry becomes, left to right, and the centre of each column.
 const COLUMNS = [
-  ['process', 56],
+  ['immediate', 56],
   ['waitingQueue', 180],
   ['pluginExchange', 304],
 ] as const;
 
 /*
- * A delayed retry waits in one of three places: in the service process by default, in a TTL
- * waiting queue, or in the delayed-message exchange of a plugin. Each sends the copy back to the
- * queue it came from.
+ * A delayed retry waits in a TTL waiting queue or in the delayed-message exchange of a plugin, and
+ * each sends the copy back to the queue it came from. A queue with neither requeues the delivery
+ * at once and drops the delay.
  */
 export function delays(words: Words): {boxes: Box[]; links: Link[]} {
   const boxes: Box[] = [
@@ -23,7 +23,7 @@ export function delays(words: Words): {boxes: Box[]; links: Link[]} {
         y: 84,
         w: 112,
         h: 76,
-        kind: id === 'process' ? 'core' : 'broker',
+        kind: id === 'immediate' ? 'step' : 'broker',
         lines: lines(words, id),
       }),
     ),
@@ -36,7 +36,7 @@ export function delays(words: Words): {boxes: Box[]; links: Link[]} {
       from: id,
       to: 'origin',
       enterAt: (centre - 12) / 336,
-      label: id === 'process' ? word(words, 'republished') : word(words, 'released'),
+      label: id === 'immediate' ? word(words, 'requeued') : word(words, 'released'),
     })),
   ];
   return {boxes, links};

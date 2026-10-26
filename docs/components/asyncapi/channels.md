@@ -26,7 +26,8 @@ Its channel therefore has no `address`, and the receive [operation](./operations
 ## Example
 
 The channel `inventory.check` reports a transient, exclusive, auto-delete queue.
-The reply channel `inventory.unrouted` reports the exchange `answers`, and the dead-letter channel `inventory.dead` reports the queue of that name.
+The reply channel `inventory.unrouted` reports the exchange `answers`.
+The dead-letter channel `inventory.dead` reports its address alone: the server moves a dead letter, and no publish of the service's leads there.
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">

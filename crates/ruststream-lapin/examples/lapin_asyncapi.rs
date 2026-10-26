@@ -91,7 +91,6 @@ fn service(broker: LapinBroker) -> RustStream {
     let inventory = AppInfo::new("inventory", "1.0.0");
     RustStream::new(inventory).with_broker_labeled("rabbit", broker, |b| {
         b.include(check)
-            .max_attempts(nonzero!(3u32))
             .dead_letter("inventory.dead")
             .out_reply(Publish::default().exchange("answers"))
             .transform(DirectReplyTo);
@@ -223,10 +222,12 @@ mod tests {
             channels["inventory.unrouted"]["bindings"]["amqp"],
             json!({ "is": "routingKey", "exchange": { "name": "answers" }, "bindingVersion": "0.3.0" })
         );
-        // The dead letter leaves through the default exchange, where the key is a queue's name.
-        assert_eq!(
-            channels["inventory.dead"]["bindings"]["amqp"],
-            json!({ "is": "queue", "queue": { "name": "inventory.dead" }, "bindingVersion": "0.3.0" })
+        // The queue moves a dead letter itself, so its channel is an address and no publish of
+        // the service's.
+        assert_eq!(channels["inventory.dead"]["address"], "inventory.dead");
+        assert!(
+            channels["inventory.dead"]["bindings"].is_null(),
+            "{channels}"
         );
         Ok(())
     }
@@ -249,9 +250,14 @@ mod tests {
                 "bindingVersion": "0.3.0",
             })
         );
+        // The server moves the dead letter with the properties it arrived with.
         assert_eq!(
-            operations["send_inventory_check_inventory_dead"]["bindings"]["amqp"],
-            json!({ "deliveryMode": 2, "bindingVersion": "0.3.0" })
+            operations["send_inventory_check_inventory_dead"]["action"],
+            "send"
+        );
+        assert!(
+            operations["send_inventory_check_inventory_dead"]["bindings"].is_null(),
+            "{operations}"
         );
         // `DirectReplyTo` answers at the address each request carries.
         assert_eq!(

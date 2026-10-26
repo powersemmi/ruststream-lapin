@@ -15,8 +15,8 @@
 //! through the bindings the service's descriptors describe; competing consumers; acknowledgement,
 //! rejection and requeue; a queue that keeps what reaches it while it has no consumer, from the
 //! first subscription to it on, until an auto-delete queue loses its last consumer; the return
-//! of what a closing consumer handed out and nobody settled; a quorum queue's delivery count,
-//! delivery limit and dead-letter route; the waiting queue of a native delayed redelivery; and
+//! of what a closing consumer handed out and nobody settled; a queue's dead-letter route; a quorum
+//! queue's delivery count and delivery limit; the waiting queue of a native delayed redelivery; and
 //! direct reply-to. What belongs to the server and is left to the live mode: the prefetch window,
 //! publisher confirms, the atomicity of a server transaction, a plugin exchange's routing, a
 //! queue shared between two connections, and a topology the service expects to find but did not

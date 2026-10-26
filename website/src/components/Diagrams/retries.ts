@@ -2,9 +2,9 @@ import type {Box, Link} from './flow';
 import {lines, word, type Words} from './words';
 
 /*
- * An immediate retry under a cap: the queue type decides who counts. A classic queue counts
- * nothing, so the runtime counts on the copies it publishes; a quorum queue counts its own
- * deliveries and moves a spent one itself.
+ * A retry and a drop under the retry steps: the queue type decides which steps it takes. A
+ * classic queue counts nothing, so a retry is a plain requeue and only a drop leaves for the
+ * dead-letter route; a quorum queue counts its own deliveries and moves a spent one itself.
  */
 export function retries(words: Words): {boxes: Box[]; links: Link[]} {
   const half = (id: string, x: number, fields: Partial<Box> = {}): Box => ({
@@ -30,8 +30,8 @@ export function retries(words: Words): {boxes: Box[]; links: Link[]} {
     {id: 'outcome', x: 12, y: 0, w: 336, h: 44, kind: 'service', lines: lines(words, 'outcome')},
     half('classic', 0),
     half('quorum', 188, {kind: 'broker', href: '/architecture/rabbitmq/queues/'}),
-    leaf('copy', 0, 'step'),
-    leaf('classicSpent', 90, 'bad'),
+    leaf('classicRequeue', 0, 'step'),
+    leaf('classicDropped', 90, 'bad'),
     leaf('requeue', 188, 'step'),
     leaf('quorumSpent', 278, 'bad'),
     {id: 'arrives', x: 0, y: 294, w: 270, h: 44, kind: 'broker', lines: lines(words, 'arrives')},
@@ -40,11 +40,11 @@ export function retries(words: Words): {boxes: Box[]; links: Link[]} {
   const links: Link[] = [
     {from: 'outcome', to: 'classic', exitAt: (86 - 12) / 336},
     {from: 'outcome', to: 'quorum', exitAt: (274 - 12) / 336},
-    {from: 'classic', to: 'copy', exitAt: 41 / 172, label: word(words, 'below')},
-    {from: 'classic', to: 'classicSpent', exitAt: 131 / 172},
+    {from: 'classic', to: 'classicRequeue', exitAt: 41 / 172},
+    {from: 'classic', to: 'classicDropped', exitAt: 131 / 172},
     {from: 'quorum', to: 'requeue', exitAt: 41 / 172, label: word(words, 'below')},
     {from: 'quorum', to: 'quorumSpent', exitAt: 131 / 172},
-    {from: 'copy', to: 'arrives', enterAt: 41 / 270},
+    {from: 'classicRequeue', to: 'arrives', enterAt: 41 / 270},
     {from: 'requeue', to: 'arrives', enterAt: 229 / 270},
   ];
   return {boxes, links};

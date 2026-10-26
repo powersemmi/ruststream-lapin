@@ -35,9 +35,9 @@ export const words = {
 
 每个订阅的描述符针对已连接的 Broker 解析一次，遇到第一个无法打开的订阅，启动就失败：
 
-1. 仲裁队列检查它的重试声明。`max_attempts` 和 `dead_letter` 会变成队列自己的参数，所以两者必须同时出现，并且需要一个会声明该队列的 Broker。
+1. 队列检查它的重试声明。`max_attempts` 和 `dead_letter` 会变成队列自己的参数。仲裁队列需要两者同时出现，并且需要一个会声明该队列的 Broker；经典队列只接受 `dead_letter`；只给出队列名时两者都不接受。
 2. 订阅打开它的信道。
-3. 在 [`declare_topology(true)`](api:ruststream_lapin::LapinBroker::declare_topology) 下，它声明自己的交换机、队列、绑定和延迟目标。与服务器上已有内容不一致的声明会被 `PRECONDITION_FAILED` 拒绝。
+3. 在 [`declare_topology(true)`](api:ruststream_lapin::LapinBroker::declare_topology) 下，它声明自己的交换机、队列、绑定和延迟目标。与服务器上已有内容不一致的声明会被 `PRECONDITION_FAILED` 拒绝，错误中列出该队列和发送的参数。
 4. 如果设置了预取窗口，它发送带窗口值的 `basic.qos`。
 5. 对于 Broker 不负责声明的 [`delay`](api:ruststream_lapin::RabbitQueue::delay)，检查它的等待队列或延迟交换机是否存在。缺少时启动失败，错误同时指出订阅和目标。
 6. 它用 `basic.consume` 启动消费者。不存在的队列会在这一步失败。

@@ -21,7 +21,8 @@ On one delivery the two frames do the same thing, but RabbitMQ counts a rejected
 So a handler that keeps asking for its message back runs down a quorum queue's [delivery limit](./delivery-limit.md).
 A quorum queue stamps a returned message with the `x-delivery-count` header; a classic queue keeps no count, only the flag.
 
-A retry under a [cap](./retries.md) and a [delayed retry](./retry-after.md) travel as copies instead of a requeue.
+A retry under a [cap](./retries.md) is a requeue too: the quorum queue counts it.
+A [delayed retry](./retry-after.md) travels as a copy through the queue's waiting queue.
 
 After a connection loss, a delivery's old acknowledgement belongs to the old channel and can fail even if the connection has recovered.
 RabbitMQ requeues unsettled messages from queues that survive the disconnect and may deliver them again.

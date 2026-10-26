@@ -1,6 +1,5 @@
 //! The classic queue descriptor.
 
-use std::future::ready;
 use std::num::NonZeroU16;
 use std::time::Duration;
 
@@ -8,7 +7,7 @@ use lapin::types::{AMQPValue, FieldTable};
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::runtime::IntoSource;
-use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
+use ruststream::{BrokerMoves, RetryDeclaration, SubscriptionSource};
 
 use super::spec::{
     Binding, DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, QueueKind, QueueSpec, queue_settings,
@@ -23,15 +22,22 @@ use crate::subscriber::LapinSubscriber;
 
 /// Describes one classic-queue subscription: the queue, its expected settings, and its bindings.
 ///
-/// The classic queue is the single-node implementation, and it counts nothing: a delivery says
-/// only that it has been seen before, never how often. So a registration's `max_attempts(n)` is
-/// the runtime's to apply, counted with the framework's own header on the copies it publishes,
-/// and `out_retry(policy)` names the publisher those copies leave through. A queue that should
-/// end a poison loop on the server instead is a [`RabbitQuorumQueue`](crate::RabbitQuorumQueue).
+/// A classic queue moves a rejected delivery to its dead-letter route itself, and keeps no count
+/// of the deliveries a message has spent. So a registration mounted here takes
+/// `dead_letter(..)`, which becomes the queue's `x-dead-letter-exchange` and
+/// `x-dead-letter-routing-key`: a delivery the handler drops leaves for that queue, moved by the
+/// server, and the service publishes nothing. `max_attempts(..)` has nothing on a classic queue to
+/// apply it, so subscribing refuses it; the queue that counts deliveries and ends a poison loop is
+/// a [`RabbitQuorumQueue`](crate::RabbitQuorumQueue). `out_retry(policy)` does not compile here:
+/// no copy of a retry is published by this process.
 ///
 /// Descriptors describe the EXPECTED topology for routing; by default nothing is created on the
 /// broker (managing infrastructure is the user's job). Opt in to declaration per broker with
-/// [`declare_topology(true)`](crate::LapinBroker::declare_topology).
+/// [`declare_topology(true)`](crate::LapinBroker::declare_topology). A declared queue carries the
+/// dead-letter arguments the mount site asked for, and the server refuses to declare a queue that
+/// already exists with other ones, which stops the subscription at startup with an error naming
+/// the queue and the arguments. A queue this service does not declare keeps the arguments the
+/// operator gave it, and `dead_letter(..)` then documents that route rather than setting it.
 ///
 /// # Examples
 ///
@@ -92,8 +98,7 @@ use crate::subscriber::LapinSubscriber;
 /// }
 /// ```
 ///
-/// The runtime caps the retries of a classic queue and publishes each copy through the
-/// `out_retry` policy, here the confirms one:
+/// A delivery the handler drops leaves for the declared dead-letter queue, moved by the server:
 ///
 /// ```
 /// use ruststream_lapin::prelude::*;
@@ -106,23 +111,21 @@ use crate::subscriber::LapinSubscriber;
 ///
 /// #[subscriber(RabbitQueue::new("refunds"))]
 /// async fn on_refund(refund: &Refund) -> HandlerOutcome {
-///     tracing::warn!(refund.id, "the provider is down, trying again");
-///     HandlerOutcome::retry()
+///     tracing::warn!(refund.id, "the refund names no order, setting it aside");
+///     HandlerOutcome::drop()
 /// }
 ///
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
 ///     RustStream::new(AppInfo::new("refunds", "0.1.0")).with_broker(broker, |b| {
-///         b.include(on_refund)
-///             .max_attempts(nonzero!(5u32))
-///             .dead_letter("refunds.dead")
-///             .out_retry(TransactionalPublish::default());
+///         b.include(on_refund).dead_letter("refunds.dead");
 ///     })
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct RabbitQueue {
     spec: QueueSpec,
+    retry: RetryDeclaration,
 }
 
 impl RabbitQueue {
@@ -131,6 +134,7 @@ impl RabbitQueue {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             spec: QueueSpec::new(QueueKind::Classic, name.into()),
+            retry: RetryDeclaration::new(),
         }
     }
 
@@ -161,6 +165,32 @@ impl RabbitQueue {
     pub(crate) const fn spec(&self) -> &QueueSpec {
         &self.spec
     }
+
+    /// What the mount site declared about this registration's retries, applied when the queue is
+    /// declared.
+    pub(crate) const fn retry(&self) -> &RetryDeclaration {
+        &self.retry
+    }
+
+    /// Refuses a declaration the queue cannot carry, before the subscription opens.
+    ///
+    /// A classic queue keeps no delivery count, so a cap has nothing on the server to apply it,
+    /// and nothing in this process counts for it either: the server moves a rejected delivery
+    /// itself.
+    // Why a startup error and not a compile error: the mount site's `max_attempts(..)` step is
+    // the framework's, and its bounds read nothing off the descriptor it is mounted on.
+    pub(crate) fn check_retry(&self) -> Result<(), AmqpError> {
+        if self.retry.max_attempts().is_some() {
+            return Err(AmqpError::InvalidOptions(format!(
+                "classic queue {:?} was mounted with `max_attempts(..)`: a classic queue keeps no \
+                 delivery count, so nothing applies the cap. Mount the handler on a \
+                 `RabbitQuorumQueue`, whose `x-delivery-limit` applies it, or drop \
+                 `max_attempts(..)` and keep `dead_letter(..)`",
+                self.name(),
+            )));
+        }
+        Ok(())
+    }
 }
 
 queue_settings!(RabbitQueue);
@@ -178,13 +208,10 @@ impl IntoSource for RabbitQueue {
 impl SubscriptionSource<ConnectedLapinBroker> for RabbitQueue {
     type Subscriber = LapinSubscriber;
 
-    /// The service publishes the copies of a retry, and the queue name is where they go: on the
-    /// default exchange a routing key addresses the queue that carries it.
-    ///
-    /// A classic queue keeps no counter and has no delivery limit, so there is nothing on the
-    /// server to end a retry loop; the runtime counts and the mount site names the publisher the
-    /// copies leave through with `out_retry(policy)`.
-    type Copies = AddressedCopies;
+    /// The server moves a rejected delivery to the queue's dead-letter route itself, with nothing
+    /// published by this process. That is what makes `out_retry(policy)` a compile error here, and
+    /// what keeps a dead-lettered message from reaching its destination twice.
+    type Copies = BrokerMoves;
 
     fn name(&self) -> &str {
         &self.spec.name
@@ -197,6 +224,13 @@ impl SubscriptionSource<ConnectedLapinBroker> for RabbitQueue {
         connected.subscribe(self).await
     }
 
+    /// Takes the registration's dead-letter destination into the descriptor, so the queue this
+    /// broker declares carries it as topology.
+    fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
+        self.retry = declaration.clone();
+        self
+    }
+
     /// The queue this subscription consumes, as the `amqp` binding names its settings.
     #[cfg(feature = "asyncapi")]
     fn channel_bindings(&self) -> Bindings {
@@ -207,22 +241,5 @@ impl SubscriptionSource<ConnectedLapinBroker> for RabbitQueue {
     #[cfg(feature = "asyncapi")]
     fn operation_bindings(&self) -> Bindings {
         consumer_operation()
-    }
-}
-
-/// The queue name: on the default exchange a routing key addresses the queue that carries it, so
-/// that is where the runtime's retry copy reaches this subscription again.
-///
-/// The answer holds for a retry publisher on the default exchange, which is what
-/// [`LapinPublish`](crate::LapinPublish) is unless configured otherwise. A publisher aimed at a
-/// topic or direct exchange reaches the queue only through a binding under this name, so bind it
-/// there or leave the retry publisher on the default exchange.
-impl RedeliveryAddressed<ConnectedLapinBroker> for RabbitQueue {
-    fn redelivery_address(
-        &self,
-        _connected: &ConnectedLapinBroker,
-    ) -> impl Future<Output = Result<RedeliveryAddress, AmqpError>> + Send {
-        // The name is on the descriptor, so nothing has to be asked of the broker.
-        ready(Ok(RedeliveryAddress::new(self.spec.name.clone())))
     }
 }

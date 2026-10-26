@@ -1,10 +1,11 @@
 //! The queue descriptors: what a subscription binds to and, optionally, expects to exist.
 //!
 //! `RabbitMQ` has two queue implementations and they answer a retry differently, so each has a
-//! descriptor of its own. [`RabbitQueue`] is the classic queue: it counts nothing, so a
-//! registration's cap is the runtime's to apply with the copies it publishes. [`RabbitQuorumQueue`]
-//! counts the deliveries a message spends and carries a spent one away itself, so the same cap
-//! becomes the queue's own arguments and no copy is published at all.
+//! descriptor of its own. Both move a rejected delivery to their dead-letter route themselves, so
+//! a registration's `dead_letter(..)` becomes the queue's own arguments on either, and no copy is
+//! published by the service. [`RabbitQuorumQueue`] also counts the deliveries a message spends and
+//! carries a spent one away, so a cap becomes its `x-delivery-limit`. [`RabbitQueue`], the classic
+//! queue, counts nothing, and refuses a cap.
 
 use ruststream::RetryDeclaration;
 
@@ -17,7 +18,9 @@ mod spec;
 pub use classic::RabbitQueue;
 pub use quorum::RabbitQuorumQueue;
 pub use spec::QueueSpec;
-pub(crate) use spec::{DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, declared_arguments};
+pub(crate) use spec::{
+    DEAD_LETTER_EXCHANGE, DEAD_LETTER_ROUTING_KEY, declared_arguments, describe_arguments,
+};
 // The in-process transport reads a declaration's arguments back the way a server reads them off
 // the queue, and nothing else in the crate needs them by these names.
 #[cfg(feature = "testing")]
@@ -44,17 +47,17 @@ pub trait QueueDescriptor: sealed::Sealed {
     #[doc(hidden)]
     fn spec(&self) -> &QueueSpec;
 
-    /// What the mount site declared about this registration's retries, where the queue is the one
-    /// that applies it. `None` on a queue whose retries the runtime applies.
+    /// What the mount site declared about this registration's retries, which the queue applies.
     #[doc(hidden)]
-    fn declared_retry(&self) -> Option<&RetryDeclaration>;
+    fn declared_retry(&self) -> &RetryDeclaration;
 
     /// Refuses a declaration this queue cannot carry, before the subscription opens.
     ///
     /// # Errors
     ///
-    /// Returns [`AmqpError::InvalidOptions`] when the registration declared half a retry policy,
-    /// or a whole one on a queue this service does not declare.
+    /// Returns [`AmqpError::InvalidOptions`] when the registration declared a cap on a classic
+    /// queue, half a retry policy on a quorum queue, or a whole one on a quorum queue this service
+    /// does not declare.
     #[doc(hidden)]
     fn check_retry(&self, declares_topology: bool) -> Result<(), AmqpError>;
 }
@@ -64,14 +67,14 @@ impl QueueDescriptor for RabbitQueue {
         self.spec()
     }
 
-    /// A classic queue counts nothing and has no delivery limit, so the declaration stays with
-    /// the runtime and reaches no queue argument.
-    fn declared_retry(&self) -> Option<&RetryDeclaration> {
-        None
+    fn declared_retry(&self) -> &RetryDeclaration {
+        self.retry()
     }
 
+    /// A dead-letter destination is accepted whether or not this service declares the queue: a
+    /// queue declared elsewhere keeps the route its operator gave it.
     fn check_retry(&self, _declares_topology: bool) -> Result<(), AmqpError> {
-        Ok(())
+        self.check_retry()
     }
 }
 
@@ -80,8 +83,8 @@ impl QueueDescriptor for RabbitQuorumQueue {
         self.spec()
     }
 
-    fn declared_retry(&self) -> Option<&RetryDeclaration> {
-        Some(self.retry())
+    fn declared_retry(&self) -> &RetryDeclaration {
+        self.retry()
     }
 
     fn check_retry(&self, declares_topology: bool) -> Result<(), AmqpError> {

@@ -65,16 +65,7 @@
       }
     },
     "inventory.dead": {
-      "address": "inventory.dead",
-      "bindings": {
-        "amqp": {
-          "is": "queue",
-          "queue": {
-            "name": "inventory.dead"
-          },
-          "bindingVersion": "0.3.0"
-        }
-      }
+      "address": "inventory.dead"
     }
   },
   "operations": {
@@ -93,13 +84,7 @@
       }
     },
     "send_inventory_check_inventory_dead": {
-      "action": "send",
-      "bindings": {
-        "amqp": {
-          "deliveryMode": 2,
-          "bindingVersion": "0.3.0"
-        }
-      }
+      "action": "send"
     }
   }
 }

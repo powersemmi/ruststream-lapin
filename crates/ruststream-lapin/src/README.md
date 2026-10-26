@@ -103,11 +103,11 @@ item's own documentation keeps the detail.
 - [Settlement][c-settlement]: what ack, retry and drop send, on [`LapinMessage`].
 - [dead_letter_exchange][c-dead-letter-exchange]: [`RabbitQueue::dead_letter_exchange`] and
   [`RabbitQueue::dead_letter_routing_key`].
-- [Retries][c-retries]: `max_attempts` and `dead_letter` on a classic queue, counted by the
-  runtime.
+- [Retries][c-retries]: `max_attempts` and `dead_letter` as queue arguments: both on a quorum
+  queue, `dead_letter` alone on a classic queue.
 - [delivery_limit][c-delivery-limit]: [`RabbitQuorumQueue::delivery_limit`], the quorum queue's
   own cap.
-- [retry_after][c-retry-after]: a delayed redelivery held by the runtime.
+- [retry_after][c-retry-after]: a delayed redelivery through the queue's waiting queue.
 - [delay][c-delay]: [`RabbitQueue::delay`] with [`Delay::dlx_ttl`], a waiting queue on the
   server.
 - [plugin_dme][c-plugin-dme]: `Delay::plugin_dme`, the delayed-message exchange (feature

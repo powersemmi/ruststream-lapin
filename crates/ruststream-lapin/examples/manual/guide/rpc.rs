@@ -132,7 +132,14 @@ where
 /// The orders service's routes: the requester is a policy, paired with the connection at startup.
 fn orders() -> Router<LapinBroker, impl RouterDef<LapinBroker>> {
     Router::new()
-        .include(subscriber("orders", PlaceOrder).build())
+        // A delayed order waits in the broker's waiting queue, `orders.retry`.
+        .include(
+            subscriber(
+                RabbitQueue::new("orders").delay(Delay::dlx_ttl()),
+                PlaceOrder,
+            )
+            .build(),
+        )
         .out(DefaultSlot, Request::default())
         .build()
 }

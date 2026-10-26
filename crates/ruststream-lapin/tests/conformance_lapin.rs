@@ -3,9 +3,8 @@
 //! (synchronous construction, consuming `connect`, subscribe through the crate's own descriptor,
 //! publish, ack, consuming `shutdown`, and a pre-shutdown publisher erroring afterwards) through
 //! the real `LapinBroker`, and `shutdown_flushes` that a shutdown hands back what the service took
-//! and did not settle; `redelivery_address` holds both subscription forms to the address they
-//! report, since a queue addresses its own redeliveries; `broker_moves` holds a quorum queue to the
-//! delivery limit and dead-letter route it applies itself; the message-shape suites hold a key to
+//! and did not settle; `broker_moves` holds a quorum queue to the delivery limit and dead-letter
+//! route it applies itself; the message-shape suites hold a key to
 //! its order, the publish options to the policy they resolve over, and the generated document to
 //! carrying no credentials; the capability suites prove the optional trait implementations, both
 //! transaction kinds and client-side batching included.
@@ -95,33 +94,6 @@ async fn in_process_passes_lifecycle_by_name() {
     .await;
 }
 
-// A publish to the address the descriptor reports must reach the subscription that reported it:
-// that address is where the runtime's deferred retry copy goes, so an answer that routes nowhere
-// would lose every delayed redelivery.
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn in_process_reports_a_redelivery_address_that_arrives() {
-    harness::redelivery_address(
-        in_process,
-        |name| RabbitQueue::new(name),
-        |connected| connected.publisher(LapinPublish::default()),
-    )
-    .await;
-}
-
-// The bare-name form answers through the broker rather than through the descriptor, so it is a
-// second answer to hold to the same promise.
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn in_process_reports_a_redelivery_address_that_arrives_by_name() {
-    harness::redelivery_address(
-        in_process,
-        |name| Name::new(name.to_owned()),
-        |connected| connected.publisher(LapinPublish::default()),
-    )
-    .await;
-}
-
 // The capability suites again, in process. Each production policy pairs into the publisher it
 // produces on a server, over the in-process transport, and owes the same contract: these run the
 // very suites the live broker runs below, against the same policy values a routes file writes.
@@ -176,31 +148,6 @@ async fn in_process_passes_batches() {
     capabilities::batches(
         in_process,
         |name| RabbitQueue::new(name),
-        |connected| connected.publisher(LapinPublish::default()),
-    )
-    .await;
-}
-
-// The address on a server, where the default exchange is the server's own.
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reports_a_redelivery_address_that_arrives() {
-    let Some(url) = amqp_url() else { return };
-    harness::redelivery_address(
-        move || LapinBroker::new(url.clone()).declare_topology(true),
-        conformance_queue,
-        |connected| connected.publisher(LapinPublish::default()),
-    )
-    .await;
-}
-
-#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reports_a_redelivery_address_that_arrives_by_name() {
-    let Some(url) = amqp_url() else { return };
-    harness::redelivery_address(
-        move || LapinBroker::new(url.clone()).declare_topology(true),
-        |name| Name::new(name.to_owned()),
         |connected| connected.publisher(LapinPublish::default()),
     )
     .await;

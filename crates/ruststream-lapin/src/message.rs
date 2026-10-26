@@ -280,10 +280,9 @@ impl IncomingMessage for LapinMessage {
     /// and the first delivery of any message. A classic queue's `redelivered` flag is not a count,
     /// and the `x-death` table a dead-lettered message carries counts the queues it has left
     /// rather than the deliveries it has spent, so neither stands in for the server's own count.
-    /// That is what leaves the framework's header in charge of a classic queue's cap, and it is
-    /// also what a delayed redelivery through [`RabbitQueue::delay`](crate::RabbitQueue::delay)
-    /// reports, because the copy the waiting queue releases is a new message the server counts
-    /// from zero.
+    /// It is also what a delayed redelivery through
+    /// [`RabbitQueue::delay`](crate::RabbitQueue::delay) reports, because the copy the waiting
+    /// queue releases is a new message the server counts from zero.
     fn redelivery_count(&self) -> Option<u64> {
         self.returns.map(|returns| returns.saturating_add(1))
     }
@@ -291,7 +290,7 @@ impl IncomingMessage for LapinMessage {
     /// Whether this delivery can honor a native delayed redelivery.
     ///
     /// `true` only when the subscription set [`RabbitQueue::delay`](crate::RabbitQueue::delay);
-    /// otherwise the runtime uses its broker-agnostic deferred re-publish.
+    /// otherwise a `retry_after` requeues the delivery at once and the delay is dropped.
     fn supports_nack_after(&self) -> bool {
         #[cfg(feature = "testing")]
         if let Some(settle) = &self.in_process {
