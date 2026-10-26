@@ -9,6 +9,7 @@ mod convert;
 mod delay;
 mod error;
 mod exchange;
+mod header_text;
 #[cfg(feature = "testing")]
 mod in_process;
 #[cfg(feature = "testing")]
