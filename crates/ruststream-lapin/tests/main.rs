@@ -24,3 +24,4 @@ mod request_reply_lapin;
 mod request_reply_live_lapin;
 mod retry_lapin;
 mod retry_live_lapin;
+mod typed_headers_live_lapin;

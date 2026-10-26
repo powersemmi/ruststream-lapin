@@ -18,6 +18,7 @@ use lapin::types::{AMQPValue, FieldTable, ShortString};
 use ruststream::{HeaderMap, Str};
 
 use crate::error::AmqpError;
+use crate::header_text;
 use crate::publish_step::{EXPIRATION_HEADER, LapinPublishOptions, PRIORITY_HEADER};
 
 /// Delivery mode 2 marks a message persistent; 1 is transient.
@@ -135,9 +136,10 @@ pub(crate) fn properties_for_publish(
 
 /// Rebuilds core [`HeaderMap`] from delivery properties.
 ///
-/// Native properties come back under their well-known header names. Table values of a
-/// non-byte-string type (numbers, nested tables such as `x-death`) are skipped: core headers are
-/// byte-valued, and inventing a canonical encoding here would be lossy in a quieter way.
+/// Native properties come back under their well-known header names. Every header-table value
+/// arrives: a byte string byte for byte, any other type as the text
+/// [`header_text`](crate::header_text) documents (a number in decimal, an array or a table such as
+/// `x-death` as JSON).
 pub(crate) fn headers_from_properties(properties: &BasicProperties) -> HeaderMap {
     let mut headers = HeaderMap::new();
 
@@ -180,13 +182,7 @@ pub(crate) fn headers_from_properties(properties: &BasicProperties) -> HeaderMap
 
     if let Some(table) = properties.headers() {
         for (name, value) in table.inner() {
-            let bytes = match value {
-                AMQPValue::LongString(v) => Bytes::copy_from_slice(v.as_bytes()),
-                AMQPValue::ShortString(v) => Bytes::copy_from_slice(v.as_str().as_bytes()),
-                AMQPValue::ByteArray(v) => Bytes::copy_from_slice(v.as_slice()),
-                _ => continue,
-            };
-            headers.insert(name.as_str(), bytes);
+            headers.insert(name.as_str(), header_text::header_bytes(value));
         }
     }
 
@@ -195,6 +191,8 @@ pub(crate) fn headers_from_properties(properties: &BasicProperties) -> HeaderMap
 
 #[cfg(test)]
 mod tests {
+    use lapin::types::{ByteArray, DecimalValue, FieldArray};
+
     use super::*;
 
     /// The per-message settings a publish carries when nothing adjusted them: the publish
@@ -306,6 +304,183 @@ mod tests {
         let table = properties.headers().as_ref().expect("header table");
         assert!(table.inner().contains_key("priority"));
         assert!(table.inner().contains_key(PRIORITY_HEADER));
+    }
+
+    /// A delivery whose header table holds `fields`, as a foreign producer or the server wrote it.
+    fn table_of(fields: Vec<(&str, AMQPValue)>) -> BasicProperties {
+        let mut table = FieldTable::default();
+        for (name, value) in fields {
+            table.insert(ShortString::from(name), value);
+        }
+        BasicProperties::default().with_headers(table)
+    }
+
+    // A Java or Python client writes numbers, flags and timestamps with their own AMQP types, and
+    // every one of them reaches the handler as its documented text.
+    #[test]
+    fn typed_scalars_from_a_foreign_producer_arrive_as_text() {
+        let properties = table_of(vec![
+            ("x-flag", AMQPValue::Boolean(true)),
+            ("x-off", AMQPValue::Boolean(false)),
+            ("x-i8", AMQPValue::ShortShortInt(-8)),
+            ("x-u8", AMQPValue::ShortShortUInt(200)),
+            ("x-i16", AMQPValue::ShortInt(-300)),
+            ("x-u16", AMQPValue::ShortUInt(60_000)),
+            ("x-i32", AMQPValue::LongInt(-70_000)),
+            ("x-u32", AMQPValue::LongUInt(4_000_000_000)),
+            ("x-i64", AMQPValue::LongLongInt(i64::MIN)),
+            ("x-f32", AMQPValue::Float(1.5)),
+            ("x-f64", AMQPValue::Double(0.1)),
+            ("x-nan", AMQPValue::Double(f64::NAN)),
+            (
+                "x-price",
+                AMQPValue::DecimalValue(DecimalValue {
+                    scale: 2,
+                    value: 12_345,
+                }),
+            ),
+            (
+                "x-tiny",
+                AMQPValue::DecimalValue(DecimalValue { scale: 3, value: 5 }),
+            ),
+            ("x-at", AMQPValue::Timestamp(1_700_000_000)),
+            ("x-none", AMQPValue::Void),
+        ]);
+
+        let headers = headers_from_properties(&properties);
+
+        for (name, text) in [
+            ("x-flag", "true"),
+            ("x-off", "false"),
+            ("x-i8", "-8"),
+            ("x-u8", "200"),
+            ("x-i16", "-300"),
+            ("x-u16", "60000"),
+            ("x-i32", "-70000"),
+            ("x-u32", "4000000000"),
+            ("x-i64", "-9223372036854775808"),
+            ("x-f32", "1.5"),
+            ("x-f64", "0.1"),
+            ("x-nan", "NaN"),
+            ("x-price", "123.45"),
+            ("x-tiny", "0.005"),
+            ("x-at", "1700000000"),
+            ("x-none", ""),
+        ] {
+            assert_eq!(headers.get_str(name), Some(text), "header {name}");
+        }
+    }
+
+    // The table RabbitMQ stamps on a dead-lettered message stays readable: an array of tables
+    // becomes JSON, each table's fields in name order, strings and numbers in their JSON form.
+    #[test]
+    fn a_dead_letter_record_arrives_as_json() {
+        let mut death = FieldTable::default();
+        death.insert(ShortString::from("count"), AMQPValue::LongLongInt(1));
+        death.insert(
+            ShortString::from("exchange"),
+            AMQPValue::LongString("".into()),
+        );
+        death.insert(
+            ShortString::from("queue"),
+            AMQPValue::LongString("orders".into()),
+        );
+        death.insert(
+            ShortString::from("reason"),
+            AMQPValue::LongString("rejected".into()),
+        );
+        death.insert(
+            ShortString::from("routing-keys"),
+            AMQPValue::FieldArray(FieldArray::from(vec![AMQPValue::LongString(
+                "orders".into(),
+            )])),
+        );
+        death.insert(
+            ShortString::from("time"),
+            AMQPValue::Timestamp(1_700_000_000),
+        );
+        let properties = table_of(vec![
+            (
+                "x-death",
+                AMQPValue::FieldArray(FieldArray::from(vec![AMQPValue::FieldTable(death)])),
+            ),
+            (
+                "x-first-death-queue",
+                AMQPValue::LongString("orders".into()),
+            ),
+        ]);
+
+        let headers = headers_from_properties(&properties);
+
+        assert_eq!(
+            headers.get_str("x-death"),
+            Some(
+                r#"[{"count":1,"exchange":"","queue":"orders","reason":"rejected","routing-keys":["orders"],"time":1700000000}]"#
+            )
+        );
+        assert_eq!(headers.get_str("x-first-death-queue"), Some("orders"));
+    }
+
+    // Inside a table every value keeps a JSON form: flags, nothing, a number JSON has no literal
+    // for, text that needs escaping, and bytes that are not text at all.
+    #[test]
+    fn nested_values_render_as_json_of_their_kind() {
+        let mut nested = FieldTable::default();
+        nested.insert(ShortString::from("flag"), AMQPValue::Boolean(false));
+        nested.insert(ShortString::from("none"), AMQPValue::Void);
+        nested.insert(ShortString::from("inf"), AMQPValue::Float(f32::INFINITY));
+        nested.insert(ShortString::from("ratio"), AMQPValue::Float(0.1));
+        nested.insert(
+            ShortString::from("price"),
+            AMQPValue::DecimalValue(DecimalValue {
+                scale: 1,
+                value: 15,
+            }),
+        );
+        nested.insert(
+            ShortString::from("quote"),
+            AMQPValue::LongString("say \"hi\"\n\u{1}".into()),
+        );
+        nested.insert(
+            ShortString::from("raw"),
+            AMQPValue::ByteArray(ByteArray::from(vec![0xff, 0x00])),
+        );
+        let properties = table_of(vec![("x-meta", AMQPValue::FieldTable(nested))]);
+
+        let headers = headers_from_properties(&properties);
+
+        assert_eq!(
+            headers.get_str("x-meta"),
+            Some(
+                r#"{"flag":false,"inf":"inf","none":null,"price":1.5,"quote":"say \"hi\"\n\u0001","ratio":0.1,"raw":[255,0]}"#
+            )
+        );
+    }
+
+    // The crate's own headers travel as byte strings and come back byte for byte, whichever of the
+    // three byte-string types the producer chose.
+    #[test]
+    fn byte_string_values_come_back_unchanged() {
+        let properties = table_of(vec![
+            (
+                "x-long",
+                AMQPValue::LongString(vec![0u8, 159, 146, 150].into()),
+            ),
+            (
+                "x-short",
+                AMQPValue::ShortString(ShortString::from("plain")),
+            ),
+            (
+                "x-bytes",
+                AMQPValue::ByteArray(ByteArray::from(vec![0xff, 0x7b])),
+            ),
+        ]);
+
+        let headers = headers_from_properties(&properties);
+
+        assert_eq!(headers.get("x-long"), Some([0u8, 159, 146, 150].as_slice()));
+        assert_eq!(headers.get("x-short"), Some(b"plain".as_slice()));
+        assert_eq!(headers.get("x-bytes"), Some([0xff, 0x7b].as_slice()));
     }
 
     #[test]
