@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-lapin"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "allocation-counter",
  "arc-swap",
@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-lapin-bench"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "futures",
  "gungraun",
