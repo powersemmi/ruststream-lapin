@@ -30,6 +30,7 @@ use tokio::sync::Notify;
 use tokio::task::try_id;
 use tokio::time::{sleep, timeout as timeout_future};
 
+use crate::batches;
 use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, PublishExt, RustStream, State};
 use ruststream::{
     AckError, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap,
@@ -592,7 +593,7 @@ async fn prefetch_caps_a_batch_below_its_size() {
     let mut received: Vec<Vec<u8>> = Vec::new();
     let mut stream = Box::pin(subscriber.batches(nonzero!(3)));
     while received.len() < 3 {
-        let batch = timeout_future(WAIT, crate::batches::next_batch(stream.as_mut()))
+        let batch = timeout_future(WAIT, batches::next_batch(stream.as_mut()))
             .await
             .expect("batch within timeout")
             .expect("stream has next")

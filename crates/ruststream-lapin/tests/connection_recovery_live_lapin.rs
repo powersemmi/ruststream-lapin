@@ -5,6 +5,7 @@ use std::process::id;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use crate::batches;
 use futures::StreamExt;
 use lapin::options::{
     BasicConsumeOptions, BasicPublishOptions, ConfirmSelectOptions, QueueDeclareOptions,
@@ -200,7 +201,7 @@ async fn existing_handles_resume_after_repeated_outages() {
         publish_when_ready(&publisher, "key", b"confirmed").await;
         publish_when_ready(&plain, &name, b"plain").await;
         let mut batches = Box::pin(subscriber.batches(NonZeroUsize::new(2).expect("nonzero")));
-        let batch = timeout_future(WAIT, crate::batches::next_batch(batches.as_mut()))
+        let batch = timeout_future(WAIT, batches::next_batch(batches.as_mut()))
             .await
             .expect("batch timeout")
             .expect("stream stays open")

@@ -455,6 +455,8 @@ fn dual_app(broker: LapinBroker) -> RustStream {
 
 /// The body both modes run: the first delivery asks to come back, the waiting queue holds the
 /// copy for the delay, and the copy is handled and acknowledged.
+// why: the harness future is not `Send` in 0.8, and the tests drive it on their own task.
+#[allow(clippy::future_not_send)]
 async fn a_delayed_redelivery_comes_back(tb: TestApp<()>) {
     tb.broker::<LapinBroker>()
         .message(&Order { id: 42 })

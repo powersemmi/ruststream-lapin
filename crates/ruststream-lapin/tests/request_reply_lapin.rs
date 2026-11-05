@@ -102,6 +102,8 @@ async fn place_order(
 }
 
 /// Starts the RPC pair in one app and hands back the harness plus the decisions it records.
+// why: the harness future is not `Send` in 0.8, and the tests drive it on their own task.
+#[allow(clippy::future_not_send)]
 async fn rpc_pair() -> (TestApp<RpcState>, Decisions) {
     let decisions = Decisions::default();
     let recorded = decisions.clone();
@@ -313,6 +315,6 @@ async fn requesting_after_shutdown_errors() {
 }
 
 /// Settles a delivery the test is done with, on a connection that is still open.
-async fn ack(msg: impl IncomingMessage + Settle) {
+async fn ack(msg: impl Settle) {
     msg.ack().await.expect("ack");
 }

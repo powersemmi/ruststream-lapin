@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::batches;
 use futures::{Stream, StreamExt};
 use ruststream::runtime::{
     AppInfo, Ctx, HandlerOutcome, Reply, RustStream, State, SubscriberSettings,
@@ -1080,7 +1081,7 @@ async fn batches_are_capped_by_the_size_the_stream_is_opened_with() {
     let mut payloads: Vec<Vec<u8>> = Vec::new();
     let mut stream = Box::pin(subscriber.batches(nonzero!(2)));
     while payloads.len() < 5 {
-        let batch = timeout_future(WAIT, crate::batches::next_batch(stream.as_mut()))
+        let batch = timeout_future(WAIT, batches::next_batch(stream.as_mut()))
             .await
             .expect("batch within timeout")
             .expect("stream has next")
