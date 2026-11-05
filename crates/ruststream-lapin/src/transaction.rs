@@ -31,33 +31,43 @@ use crate::publisher::{Buffered, ConfirmsPublisher};
 /// # Examples
 ///
 /// ```
-/// use std::error::Error;
-///
 /// use ruststream_lapin::prelude::*;
 /// use serde::{Deserialize, Serialize};
 ///
-/// #[derive(Deserialize, Serialize)]
+/// #[derive(Deserialize)]
 /// struct Order {
 ///     id: u64,
 /// }
 ///
-/// // Two transactions open side by side, each settled on its own.
-/// async fn record(
-///     publisher: &impl OwnedTransactions,
-///     order: &Order,
-/// ) -> Result<(), Box<dyn Error + Send + Sync>> {
-///     let mut shipment = publisher.owned_transaction().await?;
-///     let mut audit = publisher.owned_transaction().await?;
-///     shipment.publish("shipments", order).await?;
-///     audit.publish("audit", order).await?;
-///     shipment.commit().await?;
-///     audit.commit().await?;
-///     Ok(())
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "shipments")]
+/// struct Shipment {
+///     id: u64,
 /// }
 ///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "audit")]
+/// struct Audited {
+///     id: u64,
+/// }
+///
+/// #[derive(OutSlot)]
+/// #[publishes(Shipment, Audited)]
+/// struct Ledger;
+///
+/// // Two transactions open side by side, each settled on its own.
 /// #[subscriber("orders")]
-/// async fn ship(order: &Order, Out(publisher): Out<impl OwnedTransactions>) -> HandlerOutcome {
-///     if record(publisher, order).await.is_err() {
+/// async fn ship(order: &Order, Out(ledger): Out<impl OwnedTransactions, Ledger>) -> HandlerOutcome {
+///     let (Ok(mut shipment), Ok(mut audit)) = (ledger.transaction().await, ledger.transaction().await)
+///     else {
+///         return HandlerOutcome::retry();
+///     };
+///     let id = order.id;
+///     if shipment.message(&Shipment { id }).publish().await.is_err()
+///         || audit.message(&Audited { id }).publish().await.is_err()
+///         || shipment.commit().await.is_err()
+///         || audit.commit().await.is_err()
+///     {
 ///         return HandlerOutcome::retry();
 ///     }
 ///     HandlerOutcome::ack()
@@ -66,9 +76,7 @@ use crate::publisher::{Buffered, ConfirmsPublisher};
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672");
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(ship)
-///             .out(DefaultSlot, TransactionalPublish::default())
-///             .build();
+///         b.include(ship).out(Ledger, TransactionalPublish::default())
 ///     })
 /// }
 /// ```

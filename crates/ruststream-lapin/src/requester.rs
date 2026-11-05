@@ -21,8 +21,8 @@ use lapin::types::{FieldTable, ShortString};
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::{
-    Lend, OutgoingMessage, PairError, PublishMessageError, PublishOutcome, PublishPolicy, Publisher,
-    RequestReply,
+    Lend, OutgoingMessage, PairError, PublishMessageError, PublishOutcome, PublishPolicy,
+    Publisher, RequestReply,
 };
 use tokio::sync::oneshot;
 use tokio::time::timeout as timeout_future;
@@ -79,7 +79,6 @@ type Pending = Mutex<HashMap<String, oneshot::Sender<LapinMessage>>>;
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
 ///         b.include(place)
 ///             .out(DefaultSlot, LapinRequest::default().exchange("rpc"))
-///             .build();
 ///     })
 /// }
 /// ```

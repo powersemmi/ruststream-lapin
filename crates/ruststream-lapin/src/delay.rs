@@ -59,7 +59,7 @@ use crate::error::AmqpError;
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(fulfil);
+///         b.include(fulfil)
 ///     })
 /// }
 /// ```

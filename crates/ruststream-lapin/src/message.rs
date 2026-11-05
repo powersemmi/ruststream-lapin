@@ -33,10 +33,10 @@ pub(crate) const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
 ///
 /// Settlement mapping:
 ///
-/// - [`ack`](IncomingMessage::ack) sends `basic.ack`.
-/// - [`nack(true)`](IncomingMessage::nack) sends `basic.reject` with `requeue = true`; the broker
+/// - [`ack`](Settle::ack) sends `basic.ack`.
+/// - [`nack(true)`](Settle::nack) sends `basic.reject` with `requeue = true`; the broker
 ///   redelivers the message (typically to the same queue, `redelivered` set).
-/// - [`nack(false)`](IncomingMessage::nack) sends `basic.reject` with `requeue = false`; the
+/// - [`nack(false)`](Settle::nack) sends `basic.reject` with `requeue = false`; the
 ///   broker drops the message, or dead-letters it when the queue has a dead-letter exchange.
 ///
 /// Both settle with `basic.reject` rather than `basic.nack`. The two frames are the same
@@ -44,7 +44,7 @@ pub(crate) const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
 /// counts a rejection as a delivery a message has spent and does not count a nack. A handler
 /// asking for its message back is a failed attempt, so it is counted, and a quorum queue's
 /// `x-delivery-limit` can then end a poison loop on the server.
-/// - [`nack_after(delay)`](IncomingMessage::nack_after) is native only when the subscription set
+/// - [`nack_after(delay)`](Settle::nack_after) is native only when the subscription set
 ///   [`RabbitQueue::delay`](crate::RabbitQueue::delay); otherwise the default reports the delay
 ///   unsupported and the runtime uses its broker-agnostic fallback.
 ///
@@ -226,7 +226,6 @@ impl IncomingMessage for LapinMessage {
     fn redelivery_count(&self) -> Option<u64> {
         self.returns.map(|returns| returns.saturating_add(1))
     }
-
 }
 
 impl Settle for LapinMessage {

@@ -93,7 +93,7 @@ pub const EXPIRATION_HEADER: &str = "amqp-expiration";
 /// let app = RustStream::new(AppInfo::new("alerts", "0.1.0")).with_broker(
 ///     LapinBroker::new("amqp://localhost:5672"),
 ///     |b| {
-///         b.include(escalate).out(Alerts, Publish::default()).build();
+///         b.include(escalate).out(Alerts, Publish::default())
 ///     },
 /// );
 /// let tb = TestApp::start(app).await?;
@@ -206,7 +206,6 @@ impl LapinPublishOptions {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
 ///         b.include(ship)
 ///             .out(DefaultSlot, Publish::default().priority(3))
-///             .build();
 ///     })
 /// }
 /// ```
