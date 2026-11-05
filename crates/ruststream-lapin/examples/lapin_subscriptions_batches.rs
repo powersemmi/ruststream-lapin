@@ -25,12 +25,10 @@ async fn settle(payments: &[Payment]) -> HandlerOutcome {
 
 #[ruststream::app]
 fn app() -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
-        |b| {
-            b.include(settle.batch(nonzero!(32)));
-        },
-    )
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+            b.include(settle.batch(nonzero!(32)))
+        })
 }
 // --8<-- [end:batches]
 

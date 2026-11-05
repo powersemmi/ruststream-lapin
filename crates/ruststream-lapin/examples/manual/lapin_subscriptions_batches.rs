@@ -42,7 +42,7 @@ fn app() -> impl App<State = ()> {
             let payments = RabbitQueue::new("payments")
                 .prefetch(nonzero!(64))
                 .batch_wait(Duration::from_millis(200));
-            b.include(subscriber(payments, Settle).batch(nonzero!(32)).build());
+            b.include(subscriber(payments, Settle).batch(nonzero!(32)).build())
         },
     )
 }

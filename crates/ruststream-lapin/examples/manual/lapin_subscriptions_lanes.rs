@@ -41,7 +41,7 @@ fn app() -> impl App {
                 subscriber(orders, Place)
                     .workers_by_key(nonzero!(8))
                     .build(),
-            );
+            )
         },
     )
 }
@@ -121,14 +121,10 @@ mod tests {
     }
 
     fn timed() -> impl App<State = ()> {
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            LapinBroker::new("amqp://localhost:5672"),
-            |b| {
-                b.include(place_timed)
-                    .out(Placements, Publish::default())
-                    .build();
-            },
-        )
+        RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+                b.include(place_timed).out(Placements, Publish::default())
+            })
     }
 
     #[tokio::test]

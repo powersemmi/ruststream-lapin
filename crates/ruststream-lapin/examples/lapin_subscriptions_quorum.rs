@@ -23,9 +23,8 @@ async fn reserve(reservation: &Reservation) -> HandlerOutcome {
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-    RustStream::new(AppInfo::new("reservations", "0.1.0")).with_broker(broker, |b| {
-        b.include(reserve);
-    })
+    RustStream::new(AppInfo::new("reservations", "0.1.0"))
+        .with_broker(broker, |b| b.include(reserve))
 }
 // --8<-- [end:quorum]
 
