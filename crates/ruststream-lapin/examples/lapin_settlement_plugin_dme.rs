@@ -44,6 +44,9 @@ fn app() -> impl App {
 // --8<-- [end:dme]
 
 #[cfg(test)]
+// The harness drives the app on the test's own task, so a body shared by the in-process and the
+// live test holds futures that are not `Send`, and nothing here needs them to be.
+#[allow(clippy::future_not_send)]
 mod tests {
     use std::error::Error;
     use std::process;
