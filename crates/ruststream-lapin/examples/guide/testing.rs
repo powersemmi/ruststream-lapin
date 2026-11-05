@@ -57,7 +57,7 @@ fn service(broker: LapinBroker) -> RustStream {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
         b.include(charge)
             .dead_letter("card-payments.review")
-            .out_reply(Publish::default());
+            .out_reply(Publish::default())
     })
 }
 

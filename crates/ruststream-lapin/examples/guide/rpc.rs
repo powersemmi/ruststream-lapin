@@ -45,7 +45,6 @@ fn inventory() -> Router<LapinBroker, impl RouterDef<LapinBroker>> {
         .include(check_stock)
         .out_reply(Publish::default())
         .transform(DirectReplyTo)
-        .build()
 }
 // --8<-- [end:responder]
 
@@ -104,7 +103,6 @@ fn orders() -> Router<LapinBroker, impl RouterDef<LapinBroker>> {
     Router::new()
         .include(place_order)
         .out(DefaultSlot, Request::default())
-        .build()
 }
 
 #[ruststream::app]
@@ -112,8 +110,7 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     // The example runs both services in one process; each service mounts its own router.
     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(broker, |b| {
-        b.include_router(orders());
-        b.include_router(inventory());
+        b.include_router(orders()).include_router(inventory())
     })
 }
 // --8<-- [end:requester]
@@ -131,9 +128,7 @@ mod tests {
     fn orders_alone() -> RustStream {
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
             LapinBroker::new("amqp://localhost:5672").declare_topology(true),
-            |b| {
-                b.include_router(orders());
-            },
+            |b| b.include_router(orders()),
         )
     }
 

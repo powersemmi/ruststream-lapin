@@ -68,9 +68,9 @@ async fn update_rate(rate: &FxRate) -> HandlerOutcome {
 // --8<-- [start:app]
 fn service(broker: LapinBroker) -> RustStream {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        b.include(charge);
-        b.include(record_failure);
-        b.include(update_rate);
+        b.include(charge)
+            .include(record_failure)
+            .include(update_rate)
     })
 }
 
