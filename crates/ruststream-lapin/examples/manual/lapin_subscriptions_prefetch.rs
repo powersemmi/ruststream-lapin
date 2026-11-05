@@ -55,9 +55,9 @@ fn app() -> impl App {
     // otherwise.
     let broker = LapinBroker::new("amqp://localhost:5672").prefetch(nonzero!(64));
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber("orders", Place).build());
         let reports = RabbitQueue::new("reports").prefetch(nonzero!(1));
-        b.include(subscriber(reports, Render).build());
+        b.include(subscriber("orders", Place).build())
+            .include(subscriber(reports, Render).build())
     })
 }
 // --8<-- [end:prefetch]
@@ -164,8 +164,7 @@ mod tests {
         RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| {
             b.include(burst.map_source(|_| bursts))
                 .out(Reports, Publish::default())
-                .build();
-            b.include(render_batch.map_source(|_| reports).batch(nonzero!(10)));
+                .include(render_batch.map_source(|_| reports).batch(nonzero!(10)))
         })
     }
 

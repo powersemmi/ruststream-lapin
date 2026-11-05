@@ -36,12 +36,10 @@ async fn accept(payment: &Payment) -> HandlerOutcome {
 
 /// The service on the server at `uri`, declaring the queue it consumes.
 fn app(uri: &str) -> RustStream {
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        LapinBroker::new(uri).declare_topology(true),
-        |b| {
-            b.include(accept);
-        },
-    )
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(LapinBroker::new(uri).declare_topology(true), |b| {
+            b.include(accept)
+        })
 }
 
 #[ruststream::app]
@@ -50,6 +48,9 @@ fn service() -> RustStream {
 }
 
 #[cfg(test)]
+// The harness drives the app on the test's own task, so a body shared by the in-process and the
+// live test holds futures that are not `Send`, and nothing here needs them to be.
+#[allow(clippy::future_not_send)]
 mod tests {
     use std::error::Error;
 

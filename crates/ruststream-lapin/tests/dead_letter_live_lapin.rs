@@ -75,11 +75,9 @@ async fn a_dropped_delivery_reaches_the_dead_letter_queue_once() {
             async move { Ok::<_, Infallible>(seen) }
         })
         .with_broker(LapinBroker::new(url.clone()).declare_topology(true), |b| {
-            b.include(retry_then_drop).dead_letter(DROPPED_DEAD);
+            b.include(retry_then_drop).dead_letter(DROPPED_DEAD)
         });
-    let running = tokio::spawn(app.run_until(async move {
-        settled_count(&probe, DROPPED_DEAD).await;
-    }));
+    let running = app.start().await.expect("start the app");
 
     let publisher = LapinBroker::new(url.clone())
         .connect()
@@ -92,11 +90,10 @@ async fn a_dropped_delivery_reaches_the_dead_letter_queue_once() {
         .await
         .expect("publish");
 
-    timeout_future(WAIT, running)
+    timeout_future(WAIT, settled_count(&probe, DROPPED_DEAD))
         .await
-        .expect("the message reaches the dead-letter queue")
-        .expect("app task did not panic")
-        .expect("run_until succeeded");
+        .expect("the message reaches the dead-letter queue");
+    running.shutdown().await.expect("shut the app down");
 
     assert_eq!(
         ready_messages(&url, DROPPED_DEAD).await,
@@ -133,12 +130,10 @@ async fn a_route_the_queue_does_not_carry_refuses_to_start() {
     delete_queues(&url, &[MISMATCHED]).await;
     declare_queue(&url, MISMATCHED).await;
 
-    let app = RustStream::new(AppInfo::new("mismatched", "0.1.0")).with_broker(
-        LapinBroker::new(url.clone()).declare_topology(true),
-        |b| {
-            b.include(set_aside).dead_letter(MISMATCHED_DEAD);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("mismatched", "0.1.0"))
+        .with_broker(LapinBroker::new(url.clone()).declare_topology(true), |b| {
+            b.include(set_aside).dead_letter(MISMATCHED_DEAD)
+        });
     let err = TestApp::start_live(app)
         .await
         .expect_err("the server refuses a route the queue does not carry");

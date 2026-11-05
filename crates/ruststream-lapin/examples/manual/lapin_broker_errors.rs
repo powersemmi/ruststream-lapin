@@ -63,7 +63,6 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber(orders(), Ship).build())
                 .out(Shipments, Publish::default())
-                .build();
         },
     )
 }
@@ -189,7 +188,7 @@ mod tests {
     async fn a_failed_startup_carries_the_amqp_error() {
         let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
         let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-            b.include(subscriber(prioritised(), Prioritised).build());
+            b.include(subscriber(prioritised(), Prioritised).build())
         });
 
         let failed = TestApp::start(app).await.err();

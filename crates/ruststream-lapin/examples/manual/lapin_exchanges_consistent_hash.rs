@@ -100,12 +100,11 @@ fn shards() -> (RabbitQueue, RabbitQueue) {
 fn service(uri: impl Into<String>) -> impl App {
     let broker = LapinBroker::new(uri).declare_topology(true);
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        let (a, shard_b) = shards();
         b.include(subscriber("order-intake", Shard).build())
             .out(Sharded, Publish::default().exchange("orders-by-customer"))
-            .build();
-        let (a, shard_b) = shards();
-        b.include(subscriber(a, ShardA).build());
-        b.include(subscriber(shard_b, ShardB).build());
+            .include(subscriber(a, ShardA).build())
+            .include(subscriber(shard_b, ShardB).build())
     })
 }
 

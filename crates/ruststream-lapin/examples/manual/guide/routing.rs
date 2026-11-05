@@ -267,55 +267,53 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(broker, |b| {
         b.include(subscriber("orders", PlaceOrder).build())
             .out(DefaultSlot, Publish::default().exchange("events"))
-            .build();
-        b.include(
-            subscriber(
-                RabbitQueue::new("notifications.orders").bind(events.clone(), "order.placed.*"),
-                NotifyCustomer,
+            .include(
+                subscriber(
+                    RabbitQueue::new("notifications.orders").bind(events.clone(), "order.placed.*"),
+                    NotifyCustomer,
+                )
+                .build(),
             )
-            .build(),
-        );
-        b.include(
-            subscriber(
-                RabbitQueue::new("warehouse.eu").bind(events.clone(), "*.*.eu"),
-                ReserveStock,
+            .include(
+                subscriber(
+                    RabbitQueue::new("warehouse.eu").bind(events.clone(), "*.*.eu"),
+                    ReserveStock,
+                )
+                .build(),
             )
-            .build(),
-        );
-        b.include(subscriber(RabbitQueue::new("audit").bind(events, "#"), Audit).build());
-
-        b.include(subscriber("catalog.prices", ChangePrice).reply().build())
-            .out_reply(Publish::default().exchange("prices"));
-        b.include(
-            subscriber(
-                RabbitQueue::new("storefront.prices").bind(prices.clone(), ""),
-                RefreshStorefront,
+            .include(subscriber(RabbitQueue::new("audit").bind(events, "#"), Audit).build())
+            .include(subscriber("catalog.prices", ChangePrice).reply().build())
+            .out_reply(Publish::default().exchange("prices"))
+            .include(
+                subscriber(
+                    RabbitQueue::new("storefront.prices").bind(prices.clone(), ""),
+                    RefreshStorefront,
+                )
+                .build(),
             )
-            .build(),
-        );
-        b.include(subscriber(RabbitQueue::new("search.prices").bind(prices, ""), Reindex).build());
-
-        b.include(subscriber("orders.paid", ShipOrder).build())
+            .include(
+                subscriber(RabbitQueue::new("search.prices").bind(prices, ""), Reindex).build(),
+            )
+            .include(subscriber("orders.paid", ShipOrder).build())
             .out(DefaultSlot, Publish::default().exchange("shipments"))
-            .build();
-        b.include(
-            subscriber(
-                RabbitQueue::new("couriers.express").bind_with(
-                    shipments.clone(),
-                    "",
-                    gold_in_eu("all"),
-                ),
-                BookExpress,
+            .include(
+                subscriber(
+                    RabbitQueue::new("couriers.express").bind_with(
+                        shipments.clone(),
+                        "",
+                        gold_in_eu("all"),
+                    ),
+                    BookExpress,
+                )
+                .build(),
             )
-            .build(),
-        );
-        b.include(
-            subscriber(
-                RabbitQueue::new("insurance").bind_with(shipments, "", gold_in_eu("any")),
-                Insure,
+            .include(
+                subscriber(
+                    RabbitQueue::new("insurance").bind_with(shipments, "", gold_in_eu("any")),
+                    Insure,
+                )
+                .build(),
             )
-            .build(),
-        );
     })
 }
 

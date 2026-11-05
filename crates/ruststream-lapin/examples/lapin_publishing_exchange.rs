@@ -45,8 +45,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(accept)
             .out(DefaultSlot, Publish::default().exchange("events"))
-            .build();
-        b.include(audit);
+            .include(audit)
     })
 }
 // --8<-- [end:exchange]

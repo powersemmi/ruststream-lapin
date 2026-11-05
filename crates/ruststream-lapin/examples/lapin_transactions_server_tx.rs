@@ -66,14 +66,10 @@ async fn book(
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
-        |b| {
-            b.include(book)
-                .out(DefaultSlot, ServerTxPublish::default())
-                .build();
-        },
-    )
+    RustStream::new(AppInfo::new("ledger", "0.1.0"))
+        .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+            b.include(book).out(DefaultSlot, ServerTxPublish::default())
+        })
 }
 // --8<-- [end:ledger]
 

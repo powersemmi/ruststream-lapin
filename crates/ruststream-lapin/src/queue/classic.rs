@@ -64,7 +64,7 @@ use crate::subscriber::LapinSubscriber;
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(on_order);
+///         b.include(on_order)
 ///     })
 /// }
 /// ```
@@ -93,7 +93,7 @@ use crate::subscriber::LapinSubscriber;
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
 ///     RustStream::new(AppInfo::new("settlements", "0.1.0")).with_broker(broker, |b| {
-///         b.include(on_settlements.batch(nonzero!(32)));
+///         b.include(on_settlements.batch(nonzero!(32)))
 ///     })
 /// }
 /// ```
@@ -118,7 +118,7 @@ use crate::subscriber::LapinSubscriber;
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
 ///     RustStream::new(AppInfo::new("refunds", "0.1.0")).with_broker(broker, |b| {
-///         b.include(on_refund).dead_letter("refunds.dead");
+///         b.include(on_refund).dead_letter("refunds.dead")
 ///     })
 /// }
 /// ```

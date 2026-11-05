@@ -176,13 +176,13 @@ fn service(broker: LapinBroker) -> impl App<State = Clients> {
         .with_broker(broker, |b| {
             // The queue moves a dropped refund here: this becomes its dead-letter route.
             b.include(subscriber(refunds_queue(), ProcessRefund).build())
-                .dead_letter("refunds.dead");
-            b.include(subscriber("refunds.dead", ReviewRefund).build());
-            // The server counts these: they become the queue's delivery limit and route.
-            b.include(subscriber(payouts_queue(), SendPayout).build())
+                .dead_letter("refunds.dead")
+                .include(subscriber("refunds.dead", ReviewRefund).build())
+                // The server counts these: they become the queue's delivery limit and route.
+                .include(subscriber(payouts_queue(), SendPayout).build())
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("payouts.dead");
-            b.include(subscriber("payouts.dead", ReviewPayout).build());
+                .dead_letter("payouts.dead")
+                .include(subscriber("payouts.dead", ReviewPayout).build())
         })
 }
 

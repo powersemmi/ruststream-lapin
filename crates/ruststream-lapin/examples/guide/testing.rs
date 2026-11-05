@@ -57,7 +57,7 @@ fn service(broker: LapinBroker) -> RustStream {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
         b.include(charge)
             .dead_letter("card-payments.review")
-            .out_reply(Publish::default());
+            .out_reply(Publish::default())
     })
 }
 
@@ -67,6 +67,9 @@ fn app() -> impl App {
 }
 
 #[cfg(test)]
+// The harness drives the app on the test's own task, so a body shared by the in-process and the
+// live test holds futures that are not `Send`, and nothing here needs them to be.
+#[allow(clippy::future_not_send)]
 mod tests {
     use std::error::Error;
 

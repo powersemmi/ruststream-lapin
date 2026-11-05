@@ -70,8 +70,8 @@ fn prices() -> RabbitQueue {
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(orders(), Place).build());
-        b.include(subscriber(prices(), Refresh).build());
+        b.include(subscriber(orders(), Place).build())
+            .include(subscriber(prices(), Refresh).build())
     })
 }
 

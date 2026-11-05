@@ -38,9 +38,7 @@ async fn issue_refund(refund: &Refund, ctx: &mut Context<'_>) -> HandlerOutcome 
 fn app() -> impl App {
     RustStream::new(AppInfo::new("refunds", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672").declare_topology(true),
-        |b| {
-            b.include(issue_refund);
-        },
+        |b| b.include(issue_refund),
     )
 }
 // --8<-- [end:retry_after]

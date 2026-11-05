@@ -8,7 +8,7 @@ use lapin::message::Delivery;
 use lapin::options::{BasicAckOptions, BasicRejectOptions};
 use lapin::types::ShortString;
 use lapin::{Acker, BasicProperties};
-use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Settle};
 
 use crate::broker::AmqpConnection;
 use crate::convert;
@@ -33,10 +33,10 @@ pub(crate) const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
 ///
 /// Settlement mapping:
 ///
-/// - [`ack`](IncomingMessage::ack) sends `basic.ack`.
-/// - [`nack(true)`](IncomingMessage::nack) sends `basic.reject` with `requeue = true`; the broker
+/// - [`ack`](Settle::ack) sends `basic.ack`.
+/// - [`nack(true)`](Settle::nack) sends `basic.reject` with `requeue = true`; the broker
 ///   redelivers the message (typically to the same queue, `redelivered` set).
-/// - [`nack(false)`](IncomingMessage::nack) sends `basic.reject` with `requeue = false`; the
+/// - [`nack(false)`](Settle::nack) sends `basic.reject` with `requeue = false`; the
 ///   broker drops the message, or dead-letters it when the queue has a dead-letter exchange.
 ///
 /// Both settle with `basic.reject` rather than `basic.nack`. The two frames are the same
@@ -44,7 +44,7 @@ pub(crate) const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
 /// counts a rejection as a delivery a message has spent and does not count a nack. A handler
 /// asking for its message back is a failed attempt, so it is counted, and a quorum queue's
 /// `x-delivery-limit` can then end a poison loop on the server.
-/// - [`nack_after(delay)`](IncomingMessage::nack_after) is native only when the subscription set
+/// - [`nack_after(delay)`](Settle::nack_after) is native only when the subscription set
 ///   [`RabbitQueue::delay`](crate::RabbitQueue::delay); otherwise the default reports the delay
 ///   unsupported and the runtime uses its broker-agnostic fallback.
 ///
@@ -204,6 +204,31 @@ impl IncomingMessage for LapinMessage {
         &self.headers
     }
 
+    /// The partition key from the [`PARTITION_KEY_HEADER`], if set. Overridden so keyed worker
+    /// lanes see it without a `Partitioned` bound on every dispatch path.
+    fn partition_key(&self) -> Option<&[u8]> {
+        self.headers.get(PARTITION_KEY_HEADER)
+    }
+
+    /// How many times this message has been delivered, counting this delivery, from the one
+    /// counter the server keeps: a quorum queue's `x-delivery-count`.
+    ///
+    /// A quorum queue counts a delivery that failed - one whose consumer went away without
+    /// settling it, and one this crate rejected for a handler that asked for the message back.
+    ///
+    /// `None` where nothing counted: every delivery off a classic queue, which keeps no counter,
+    /// and the first delivery of any message. A classic queue's `redelivered` flag is not a count,
+    /// and the `x-death` table a dead-lettered message carries counts the queues it has left
+    /// rather than the deliveries it has spent, so neither stands in for the server's own count.
+    /// It is also what a delayed redelivery through
+    /// [`RabbitQueue::delay`](crate::RabbitQueue::delay) reports, because the copy the waiting
+    /// queue releases is a new message the server counts from zero.
+    fn redelivery_count(&self) -> Option<u64> {
+        self.returns.map(|returns| returns.saturating_add(1))
+    }
+}
+
+impl Settle for LapinMessage {
     /// Acknowledges the delivery with `basic.ack`.
     ///
     /// # Errors
@@ -262,29 +287,6 @@ impl IncomingMessage for LapinMessage {
             "basic.reject",
         )
         .await
-    }
-
-    /// The partition key from the [`PARTITION_KEY_HEADER`], if set. Overridden so keyed worker
-    /// lanes see it without a `Partitioned` bound on every dispatch path.
-    fn partition_key(&self) -> Option<&[u8]> {
-        self.headers.get(PARTITION_KEY_HEADER)
-    }
-
-    /// How many times this message has been delivered, counting this delivery, from the one
-    /// counter the server keeps: a quorum queue's `x-delivery-count`.
-    ///
-    /// A quorum queue counts a delivery that failed - one whose consumer went away without
-    /// settling it, and one this crate rejected for a handler that asked for the message back.
-    ///
-    /// `None` where nothing counted: every delivery off a classic queue, which keeps no counter,
-    /// and the first delivery of any message. A classic queue's `redelivered` flag is not a count,
-    /// and the `x-death` table a dead-lettered message carries counts the queues it has left
-    /// rather than the deliveries it has spent, so neither stands in for the server's own count.
-    /// It is also what a delayed redelivery through
-    /// [`RabbitQueue::delay`](crate::RabbitQueue::delay) reports, because the copy the waiting
-    /// queue releases is a new message the server counts from zero.
-    fn redelivery_count(&self) -> Option<u64> {
-        self.returns.map(|returns| returns.saturating_add(1))
     }
 
     /// Whether this delivery can honor a native delayed redelivery.

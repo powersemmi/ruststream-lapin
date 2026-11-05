@@ -108,12 +108,11 @@ fn bound() -> (RabbitQueue, RabbitQueue) {
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        let (all, any) = bound();
         b.include(subscriber("order-intake", Route).build())
             .out(Routed, Publish::default().exchange("orders"))
-            .build();
-        let (all, any) = bound();
-        b.include(subscriber(all, Expedite).build());
-        b.include(subscriber(any, Review).build());
+            .include(subscriber(all, Expedite).build())
+            .include(subscriber(any, Review).build())
     })
 }
 

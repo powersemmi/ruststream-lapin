@@ -110,10 +110,8 @@ fn app() -> impl App {
             RabbitQueue::new("alerts").argument("x-max-priority", AMQPValue::LongLongInt(10));
         b.include(subscriber(RabbitQueue::new("readings"), Watch).build())
             .out(Alerts, Publish::default().priority(1))
-            .build();
-        b.include(subscriber(alerts, Triage).build())
+            .include(subscriber(alerts, Triage).build())
             .out(DefaultSlot, Publish::default())
-            .build();
     })
 }
 // --8<-- [end:priority]

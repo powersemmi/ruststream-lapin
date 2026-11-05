@@ -34,7 +34,7 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         let orders = RabbitQueue::new("orders").bind(RabbitExchange::topic("events"), "order.*");
-        b.include(subscriber(orders, Place).build());
+        b.include(subscriber(orders, Place).build())
     })
 }
 // --8<-- [end:app]
@@ -93,7 +93,7 @@ mod tests {
         let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
         let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
             let transient = RabbitQueue::new("orders").durable(false);
-            b.include(subscriber(transient, Place).build());
+            b.include(subscriber(transient, Place).build())
         });
 
         let failed = TestApp::start(app).await.err();

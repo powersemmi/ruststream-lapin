@@ -14,13 +14,13 @@ This guide installs `ruststream-lapin`, starts a local RabbitMQ and runs a first
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json", "asyncapi", "logging"] }
-ruststream-lapin = "0.7"
+ruststream = { version = "0.8", features = ["macros", "json", "asyncapi", "logging"] }
+ruststream-lapin = "0.8"
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 
 [dev-dependencies]
-ruststream-lapin = { version = "0.7", features = ["testing"] }
+ruststream-lapin = { version = "0.8", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 

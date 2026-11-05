@@ -76,7 +76,6 @@ fn app() -> impl App {
             // The confirms policy; `LapinPublish::default().server_tx()` is the other one.
             b.include(subscriber(RabbitQueue::new("orders"), Ship).build())
                 .out(DefaultSlot, TransactionalPublish::default())
-                .build();
         },
     )
 }

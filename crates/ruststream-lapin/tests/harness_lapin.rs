@@ -89,6 +89,8 @@ async fn receive(shipment: &Shipment, ctx: &mut Context<'_, (), Priorities>) -> 
 
 /// Starts the app, delivers one order, and hands back the running harness with what the
 /// shipments consumer saw.
+// why: the harness future is not `Send` in 0.8, and the tests drive it on their own task.
+#[allow(clippy::future_not_send)]
 async fn deliver(order: &Order) -> (TestApp<Priorities>, Priorities) {
     let priorities = Priorities::default();
     let seen = priorities.clone();
@@ -97,8 +99,8 @@ async fn deliver(order: &Order) -> (TestApp<Priorities>, Priorities) {
         .with_broker(LapinBroker::new(URI), |b| {
             b.include(ship)
                 .out(Shipments, Publish::default().priority(MOUNTED_PRIORITY))
-                .build();
-            b.include(receive);
+                .build()
+                .include(receive)
         });
     let tb = TestApp::start(app).await.expect("start");
     tb.broker::<LapinBroker>()

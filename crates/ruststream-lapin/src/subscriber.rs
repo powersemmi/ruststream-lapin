@@ -10,7 +10,7 @@ use futures::future::Either;
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use lapin::{Channel, Consumer};
-use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
+use ruststream::{BatchStream, BatchSubscriber, BufferedSubscriber, Subscriber};
 
 use crate::broker::AmqpConnection;
 use crate::delay::DelayContext;
@@ -113,7 +113,7 @@ impl Subscriber for LapinSubscriber {
     /// Polling is cancel safe (no delivery is lost by dropping the stream between polls), and
     /// the stream can be re-created by calling `stream` again: deliveries buffer in the
     /// consumer, not in the returned stream.
-    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + '_ {
         self.deliveries.stream()
     }
 }
@@ -136,7 +136,7 @@ impl BatchSubscriber for LapinSubscriber {
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, <Self as Subscriber>::Error>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = <Self as Subscriber>::Error> + '_ {
         self.deliveries.batches(size)
     }
 }
@@ -165,7 +165,7 @@ impl Subscriber for Deliveries {
     type Message = LapinMessage;
     type Error = AmqpError;
 
-    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + '_ {
         match self {
             #[cfg(not(feature = "testing"))]
             Self::Amqp(consumer) => consumer.stream(),

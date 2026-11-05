@@ -32,12 +32,10 @@ async fn ship(order: &Order, Out(shipments): Out<impl Publisher, Shipments>) -> 
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
-        |b| {
-            b.include(ship).out(Shipments, Publish::default()).build();
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+            b.include(ship).out(Shipments, Publish::default())
+        })
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
@@ -121,9 +119,8 @@ mod tests {
     #[tokio::test]
     async fn a_failed_startup_carries_the_amqp_error() {
         let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-            b.include(prioritised);
-        });
+        let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(broker, |b| b.include(prioritised));
 
         let failed = TestApp::start(app).await.err();
         let mut cause: Option<&(dyn Error + 'static)> =

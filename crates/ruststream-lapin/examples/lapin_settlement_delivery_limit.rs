@@ -36,10 +36,8 @@ async fn park(charge: &Charge) -> HandlerOutcome {
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        b.include(take_payment);
-        b.include(park);
-    })
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(broker, |b| b.include(take_payment).include(park))
 }
 // --8<-- [end:limit]
 

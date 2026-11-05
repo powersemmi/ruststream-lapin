@@ -40,14 +40,15 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672"),
         |b| {
-            b.include(confirm).out_reply(Publish::default());
             // Once the subscriptions are open, the service announces itself.
             b.after_startup(Publish::default(), async move |publisher| {
                 let started = Started {
                     service: "orders".into(),
                 };
                 publisher.message(&started).publish().await
-            });
+            })
+            .include(confirm)
+            .out_reply(Publish::default())
         },
     )
 }

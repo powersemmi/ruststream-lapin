@@ -52,7 +52,7 @@ use ruststream::runtime::{ForReply, Names, Outgoing, PublishContext, PublishTran
 ///     RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(broker, |b| {
 ///         b.include(check)
 ///             .out_reply(Publish::default())
-///             .transform(DirectReplyTo);
+///             .transform(DirectReplyTo)
 ///     })
 /// }
 /// ```

@@ -111,15 +111,14 @@ fn app() -> RustStream {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672"),
         |b| {
+            let audited = RabbitQueue::new("receipts.audit")
+                .bind(RabbitExchange::topic("receipts"), "receipt.*");
             b.include(subscriber(RabbitQueue::new("payments"), Accept).build())
                 .out(
                     Receipts,
                     Publish::default().exchange("receipts").priority(3),
                 )
-                .build();
-            let audited = RabbitQueue::new("receipts.audit")
-                .bind(RabbitExchange::topic("receipts"), "receipt.*");
-            b.include(subscriber(audited, Audit).build());
+                .include(subscriber(audited, Audit).build())
         },
     )
 }

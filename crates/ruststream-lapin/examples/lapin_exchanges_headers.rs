@@ -65,9 +65,8 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(route)
             .out(Routed, Publish::default().exchange("orders"))
-            .build();
-        b.include(expedite);
-        b.include(review);
+            .include(expedite)
+            .include(review)
     })
 }
 

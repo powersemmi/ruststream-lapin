@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # Retries
 
-[`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) and [`dead_letter(name)`](api:ruststream::runtime::Mounting::dead_letter) end a message that keeps failing, and RabbitMQ applies both itself.
+[`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) and [`dead_letter(name)`](api:ruststream::runtime::RouterWith::dead_letter) end a message that keeps failing, and RabbitMQ applies both itself.
 
 `max_attempts(n)` is how many deliveries one message gets, the first included.
 `dead_letter(name)` is where it goes when the queue carries it away.
@@ -30,7 +30,7 @@ The route is the queue's own, written as `x-dead-letter-exchange` (the default e
 The arguments reach the queue when the service declares it with [`declare_topology(true)`](api:ruststream_lapin::LapinBroker::declare_topology).
 A queue that already exists with other arguments is refused by the server, and the service fails to start with the queue and the arguments in the error.
 On a broker that declares nothing, a classic queue keeps the route its operator gave it, and a quorum queue refuses the pair.
-[`out_retry(policy)`](api:ruststream::runtime::Mounting::out_retry) does not compile on either queue: no copy leaves this process.
+[`out_retry(policy)`](api:ruststream::runtime::RouterWith::out_retry) does not compile on either queue: no copy leaves this process.
 
 ## Example
 

@@ -43,7 +43,7 @@ fn notifications() -> RabbitQueue {
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("notifications", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(notifications(), Notify).build());
+        b.include(subscriber(notifications(), Notify).build())
     })
 }
 
@@ -106,8 +106,8 @@ mod tests {
         let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
         let app =
             RustStream::new(AppInfo::new("notifications", "0.1.0")).with_broker(broker, |b| {
-                b.include(subscriber(notifications(), Notify).build());
-                b.include(subscriber(sooner(), Notify).build());
+                b.include(subscriber(notifications(), Notify).build())
+                    .include(subscriber(sooner(), Notify).build())
             });
 
         let failed = TestApp::start(app).await.err();

@@ -50,12 +50,10 @@ impl Handle<Order, (), (), AmqpContext> for Reserve {
 }
 
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("stock", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
-        |b| {
-            b.include(subscriber(RabbitQueue::new("orders"), Reserve).build());
-        },
-    )
+    RustStream::new(AppInfo::new("stock", "0.1.0"))
+        .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+            b.include(subscriber(RabbitQueue::new("orders"), Reserve).build())
+        })
 }
 // --8<-- [end:outcomes]
 

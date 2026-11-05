@@ -20,7 +20,8 @@ use lapin::options::{BasicPublishOptions, ConfirmSelectOptions};
 use lapin::{BasicProperties, Channel};
 use lapin::{Confirmation, PublisherConfirm};
 use ruststream::{
-    HeaderMap, Lend, OutgoingFor, OutgoingMessage, Publisher, Take, TransactionalPublisher,
+    HeaderMap, Lend, OutgoingFor, OutgoingMessage, PublishMessageError, PublishOutcome, Publisher,
+    Take, TransactionalPublisher,
 };
 
 use crate::broker::{AmqpConnection, ConnectedLapinBroker, Link, check_server_tx};
@@ -137,11 +138,24 @@ impl Publisher for LapinPublisher {
     /// # Cancel safety
     ///
     /// Not cancel safe: dropping the future may leave the message published or not.
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'msg>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
+    ) -> PublishOutcome<'msg, Self::Error, Lend> {
+        // `basic_publish` only reads the frame, so a refused message goes back whole.
+        self.send(&msg, options)
+            .await
+            .map_err(|error| PublishMessageError::with_message(error, msg))
+    }
+}
+
+impl LapinPublisher {
+    async fn send(
+        &self,
+        msg: &OutgoingMessage<'_>,
+        options: Option<&LapinPublishOptions>,
+    ) -> Result<(), AmqpError> {
         let conn = match &self.link {
             Link::Amqp(conn) => conn,
             #[cfg(feature = "testing")]
@@ -347,11 +361,11 @@ impl Publisher for ConfirmsPublisher {
     /// Not cancel safe outside a transaction: dropping the future may leave the message
     /// published but unconfirmed. Inside a transaction buffering is synchronous and dropping the
     /// future is harmless.
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'msg>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
+    ) -> PublishOutcome<'msg, Self::Error, Lend> {
         {
             let mut txn = self.txn.lock().expect("transaction buffer mutex poisoned");
             if let Some(buffer) = txn.as_mut() {
@@ -361,6 +375,7 @@ impl Publisher for ConfirmsPublisher {
         }
         self.publish_confirmed(msg.name(), msg.payload(), msg.headers(), options)
             .await
+            .map_err(|error| PublishMessageError::with_message(error, msg))
     }
 }
 
@@ -572,28 +587,36 @@ impl Publisher for ServerTxPublisher {
     ///
     /// Not cancel safe: dropping the future may leave the message queued in the transaction or
     /// not.
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'msg>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
-        check_server_tx(self.auto_recover)?;
+    ) -> PublishOutcome<'msg, Self::Error, Lend> {
+        if let Err(error) = check_server_tx(self.auto_recover) {
+            return Err(PublishMessageError::with_message(error, msg));
+        }
         let conn = match &self.link {
             Link::Amqp(conn) => conn,
             #[cfg(feature = "testing")]
             Link::InProcess(bus) => {
                 let resolved = self.options.resolve(options);
                 if !self.is_open() {
-                    return bus.publish(
-                        &self.options.exchange,
-                        msg.name(),
-                        msg.payload(),
-                        msg.headers(),
-                        &resolved,
-                    );
+                    return bus
+                        .publish(
+                            &self.options.exchange,
+                            msg.name(),
+                            msg.payload(),
+                            msg.headers(),
+                            &resolved,
+                        )
+                        .map_err(|error| PublishMessageError::with_message(error, msg));
                 }
                 // The frame is checked as the server checks it when it stages the message.
-                bus.check(&self.options.exchange, msg.name(), msg.headers(), &resolved)?;
+                if let Err(error) =
+                    bus.check(&self.options.exchange, msg.name(), msg.headers(), &resolved)
+                {
+                    return Err(PublishMessageError::with_message(error, msg));
+                }
                 self.staged
                     .lock()
                     .expect("staged transaction mutex poisoned")
@@ -601,6 +624,20 @@ impl Publisher for ServerTxPublisher {
                 return Ok(());
             }
         };
+        // `basic_publish` only reads the frame, so a refused message goes back whole.
+        self.send_live(conn, &msg, options)
+            .await
+            .map_err(|error| PublishMessageError::with_message(error, msg))
+    }
+}
+
+impl ServerTxPublisher {
+    async fn send_live(
+        &self,
+        conn: &AmqpConnection,
+        msg: &OutgoingMessage<'_>,
+        options: Option<&LapinPublishOptions>,
+    ) -> Result<(), AmqpError> {
         let properties =
             convert::properties_for_publish(msg.headers(), &self.options.resolve(options))?;
         // The transaction is channel state, so an open one is published into the channel that

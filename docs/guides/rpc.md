@@ -35,7 +35,7 @@ The inventory service answers with an ordinary handler that returns its reply.
 `Stock` names no destination, because each reply goes where its request asked.
 The name in `reply("inventory.check.unanswered")` is where a request without a `reply-to` is answered, and what the service's AsyncAPI document reports.
 
-The routes are a [`Router`](api:ruststream::runtime::Router), so the inventory service mounts them with `b.include_router(inventory())` in its own app.
+The routes are a [`Router`](api:ruststream::runtime::Router), so the inventory service mounts them in its own app with the `include_router(inventory())` step of its mount chain.
 The example runs both services in one process and mounts both routers.
 
 ## The requester

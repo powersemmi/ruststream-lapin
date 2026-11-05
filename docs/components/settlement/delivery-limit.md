@@ -18,11 +18,11 @@ The server applies the limit itself: it holds while no service is running, and t
 A quorum queue without a limit of its own takes RabbitMQ's default of 20 returns.
 A returned message carries the queue's count in the `x-delivery-count` header.
 
-A registration states the same through the mount chain: [`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) and [`dead_letter(name)`](api:ruststream::runtime::Mounting::dead_letter).
+A registration states the same through the mount chain: [`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) and [`dead_letter(name)`](api:ruststream::runtime::RouterWith::dead_letter).
 On a quorum queue the pair becomes an `x-delivery-limit` of `n - 1` and a dead-letter route to the queue `name`, written over the descriptor's limit.
 The pair reaches the queue only when the service declares it, so the broker sets [`declare_topology(true)`](api:ruststream_lapin::LapinBroker::declare_topology).
 On a broker that declares nothing the subscription refuses to start, and so does half of the pair.
-[`out_retry(policy)`](api:ruststream::runtime::Mounting::out_retry) does not compile on a quorum queue, because no copy leaves this process.
+[`out_retry(policy)`](api:ruststream::runtime::RouterWith::out_retry) does not compile on a quorum queue, because no copy leaves this process.
 A classic queue has no delivery limit, so `max_attempts(n)` is for a quorum queue only.
 
 ## Example

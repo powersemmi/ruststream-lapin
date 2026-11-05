@@ -50,9 +50,8 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
         b.include(checkout)
             .out(Payments, Publish::default().exchange("payments"))
-            .build();
-        b.include(charge_card);
-        b.include(send_invoice);
+            .include(charge_card)
+            .include(send_invoice)
     })
 }
 // --8<-- [end:direct]

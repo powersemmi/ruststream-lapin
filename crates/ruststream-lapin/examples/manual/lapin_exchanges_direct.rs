@@ -88,13 +88,12 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
         let payments = RabbitExchange::direct("payments");
+        let card = RabbitQueue::new("payments.card").bind(payments.clone(), "card");
+        let invoice = RabbitQueue::new("payments.invoice").bind(payments, "invoice");
         b.include(subscriber("checkout", Checkout).build())
             .out(Payments, Publish::default().exchange("payments"))
-            .build();
-        let card = RabbitQueue::new("payments.card").bind(payments.clone(), "card");
-        b.include(subscriber(card, ChargeCard).build());
-        let invoice = RabbitQueue::new("payments.invoice").bind(payments, "invoice");
-        b.include(subscriber(invoice, SendInvoice).build());
+            .include(subscriber(card, ChargeCard).build())
+            .include(subscriber(invoice, SendInvoice).build())
     })
 }
 // --8<-- [end:direct]

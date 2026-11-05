@@ -37,10 +37,8 @@ fn app() -> impl App {
     // Every subscription holds up to 64 unacknowledged deliveries, unless its descriptor says
     // otherwise.
     let broker = LapinBroker::new("amqp://localhost:5672").prefetch(nonzero!(64));
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(place);
-        b.include(render);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(place).include(render))
 }
 // --8<-- [end:prefetch]
 
@@ -121,8 +119,7 @@ mod tests {
         RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| {
             b.include(burst.map_source(|_| bursts))
                 .out(Reports, Publish::default())
-                .build();
-            b.include(render_batch.map_source(|_| reports).batch(nonzero!(10)));
+                .include(render_batch.map_source(|_| reports).batch(nonzero!(10)))
         })
     }
 

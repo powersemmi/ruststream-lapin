@@ -38,7 +38,7 @@ fn app() -> impl App {
         |b| {
             b.include(check)
                 .out_reply(Publish::default())
-                .transform(DirectReplyTo);
+                .transform(DirectReplyTo)
         },
     )
 }

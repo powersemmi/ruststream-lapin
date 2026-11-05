@@ -36,7 +36,7 @@ import TabItem from '@theme/TabItem';
 `Stock` 没有指定目的地，因为每条回复都发往其请求要求的地方。
 `reply("inventory.check.unanswered")` 中的名字，是回复没有 `reply-to` 的请求时所用的地址，也是服务的 AsyncAPI 文档所报告的地址。
 
-这些路由是一个 [`Router`](api:ruststream::runtime::Router)，所以库存服务在自己的应用里用 `b.include_router(inventory())` 挂载它们。
+这些路由是一个 [`Router`](api:ruststream::runtime::Router)，所以库存服务在自己的应用里，用挂载链中的 `include_router(inventory())` 一步挂载它们。
 示例在一个进程里运行两个服务，并挂载两个路由器。
 
 ## 请求方 {/* #the-requester */}

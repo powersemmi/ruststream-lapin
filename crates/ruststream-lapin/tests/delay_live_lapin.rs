@@ -17,7 +17,7 @@ use lapin::options::{
 };
 use lapin::types::ShortString;
 use lapin::{BasicProperties, Connection, ConnectionProperties};
-use ruststream::{ConnectedBroker, OutgoingMessage, Subscriber};
+use ruststream::{ConnectedBroker, OutgoingMessage, Settle, Subscriber};
 use ruststream_lapin::ConnectedLapinBroker;
 use ruststream_lapin::prelude::*;
 use tokio::time::timeout as timeout_future;
