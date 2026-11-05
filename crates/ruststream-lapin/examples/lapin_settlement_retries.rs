@@ -44,8 +44,8 @@ fn app() -> impl App {
         // `payments.dead`.
         b.include(charge)
             .max_attempts(nonzero!(3u32))
-            .dead_letter("payments.dead");
-        b.include(bury);
+            .dead_letter("payments.dead")
+            .include(bury)
     })
 }
 // --8<-- [end:retries]

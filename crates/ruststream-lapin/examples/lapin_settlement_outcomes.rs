@@ -35,12 +35,10 @@ async fn reserve(order: &Order, Ctx(redelivered): Ctx<Redelivered>) -> HandlerOu
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("stock", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
-        |b| {
-            b.include(reserve);
-        },
-    )
+    RustStream::new(AppInfo::new("stock", "0.1.0"))
+        .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+            b.include(reserve)
+        })
 }
 // --8<-- [end:outcomes]
 
