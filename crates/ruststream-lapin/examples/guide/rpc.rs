@@ -45,6 +45,7 @@ fn inventory() -> Router<LapinBroker, impl RouterDef<LapinBroker>> {
         .include(check_stock)
         .out_reply(Publish::default())
         .transform(DirectReplyTo)
+        .build()
 }
 // --8<-- [end:responder]
 
@@ -103,6 +104,7 @@ fn orders() -> Router<LapinBroker, impl RouterDef<LapinBroker>> {
     Router::new()
         .include(place_order)
         .out(DefaultSlot, Request::default())
+        .build()
 }
 
 #[ruststream::app]
