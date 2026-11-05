@@ -14,8 +14,8 @@ use lapin::types::FieldTable;
 use lapin::uri::AMQPUri;
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher,
-    RequestReply, Subscriber,
+    BatchSubscriber, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage,
+    PublishMessageError, Publisher, RequestReply, Settle, Subscriber,
 };
 use ruststream_lapin::{
     AmqpError, Delay, LapinBroker, LapinPublish, LapinRequest, RabbitExchange, RabbitQueue,
@@ -200,7 +200,7 @@ async fn existing_handles_resume_after_repeated_outages() {
         publish_when_ready(&publisher, "key", b"confirmed").await;
         publish_when_ready(&plain, &name, b"plain").await;
         let mut batches = Box::pin(subscriber.batches(NonZeroUsize::new(2).expect("nonzero")));
-        let batch = timeout_future(WAIT, batches.next())
+        let batch = timeout_future(WAIT, crate::batches::next_batch(batches.as_mut()))
             .await
             .expect("batch timeout")
             .expect("stream stays open")
@@ -233,7 +233,8 @@ async fn existing_handles_resume_after_repeated_outages() {
     assert!(matches!(
         plain
             .publish(OutgoingMessage::new(&name, b"closed"), None)
-            .await,
+            .await
+            .map_err(PublishMessageError::into_error),
         Err(AmqpError::Closed { .. })
     ));
 }
@@ -382,7 +383,8 @@ async fn shutdown_during_recovery_ends_streams_and_disables_aliases() {
     assert!(matches!(
         publisher
             .publish(OutgoingMessage::new(&name, b"closed"), None)
-            .await,
+            .await
+            .map_err(PublishMessageError::into_error),
         Err(AmqpError::Closed { .. })
     ));
 }

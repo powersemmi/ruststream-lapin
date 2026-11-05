@@ -33,8 +33,8 @@ use tokio::time::{sleep, timeout as timeout_future};
 use ruststream::runtime::{AppInfo, Ctx, HandlerOutcome, PublishExt, RustStream, State};
 use ruststream::{
     AckError, BatchSubscriber, Broker, ConnectedBroker, DescribeServer, FromRef, HeaderMap,
-    IncomingMessage, Outgoing, OutgoingMessage, Partitioned, Publisher, Serialized, Subscriber,
-    TransactionalPublisher, nonzero, subscriber,
+    IncomingMessage, Outgoing, OutgoingMessage, Partitioned, Publisher, Serialized, Settle,
+    Subscriber, TransactionalPublisher, nonzero, subscriber,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
@@ -592,7 +592,7 @@ async fn prefetch_caps_a_batch_below_its_size() {
     let mut received: Vec<Vec<u8>> = Vec::new();
     let mut stream = Box::pin(subscriber.batches(nonzero!(3)));
     while received.len() < 3 {
-        let batch = timeout_future(WAIT, stream.next())
+        let batch = timeout_future(WAIT, crate::batches::next_batch(stream.as_mut()))
             .await
             .expect("batch within timeout")
             .expect("stream has next")
@@ -1138,18 +1138,15 @@ async fn keyed_lanes_pin_each_partition_to_one_ordered_worker() {
             let lanes = state_lanes;
             async move { Ok::<_, Infallible>(KeyedState { lanes }) }
         })
-        .with_broker(broker, |b| {
-            b.include(keyed_handler);
-        });
+        .with_broker(broker, |b| b.include(keyed_handler));
 
     // The app shuts itself down once every delivery has settled, bounded so a broken routing that
     // never reaches the count fails the test instead of hanging.
-    let app_task = tokio::spawn(app.run_until(async move { signal.done.notified().await }));
-    timeout_future(Duration::from_secs(20), app_task)
+    let running = app.start().await.expect("start the app");
+    timeout_future(Duration::from_secs(20), signal.done.notified())
         .await
-        .expect("app reached the expected count and shut down in time")
-        .expect("app task did not panic")
-        .expect("run_until succeeded");
+        .expect("app reached the expected count in time");
+    running.shutdown().await.expect("shut the app down");
 
     assert_keyed_routing(&lanes.0);
     delete_keyed_queue(&url).await;
@@ -1317,16 +1314,13 @@ async fn ctx_extractors_inject_delivery_fields() {
             let probe = app_probe;
             async move { Ok::<_, Infallible>(CtxDiApp { probe }) }
         })
-        .with_broker(broker, |b| {
-            b.include(ctx_di);
-        });
+        .with_broker(broker, |b| b.include(ctx_di));
 
-    let app_task = tokio::spawn(app.run_until(async move { done.notified().await }));
-    timeout_future(Duration::from_secs(20), app_task)
+    let running = app.start().await.expect("start the app");
+    timeout_future(Duration::from_secs(20), done.notified())
         .await
-        .expect("app consumed the prequeued deliveries in time")
-        .expect("app task did not panic")
-        .expect("run_until succeeded");
+        .expect("app consumed the prequeued deliveries in time");
+    running.shutdown().await.expect("shut the app down");
 
     let seen = probe.seen.lock().expect("seen mutex poisoned").clone();
     assert_eq!(seen.len(), COUNT);
@@ -1555,7 +1549,7 @@ async fn a_transaction_with_an_oversized_body_commits_nothing() {
             .publish(OutgoingMessage::new(&queue, payload), None)
             .await
         {
-            refused.push(err);
+            refused.push(err.into_error());
         }
     }
     if let Err(err) = publisher.commit().await {

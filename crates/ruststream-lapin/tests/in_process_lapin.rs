@@ -22,8 +22,8 @@ use ruststream::subscriber;
 use ruststream::testing::{InProcess, TestApp, expect_published};
 use ruststream::{
     AckError, BatchSubscriber, ConnectedBroker, FromRef, HeaderMap, IncomingMessage, Outgoing,
-    OutgoingMessage, Partitioned, Publisher, RawMessage, Subscriber, TransactionalPublisher,
-    nonzero,
+    OutgoingMessage, Partitioned, PublishMessageError, Publisher, RawMessage, Settle, Subscriber,
+    TransactionalPublisher, nonzero,
 };
 use ruststream_lapin::context::keys;
 use ruststream_lapin::{
@@ -108,7 +108,10 @@ async fn a_routing_key_the_protocol_cannot_carry_is_refused() {
         .await
         .expect_err("a 256-byte routing key is not a short string");
 
-    assert!(matches!(err, AmqpError::InvalidOptions(_)), "got {err}");
+    assert!(
+        matches!(err.error(), AmqpError::InvalidOptions(_)),
+        "got {err}"
+    );
 }
 
 // An empty routing key on the default exchange is a valid publish that reaches no queue: the
@@ -141,7 +144,10 @@ async fn a_header_the_frame_cannot_carry_is_refused() {
         .await
         .expect_err("a 300-byte correlation id is not a short string");
 
-    assert!(matches!(err, AmqpError::InvalidOptions(_)), "got {err}");
+    assert!(
+        matches!(err.error(), AmqpError::InvalidOptions(_)),
+        "got {err}"
+    );
 }
 
 // A queue with several consumers is a work queue: each delivery goes to exactly one of them, in
@@ -747,7 +753,7 @@ async fn publishing_after_shutdown_errors() {
         .publish(OutgoingMessage::new("orders", b"late"), None)
         .await
         .expect_err("a publish through the closed transport must error");
-    assert!(matches!(err, AmqpError::Closed { .. }), "got {err}");
+    assert!(matches!(err.error(), AmqpError::Closed { .. }), "got {err}");
 }
 
 // `Outgoing` without a name: `Order` is also the reply of the RPC handler below, whose
@@ -792,10 +798,9 @@ async fn retry_then_ack(order: &Order, ctx: &mut Context<'_, (), Attempts>) -> H
 // it returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_drives_the_production_app_to_quiescence() {
-    let app =
-        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(ack_order);
-            b.include(ack_payment);
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .with_broker(LapinBroker::new(URI), |b| {
+            b.include(ack_order).include(ack_payment)
         });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -875,9 +880,7 @@ async fn ctx_keys_resolve_against_the_in_process_transport() {
     let probe = seen.clone();
     let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(MetadataState { seen }))
-        .with_broker(LapinBroker::new(URI), |b| {
-            b.include(record_metadata);
-        });
+        .with_broker(LapinBroker::new(URI), |b| b.include(record_metadata));
     let tb = TestApp::start(app).await.expect("start");
 
     tb.broker::<LapinBroker>()
@@ -908,9 +911,7 @@ async fn ctx_keys_resolve_against_the_in_process_transport() {
 async fn app_requeue_stays_balanced() {
     let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
         .on_startup(async |()| Ok::<_, Infallible>(Attempts::default()))
-        .with_broker(LapinBroker::new(URI), |b| {
-            b.include(retry_then_ack);
-        });
+        .with_broker(LapinBroker::new(URI), |b| b.include(retry_then_ack));
     let tb = TestApp::start(app).await.expect("start");
 
     tb.broker::<LapinBroker>()
@@ -943,7 +944,7 @@ async fn direct_reply_transform_redirects_and_echoes() {
         RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(echo_id)
                 .out(Reply, LapinPublish::default())
-                .transform(DirectReplyTo);
+                .transform(DirectReplyTo)
         });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -1005,9 +1006,9 @@ async fn receipt_for(order: &Order) -> Receipt {
 // publisher turns into a routing key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_declared_reply_lands_where_its_type_says() {
-    let app =
-        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(confirm_order).out(Reply, LapinPublish::default());
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .with_broker(LapinBroker::new(URI), |b| {
+            b.include(confirm_order).out(Reply, LapinPublish::default())
         });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -1033,9 +1034,9 @@ async fn a_declared_reply_lands_where_its_type_says() {
 // reply-to fallback rests on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_undeclared_reply_lands_at_the_mount_name() {
-    let app =
-        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(receipt_for).out(Reply, LapinPublish::default());
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .with_broker(LapinBroker::new(URI), |b| {
+            b.include(receipt_for).out(Reply, LapinPublish::default())
         });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -1079,7 +1080,7 @@ async fn batches_are_capped_by_the_size_the_stream_is_opened_with() {
     let mut payloads: Vec<Vec<u8>> = Vec::new();
     let mut stream = Box::pin(subscriber.batches(nonzero!(2)));
     while payloads.len() < 5 {
-        let batch = timeout_future(WAIT, stream.next())
+        let batch = timeout_future(WAIT, crate::batches::next_batch(stream.as_mut()))
             .await
             .expect("batch within timeout")
             .expect("stream has next")
@@ -1122,9 +1123,9 @@ async fn settle_batch(orders: &[Order]) -> HandlerOutcome {
 // conformance batch suite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn batch_handlers_mount_on_the_in_process_transport() {
-    let app =
-        RustStream::new(AppInfo::new("svc", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(settle_batch.batch(nonzero!(4)));
+    let app = RustStream::new(AppInfo::new("svc", "0.1.0"))
+        .with_broker(LapinBroker::new(URI), |b| {
+            b.include(settle_batch.batch(nonzero!(4)))
         });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -1369,7 +1370,8 @@ async fn a_body_over_the_servers_limit_is_refused() {
 
     let refused = publisher
         .publish(OutgoingMessage::new("oversized", &big), None)
-        .await;
+        .await
+        .map_err(PublishMessageError::into_error);
     assert!(matches!(refused, Err(AmqpError::Publish(_))), "{refused:?}");
     let observed = expect_published(&broker, "oversized", 1, Duration::from_millis(50)).await;
     assert_eq!(

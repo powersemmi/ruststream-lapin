@@ -3,7 +3,8 @@
 
 use ruststream::testing::InProcess;
 use ruststream::{
-    ConnectedBroker, OutgoingMessage, PublishPolicy, Publisher, TransactionalPublisher,
+    ConnectedBroker, OutgoingMessage, PublishMessageError, PublishPolicy, Publisher,
+    TransactionalPublisher,
 };
 use ruststream_lapin::{AmqpError, LapinBroker, LapinPublish};
 
@@ -20,7 +21,8 @@ async fn enabled_recovery_refuses_every_server_transaction_operation() {
         publisher.begin_transaction().await,
         publisher
             .publish(OutgoingMessage::new("queue", b"data"), None)
-            .await,
+            .await
+            .map_err(PublishMessageError::into_error),
         publisher.commit().await,
         publisher.abort().await,
     ] {

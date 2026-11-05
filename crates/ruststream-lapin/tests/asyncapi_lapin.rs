@@ -82,8 +82,8 @@ fn document() -> Value {
                         .priority(4)
                         .expiration(Duration::from_secs(30)),
                 )
-                .transform(DirectReplyTo);
-            b.include(on_event);
+                .transform(DirectReplyTo)
+                .include(on_event)
         });
     let json = build_spec(&app)
         .to_json()

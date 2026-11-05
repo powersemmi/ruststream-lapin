@@ -81,7 +81,7 @@ async fn a_handle_body_mounts_on_the_queue_descriptor() {
         RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(subscriber(RabbitQueue::new("orders"), Audit).build())
                 .out(DefaultSlot, LapinPublish::default())
-                .build();
+                .build()
         });
     let tb = TestApp::start(app).await.expect("start");
 

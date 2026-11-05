@@ -97,8 +97,8 @@ async fn deliver(order: &Order) -> (TestApp<Priorities>, Priorities) {
         .with_broker(LapinBroker::new(URI), |b| {
             b.include(ship)
                 .out(Shipments, Publish::default().priority(MOUNTED_PRIORITY))
-                .build();
-            b.include(receive);
+                .build()
+                .include(receive)
         });
     let tb = TestApp::start(app).await.expect("start");
     tb.broker::<LapinBroker>()
