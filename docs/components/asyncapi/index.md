@@ -26,7 +26,7 @@ The binary `#[ruststream::app]` writes prints the document with `asyncapi gen`.
 The dependency line:
 
 ```toml
-ruststream-lapin = { version = "0.7", features = ["asyncapi"] }
+ruststream-lapin = { version = "0.8", features = ["asyncapi"] }
 ```
 
 The service registers its broker under the label `rabbit`, the key of its server in the document.
