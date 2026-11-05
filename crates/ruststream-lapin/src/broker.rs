@@ -462,7 +462,7 @@ impl Broker for LapinBroker {
 impl InProcess for LapinBroker {
     fn connect_in_process(
         self,
-    ) -> impl Future<Output = Result<Self::Connected, Self::Error>> + Send {
+    ) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
         let connected = self
             .uri
             .parse::<AMQPUri>()

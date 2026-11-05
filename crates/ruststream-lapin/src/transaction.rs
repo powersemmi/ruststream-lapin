@@ -9,7 +9,7 @@
 use std::fmt;
 use std::future::ready;
 
-use ruststream::{OutgoingFor, OwnedTransactions, Take, Transaction};
+use ruststream::{OutgoingFor, OwnedTransactions, PublishOutcome, Take, Transaction};
 use tracing::warn;
 
 use crate::error::AmqpError;
@@ -119,11 +119,11 @@ impl Transaction for ConfirmsTransaction {
     ///
     /// Infallible in practice: buffering is local to this value, and a closed connection or a
     /// rejected frame surfaces at the commit, which is the visibility point.
-    fn publish(
+    fn publish<'msg>(
         &mut self,
-        msg: OutgoingFor<'_, Take>,
+        msg: OutgoingFor<'msg, Take>,
         options: Option<&Self::Options>,
-    ) -> impl Future<Output = Result<(), Self::Error>> {
+    ) -> impl Future<Output = PublishOutcome<'msg, Self::Error, Take>> {
         self.buffered.push(Buffered::taken(msg, options));
         ready(Ok(()))
     }

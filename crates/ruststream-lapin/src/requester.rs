@@ -20,7 +20,10 @@ use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
 use lapin::types::{FieldTable, ShortString};
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
-use ruststream::{Lend, OutgoingMessage, PairError, PublishPolicy, Publisher, RequestReply};
+use ruststream::{
+    Lend, OutgoingMessage, PairError, PublishMessageError, PublishOutcome, PublishPolicy, Publisher,
+    RequestReply,
+};
 use tokio::sync::oneshot;
 use tokio::time::timeout as timeout_future;
 
@@ -329,11 +332,24 @@ impl Publisher for LapinRequester {
     /// # Cancel safety
     ///
     /// Not cancel safe: dropping the future may leave the message published or not.
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'msg>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
+    ) -> PublishOutcome<'msg, Self::Error, Lend> {
+        // `basic_publish` only reads the frame, so a refused message goes back whole.
+        self.send(&msg, options)
+            .await
+            .map_err(|error| PublishMessageError::with_message(error, msg))
+    }
+}
+
+impl LapinRequester {
+    async fn send(
+        &self,
+        msg: &OutgoingMessage<'_>,
+        options: Option<&LapinPublishOptions>,
+    ) -> Result<(), AmqpError> {
         let conn = match &self.link {
             Link::Amqp(conn) => conn,
             #[cfg(feature = "testing")]
