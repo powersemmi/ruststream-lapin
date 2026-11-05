@@ -60,9 +60,8 @@ fn service(uri: impl Into<String>) -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(shard)
             .out(Sharded, Publish::default().exchange("orders-by-customer"))
-            .build();
-        b.include(shard_a);
-        b.include(shard_b);
+            .include(shard_a)
+            .include(shard_b)
     })
 }
 

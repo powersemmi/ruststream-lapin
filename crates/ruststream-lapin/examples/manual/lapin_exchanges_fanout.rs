@@ -90,13 +90,12 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("catalog", "0.1.0")).with_broker(broker, |b| {
         let prices = RabbitExchange::fanout("prices");
+        let search = RabbitQueue::new("prices.search").bind(prices.clone(), "");
+        let cache = RabbitQueue::new("prices.cache").bind(prices, "");
         b.include(subscriber("price-updates", PublishPrice).build())
             .out(Prices, Publish::default().exchange("prices"))
-            .build();
-        let search = RabbitQueue::new("prices.search").bind(prices.clone(), "");
-        b.include(subscriber(search, Reindex).build());
-        let cache = RabbitQueue::new("prices.cache").bind(prices, "");
-        b.include(subscriber(cache, Recache).build());
+            .include(subscriber(search, Reindex).build())
+            .include(subscriber(cache, Recache).build())
     })
 }
 // --8<-- [end:fanout]

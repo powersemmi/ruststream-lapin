@@ -53,9 +53,8 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("catalog", "0.1.0")).with_broker(broker, |b| {
         b.include(publish_price)
             .out(Prices, Publish::default().exchange("prices"))
-            .build();
-        b.include(reindex);
-        b.include(recache);
+            .include(reindex)
+            .include(recache)
     })
 }
 // --8<-- [end:fanout]
