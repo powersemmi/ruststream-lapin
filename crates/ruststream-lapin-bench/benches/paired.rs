@@ -73,7 +73,7 @@ use lapin::options::{
 };
 use lapin::types::ShortString;
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
-use ruststream::{ConnectedBroker, OutgoingMessage, Subscriber, SubscriptionSource};
+use ruststream::{ConnectedBroker, OutgoingMessage, Settle, Subscriber, SubscriptionSource};
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{ConnectedLapinBroker, LapinSubscriber};
 use serde::Deserialize;
@@ -613,16 +613,14 @@ async fn quorum_handler(order: &Order, ctx: &mut Context<'_, (), Run>) -> Handle
     HandlerOutcome::ack()
 }
 
+// why: the running app is not `Send` in 0.8, and the bench drives it with `block_on`.
+#[allow(clippy::future_not_send)]
 async fn start(url: &str, scenario: Scenario, run: Run) -> RunningApp {
     let app = RustStream::new(AppInfo::new("lapin-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run));
     match scenario {
-        Scenario::Classic => app.with_broker(broker(url), |b| {
-            b.include(classic_handler);
-        }),
-        Scenario::Quorum => app.with_broker(broker(url), |b| {
-            b.include(quorum_handler);
-        }),
+        Scenario::Classic => app.with_broker(broker(url), |b| b.include(classic_handler)),
+        Scenario::Quorum => app.with_broker(broker(url), |b| b.include(quorum_handler)),
     }
     .start()
     .await
@@ -631,6 +629,8 @@ async fn start(url: &str, scenario: Scenario, run: Run) -> RunningApp {
 
 /// The whole service a user writes: the handler, the app, the runtime, over the same publisher
 /// the adapter run used.
+// why: the running app is not `Send` in 0.8, and the bench drives it with `block_on`.
+#[allow(clippy::future_not_send)]
 async fn framework(url: &str, queue: &str, scenario: Scenario, messages: usize) -> Duration {
     let run = Run::new(messages);
     install(queue);
@@ -698,6 +698,8 @@ impl Scenario {
         adapter(url, queue, self, messages).await
     }
 
+    // why: the running app is not `Send` in 0.8, and the bench drives it with `block_on`.
+    #[allow(clippy::future_not_send)]
     async fn framework(self, url: &str, queue: &str, messages: usize) -> Duration {
         framework(url, queue, self, messages).await
     }
@@ -767,6 +769,8 @@ fn difference(raw: Stats, measured: Stats) -> (f64, &'static str) {
     ((raw.best - measured.best) / raw.best * 100.0, verdict)
 }
 
+// why: the running app is not `Send` in 0.8, and the bench drives it with `block_on`.
+#[allow(clippy::future_not_send)]
 async fn measure(
     scenario: Scenario,
     url: &str,

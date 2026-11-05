@@ -27,9 +27,7 @@ async fn consume(order: &Order, ctx: &mut Context<'_, (), Latch>) -> HandlerOutc
 }
 
 fn app(messages: usize) -> Pending {
-    common::pending(messages, |b| {
-        b.include(consume);
-    })
+    common::pending(messages, |b| b.include(consume))
 }
 
 // The longest run allocated 32202 blocks in each of seven runs; the floor adds a tenth of a

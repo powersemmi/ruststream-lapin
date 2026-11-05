@@ -58,7 +58,9 @@ use lapin::options::{BasicPublishOptions, ConfirmSelectOptions, QueueDeleteOptio
 use lapin::types::ShortString;
 use lapin::{BasicProperties, Connection, ConnectionProperties};
 use ruststream::nonzero;
-use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
+use ruststream::runtime::{
+    AppInfo, BrokerScope, Identity, MountChain, MountRoutes, RunningApp, RustStream,
+};
 use ruststream_lapin::LapinBroker;
 use serde::Deserialize;
 use tokio::runtime::{Builder, Runtime};
@@ -353,14 +355,18 @@ pub struct Pending {
     messages: usize,
 }
 
-/// The mount a scenario passes in: what `with_broker` does with the scope.
-pub type Mount<'a> = &'a mut BrokerScope<LapinBroker, Identity, (), Latch>;
+/// The scope a scenario's mount receives; the mount returns the chain it opens.
+pub type Mount = BrokerScope<LapinBroker, Identity, (), Latch>;
 
 /// Builds a one-handler service on the production broker, ready to be started by the body.
 ///
 /// The broker is configured the way a service that owns its queue configures it: the prefetch
 /// window, and the declaration of the queue at start.
-pub fn pending(messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
+pub fn pending<Chain, Routes>(messages: usize, mount: impl FnOnce(Mount) -> Chain) -> Pending
+where
+    Chain: MountChain<Routes = Routes>,
+    Routes: MountRoutes<LapinBroker, Identity, Latch>,
+{
     reset_queue();
     let latch = Latch::default();
     let broker = LapinBroker::new(url())
