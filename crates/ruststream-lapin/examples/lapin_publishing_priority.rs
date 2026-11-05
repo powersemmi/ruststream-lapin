@@ -85,10 +85,8 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("monitoring", "0.1.0")).with_broker(broker, |b| {
         b.include(watch)
             .out(Alerts, Publish::default().priority(1))
-            .build();
-        b.include(triage)
+            .include(triage)
             .out(DefaultSlot, Publish::default())
-            .build();
     })
 }
 // --8<-- [end:priority]

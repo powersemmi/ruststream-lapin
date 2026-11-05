@@ -63,12 +63,10 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("pricing", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672"),
         |b| {
-            b.include(publish_quote)
-                .out(
-                    Quotes,
-                    Publish::default().expiration(Duration::from_mins(1)),
-                )
-                .build();
+            b.include(publish_quote).out(
+                Quotes,
+                Publish::default().expiration(Duration::from_mins(1)),
+            )
         },
     )
 }

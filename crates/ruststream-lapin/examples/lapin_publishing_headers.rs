@@ -60,8 +60,7 @@ fn app() -> impl App {
         |b| {
             b.include(issue_invoice)
                 .out(DefaultSlot, Publish::default())
-                .build();
-            b.include(bill);
+                .include(bill)
         },
     )
 }
