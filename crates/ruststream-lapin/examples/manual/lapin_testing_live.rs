@@ -66,7 +66,7 @@ fn app(uri: &str) -> RustStream {
             let payments = RabbitQueue::new("testing-live.payments")
                 .durable(false)
                 .exclusive(true);
-            b.include(subscriber(payments, Accept).build());
+            b.include(subscriber(payments, Accept).build())
         },
     )
 }

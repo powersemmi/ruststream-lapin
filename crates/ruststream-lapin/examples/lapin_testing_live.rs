@@ -36,12 +36,10 @@ async fn accept(payment: &Payment) -> HandlerOutcome {
 
 /// The service on the server at `uri`, declaring the queue it consumes.
 fn app(uri: &str) -> RustStream {
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        LapinBroker::new(uri).declare_topology(true),
-        |b| {
-            b.include(accept);
-        },
-    )
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(LapinBroker::new(uri).declare_topology(true), |b| {
+            b.include(accept)
+        })
 }
 
 #[ruststream::app]
