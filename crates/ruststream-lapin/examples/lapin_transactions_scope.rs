@@ -63,7 +63,6 @@ fn app() -> impl App {
             // The confirms policy; `LapinPublish::default().server_tx()` is the other one.
             b.include(ship)
                 .out(DefaultSlot, TransactionalPublish::default())
-                .build();
         },
     )
 }

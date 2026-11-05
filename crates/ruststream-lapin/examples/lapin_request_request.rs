@@ -77,10 +77,9 @@ fn app() -> impl App {
         |b| {
             b.include(place_order)
                 .out(DefaultSlot, Request::default())
-                .build();
-            b.include(check_stock)
+                .include(check_stock)
                 .out_reply(Publish::default())
-                .transform(DirectReplyTo);
+                .transform(DirectReplyTo)
         },
     )
 }

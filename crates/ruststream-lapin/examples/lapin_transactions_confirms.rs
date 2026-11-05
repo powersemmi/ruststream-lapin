@@ -48,7 +48,6 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
         b.include(settle)
             .out(DefaultSlot, TransactionalPublish::default())
-            .build();
     })
 }
 // --8<-- [end:confirms]
@@ -97,7 +96,6 @@ mod tests {
         let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
             b.include(settle.map_source(|_| source))
                 .out(DefaultSlot, TransactionalPublish::default())
-                .build();
         });
         let tb = TestApp::start_live(app).await?;
         tb.broker::<LapinBroker>()
