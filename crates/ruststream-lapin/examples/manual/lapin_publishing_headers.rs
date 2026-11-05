@@ -86,8 +86,7 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber(RabbitQueue::new("orders"), IssueInvoice).build())
                 .out(DefaultSlot, Publish::default())
-                .build();
-            b.include(subscriber(RabbitQueue::new("invoices"), Bill).build());
+                .include(subscriber(RabbitQueue::new("invoices"), Bill).build())
         },
     )
 }

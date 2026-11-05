@@ -65,8 +65,8 @@ fn app() -> impl App {
         // `payments.dead`.
         b.include(subscriber(RabbitQuorumQueue::new("payments"), Charge).build())
             .max_attempts(nonzero!(3u32))
-            .dead_letter("payments.dead");
-        b.include(subscriber("payments.dead", Bury).build());
+            .dead_letter("payments.dead")
+            .include(subscriber("payments.dead", Bury).build())
     })
 }
 // --8<-- [end:retries]

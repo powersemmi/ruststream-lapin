@@ -131,11 +131,9 @@ fn app() -> impl App {
         // Confirms: a publish resolves once RabbitMQ has taken the message.
         b.include(subscriber("orders", PackOrder).build())
             .out(DefaultSlot, TransactionalPublish::default())
-            .build();
-        // Every pickup leaves at priority 3 unless the handler says otherwise.
-        b.include(subscriber(RabbitQueue::new("shipments"), BookCourier).build())
+            // Every pickup leaves at priority 3 unless the handler says otherwise.
+            .include(subscriber(RabbitQueue::new("shipments"), BookCourier).build())
             .out(Pickups, Publish::default().priority(3))
-            .build();
     })
 }
 

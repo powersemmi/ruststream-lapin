@@ -73,8 +73,7 @@ fn app() -> impl App {
             RabbitQueue::new("orders.audit").bind(RabbitExchange::topic("events"), "order.*");
         b.include(subscriber(RabbitQueue::new("orders"), Accept).build())
             .out(DefaultSlot, Publish::default().exchange("events"))
-            .build();
-        b.include(subscriber(audit, Audit).build());
+            .include(subscriber(audit, Audit).build())
     })
 }
 // --8<-- [end:exchange]

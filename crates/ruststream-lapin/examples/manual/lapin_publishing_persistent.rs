@@ -73,7 +73,6 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber(RabbitQueue::new("meters"), Record).build())
                 .out(Readings, Publish::default().persistent(false))
-                .build();
         },
     )
 }

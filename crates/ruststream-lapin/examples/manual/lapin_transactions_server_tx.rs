@@ -82,7 +82,6 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber(RabbitQueue::new("transfers"), Book).build())
                 .out(DefaultSlot, ServerTxPublish::default())
-                .build();
         },
     )
 }

@@ -56,15 +56,15 @@ fn app() -> impl App {
         LapinBroker::new("amqp://localhost:5672"),
         |b| {
             let confirm = subscriber(RabbitQueue::new("orders"), Confirm);
-            b.include(confirm.reply().build())
-                .out_reply(Publish::default());
             // Once the subscriptions are open, the service announces itself.
             b.after_startup(Publish::default(), async move |publisher| {
                 let started = Started {
                     service: "orders".into(),
                 };
                 publisher.message(&started).publish().await
-            });
+            })
+            .include(confirm.reply().build())
+            .out_reply(Publish::default())
         },
     )
 }

@@ -103,10 +103,9 @@ fn app() -> impl App {
             let check = subscriber(RabbitQueue::new("inventory.check"), CheckStockBody);
             b.include(subscriber(RabbitQueue::new("orders"), PlaceOrder).build())
                 .out(DefaultSlot, Request::default())
-                .build();
-            b.include(check.reply().to("inventory.check.unrouted").build())
+                .include(check.reply().to("inventory.check.unrouted").build())
                 .out_reply(Publish::default())
-                .transform(DirectReplyTo);
+                .transform(DirectReplyTo)
         },
     )
 }

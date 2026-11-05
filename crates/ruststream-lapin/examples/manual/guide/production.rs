@@ -49,7 +49,7 @@ fn broker(uri: String) -> LapinBroker {
 
 fn service(broker: LapinBroker) -> RustStream {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(RabbitQueue::new("orders"), TakeOrder).build());
+        b.include(subscriber(RabbitQueue::new("orders"), TakeOrder).build())
     })
 }
 

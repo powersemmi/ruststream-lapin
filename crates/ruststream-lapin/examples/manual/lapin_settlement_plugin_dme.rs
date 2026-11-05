@@ -54,7 +54,7 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("reminders", "0.1.0")).with_broker(broker, |b| {
         let reminders = RabbitQueue::new("reminders").delay(Delay::plugin_dme());
-        b.include(subscriber(reminders, Remind).build());
+        b.include(subscriber(reminders, Remind).build())
     })
 }
 // --8<-- [end:dme]
@@ -120,9 +120,8 @@ mod tests {
             .auto_delete(true)
             .delay(Delay::plugin_dme());
         let broker = LapinBroker::new(url).declare_topology(true);
-        let app = RustStream::new(AppInfo::new("reminders", "0.1.0")).with_broker(broker, |b| {
-            b.include(subscriber(source, Remind).build());
-        });
+        let app = RustStream::new(AppInfo::new("reminders", "0.1.0"))
+            .with_broker(broker, |b| b.include(subscriber(source, Remind).build()));
         let tb = TestApp::start_live_within(app, Duration::from_secs(30)).await?;
         holds_then_redelivers(tb, &queue).await
     }

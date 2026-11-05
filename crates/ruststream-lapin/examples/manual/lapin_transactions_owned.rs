@@ -92,7 +92,6 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber(RabbitQueue::new("orders"), Record).build())
                 .out(Records, TransactionalPublish::default())
-                .build();
         },
     )
 }
