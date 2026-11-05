@@ -25,7 +25,7 @@ fn app() -> impl App {
         LapinBroker::new("amqp://localhost:5672"),
         |b| {
             b.include(confirm)
-                .out_reply(TransactionalPublish::default());
+                .out_reply(TransactionalPublish::default())
         },
     )
 }

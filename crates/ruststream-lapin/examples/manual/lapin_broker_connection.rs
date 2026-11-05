@@ -39,9 +39,8 @@ fn broker() -> LapinBroker {
 }
 
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(subscriber("orders", Place).build());
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker(), |b| b.include(subscriber("orders", Place).build()))
 }
 // --8<-- [end:broker]
 
@@ -94,12 +93,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_address_without_a_scheme_fails_startup() {
-        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            LapinBroker::new("orders:secret@localhost:5672/shop"),
-            |b| {
-                b.include(subscriber("orders", Place).build());
-            },
-        );
+        let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(LapinBroker::new("orders:secret@localhost:5672/shop"), |b| {
+                b.include(subscriber("orders", Place).build())
+            });
 
         let failed = TestApp::start(app).await.err();
         let mut cause: Option<&(dyn Error + 'static)> =

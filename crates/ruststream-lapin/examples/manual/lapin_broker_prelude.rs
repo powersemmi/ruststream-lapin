@@ -38,7 +38,7 @@ fn app() -> impl App {
             let orders =
                 RabbitQueue::new("orders").bind(RabbitExchange::topic("events"), "order.*");
             b.include(subscriber(orders, Confirm).reply().build())
-                .out_reply(TransactionalPublish::default());
+                .out_reply(TransactionalPublish::default())
         },
     )
 }

@@ -42,12 +42,12 @@ fn app() -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672"),
         |b| {
-            b.include(place);
             // The task keeps its publisher past the service's shutdown.
             b.after_startup(Publish::default(), async move |publisher| {
                 tokio::spawn(heartbeat(publisher));
                 Ok::<_, Infallible>(())
-            });
+            })
+            .include(place)
         },
     )
 }
@@ -97,7 +97,13 @@ mod tests {
             .publish()
             .await;
         assert!(
-            matches!(late, Err(PublishError::Publish(AmqpError::Closed { .. }))),
+            matches!(
+                late,
+                Err(PublishError::Publish {
+                    source: AmqpError::Closed { .. },
+                    ..
+                })
+            ),
             "{late:?}"
         );
         Ok(())
