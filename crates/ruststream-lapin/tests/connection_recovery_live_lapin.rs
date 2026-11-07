@@ -501,3 +501,83 @@ async fn classic_and_quorum_consumers_keep_their_prefetch_after_recovery() {
         .await
         .expect("operator close");
 }
+
+// A recovered channel numbers its deliveries from one again, so a delivery taken before the outage
+// shares its tag with the message the server hands back after it. Settling the old delivery must
+// fail and leave the message to the new one, which here returns it to the queue to see it come
+// round once more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_from_before_a_recovery_settles_nothing_after_it() {
+    let Some(url) = live::url("AMQP_TEST_URL") else {
+        return;
+    };
+    let proxy = proxy::Proxy::new(&url).await;
+    let broker = LapinBroker::new(&proxy.url)
+        .auto_recover(true)
+        .declare_topology(true)
+        .connect()
+        .await
+        .expect("connect");
+    let queue = unique();
+    // Not exclusive: an exclusive queue goes with the connection that declared it, and the
+    // message has to outlive the connection it was first delivered on.
+    let mut subscriber = broker
+        .subscribe(RabbitQueue::new(&queue))
+        .await
+        .expect("subscribe");
+    let operator = Connection::connect(&url, ConnectionProperties::default())
+        .await
+        .expect("operator");
+    let channel = operator.create_channel().await.expect("operator channel");
+    channel
+        .basic_publish(
+            "".into(),
+            queue.as_str().into(),
+            BasicPublishOptions::default(),
+            b"held",
+            BasicProperties::default(),
+        )
+        .await
+        .expect("publish");
+    let held = message(&mut subscriber).await;
+
+    proxy.offline();
+    proxy.wait_for(|| !broker.is_connected()).await;
+    proxy.online();
+    proxy.wait_for(|| broker.is_connected()).await;
+
+    let returned = message(&mut subscriber).await;
+    assert_eq!(returned.payload(), b"held");
+    assert!(returned.redelivered());
+    assert_eq!(
+        returned.delivery_tag(),
+        held.delivery_tag(),
+        "the recovered channel hands the message back under the old delivery's tag"
+    );
+    assert!(
+        held.ack().await.is_err(),
+        "a settlement of a delivery from before the recovery must fail"
+    );
+    returned
+        .nack(true)
+        .await
+        .expect("the new delivery still holds the message");
+    let again = message(&mut subscriber).await;
+    assert_eq!(
+        again.payload(),
+        b"held",
+        "the old delivery's settlement must not have settled the message"
+    );
+    again.ack().await.expect("ack");
+
+    drop(subscriber);
+    broker.shutdown().await.expect("shutdown");
+    channel
+        .queue_delete(queue.as_str().into(), QueueDeleteOptions::default())
+        .await
+        .expect("cleanup");
+    operator
+        .close(200, "OK".into())
+        .await
+        .expect("operator close");
+}
