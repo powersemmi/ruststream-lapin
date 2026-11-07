@@ -17,14 +17,16 @@ use crate::delay::DelayContext;
 use crate::error::AmqpError;
 #[cfg(feature = "testing")]
 use crate::in_process::BusDeliveries;
-use crate::message::LapinMessage;
+use crate::message::{DeliveryChannel, LapinMessage};
 use crate::recovery::RecoveringConsumer;
 
 /// A consumer on one queue, yielding [`LapinMessage`] deliveries.
 ///
 /// Created by subscribing a [`RabbitQueue`](crate::RabbitQueue) descriptor (or a bare queue name)
-/// through [`LapinBroker`](crate::LapinBroker). The subscriber owns a dedicated channel;
-/// dropping it closes that channel and the broker redelivers whatever was unacknowledged.
+/// through [`LapinBroker`](crate::LapinBroker). The subscriber owns a dedicated channel, and the
+/// deliveries it yields settle on that channel. Dropping the subscriber cancels its consumer; the
+/// channel closes once those deliveries are settled or dropped, and the broker then redelivers
+/// whatever was left unacknowledged.
 ///
 /// Back-pressure: the broker stops pushing once
 /// [`prefetch`](crate::LapinBroker::prefetch) unacknowledged deliveries are in flight, so
@@ -58,8 +60,7 @@ impl LapinSubscriber {
             Either::Left(consumer)
         };
         let deliveries = Deliveries::Amqp(AmqpDeliveries {
-            connection,
-            _channel: channel,
+            channel: DeliveryChannel::new(connection, channel),
             consumer,
             delay,
             #[cfg(feature = "testing")]
@@ -179,11 +180,9 @@ impl Subscriber for Deliveries {
 
 /// The wire consumer, one `basic.deliver` at a time.
 struct AmqpDeliveries {
-    // Threaded into every delivery, so a settlement after shutdown is refused instead of waiting
-    // on an answer lapin never gives.
-    connection: Arc<AmqpConnection>,
-    // Keep the subscription's channel alive with either kind of consumer.
-    _channel: Channel,
+    // The subscription's channel and its connection, threaded into every delivery, which settles
+    // with a frame on that channel.
+    channel: Arc<DeliveryChannel>,
     consumer: Either<Consumer, RecoveringConsumer>,
     // Present only when the descriptor opted into a native delay queue; threaded into every
     // delivery so `nack_after` can re-publish to the waiting queue.
@@ -199,7 +198,7 @@ impl AmqpDeliveries {
         let delay = self.delay.clone();
         #[cfg(feature = "testing")]
         let queue = self.queue.as_str();
-        let connection = &self.connection;
+        let channel = &self.channel;
         unfold(
             (&mut self.consumer, delay),
             async move |(consumer, delay)| {
@@ -213,14 +212,14 @@ impl AmqpDeliveries {
                 let mapped = match item {
                     Ok(delivery) => Ok({
                         #[cfg(feature = "testing")]
-                        connection.routes().delivered(
+                        channel.connection().routes().delivered(
                             delivery.exchange.as_str(),
                             delivery.routing_key.as_str(),
                             queue,
                         );
                         LapinMessage::from_delivery(
                             delivery,
-                            Some(Arc::clone(connection)),
+                            Some(Arc::clone(channel)),
                             delay.clone(),
                         )
                     }),

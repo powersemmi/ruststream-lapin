@@ -7,7 +7,7 @@ use bytes::Bytes;
 use lapin::message::Delivery;
 use lapin::options::{BasicAckOptions, BasicRejectOptions};
 use lapin::types::ShortString;
-use lapin::{Acker, BasicProperties};
+use lapin::{Acker, BasicProperties, Channel};
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Settle};
 
 use crate::broker::AmqpConnection;
@@ -59,9 +59,9 @@ pub struct LapinMessage {
     redelivered: bool,
     delivery_tag: u64,
     returns: Option<u64>,
-    acker: Option<Acker>,
-    /// The connection the delivery arrived on, read when it settles; `None` where the acker is.
-    connection: Option<Arc<AmqpConnection>>,
+    /// What a delivery of a live consumer settles with; `None` for a no-ack delivery, which has
+    /// nothing to settle.
+    live: Option<Live>,
     delay: Option<DelayContext>,
     /// How a delivery of the in-process transport settles, in place of the acker a live one
     /// carries. The field is there only with the `testing` feature.
@@ -72,10 +72,14 @@ pub struct LapinMessage {
 impl LapinMessage {
     pub(crate) fn from_delivery(
         delivery: Delivery,
-        connection: Option<Arc<AmqpConnection>>,
+        channel: Option<Arc<DeliveryChannel>>,
         delay: Option<DelayContext>,
     ) -> Self {
         let headers = convert::headers_from_properties(&delivery.properties);
+        let live = channel.map(|channel| Live {
+            acker: delivery.acker,
+            channel,
+        });
         Self {
             payload: Bytes::from(delivery.data),
             headers,
@@ -84,8 +88,7 @@ impl LapinMessage {
             redelivered: delivery.redelivered,
             delivery_tag: delivery.delivery_tag,
             returns: returns_of(&delivery.properties),
-            acker: Some(delivery.acker),
-            connection,
+            live,
             delay,
             #[cfg(feature = "testing")]
             in_process: None,
@@ -103,8 +106,7 @@ impl LapinMessage {
             redelivered: delivery.redelivered,
             delivery_tag,
             returns: delivery.returns,
-            acker: None,
-            connection: None,
+            live: None,
             delay: None,
             in_process: Some(Box::new(settle)),
         }
@@ -125,9 +127,7 @@ impl LapinMessage {
 
     /// Builds a settled-by-construction message for no-ack deliveries (request replies).
     pub(crate) fn from_delivery_no_ack(delivery: Delivery) -> Self {
-        let mut msg = Self::from_delivery(delivery, None, None);
-        msg.acker = None;
-        msg
+        Self::from_delivery(delivery, None, None)
     }
 
     /// The exchange this message was published to (empty for the default exchange).
@@ -155,42 +155,120 @@ impl LapinMessage {
     }
 
     /// Refuses a settlement of a delivery held across the broker's shutdown.
-    ///
-    /// A lapin defect, worked around here: once its channel has closed, lapin drops a
-    /// settlement's command without answering it, and the acker never reports the channel
-    /// poisoned, so the frame's future never completes. The refusal comes before the frame is
-    /// handed to lapin.
-    fn refuse_after_shutdown(&self, what: &str) -> Result<(), AckError> {
-        if self
-            .connection
+    fn refuse_after_shutdown(&self, frame: Frame) -> Result<(), AckError> {
+        self.live
             .as_ref()
-            .is_some_and(|connection| connection.is_closed())
-        {
+            .map_or(Ok(()), |live| live.refuse_after_shutdown(frame))
+    }
+
+    async fn settle(mut self, frame: Frame) -> Result<(), AckError> {
+        // No live settlement means a no-ack consumer delivered this message; nothing to settle.
+        let Some(live) = self.live.take() else {
+            return Ok(());
+        };
+        live.settle(self.delivery_tag, frame).await
+    }
+}
+
+/// The channel a subscription's deliveries arrive on, shared by every delivery it yields.
+///
+/// A delivery settles with a frame on this channel, so the channel stays open until the last
+/// delivery it carried is settled or dropped.
+#[derive(Debug)]
+pub(crate) struct DeliveryChannel {
+    /// The connection the channel belongs to, read for whether the broker has shut down.
+    connection: Arc<AmqpConnection>,
+    channel: Channel,
+}
+
+impl DeliveryChannel {
+    pub(crate) fn new(connection: Arc<AmqpConnection>, channel: Channel) -> Arc<Self> {
+        Arc::new(Self {
+            connection,
+            channel,
+        })
+    }
+
+    /// The connection the channel belongs to.
+    #[cfg(feature = "testing")]
+    pub(crate) fn connection(&self) -> &AmqpConnection {
+        &self.connection
+    }
+}
+
+/// What a delivery of a live consumer settles with.
+#[derive(Debug)]
+struct Live {
+    /// Lapin's handle for the delivery, read for one thing: whether the channel the delivery
+    /// arrived on has ended since.
+    acker: Acker,
+    channel: Arc<DeliveryChannel>,
+}
+
+impl Live {
+    /// Refuses a settlement of a delivery held across the broker's shutdown.
+    ///
+    /// Why this stays a runtime check: a delivery aliases the connection and may outlive it, and
+    /// its settlement after the shutdown has to fail rather than reach a connection lapin may
+    /// still be closing or reconnecting.
+    fn refuse_after_shutdown(&self, frame: Frame) -> Result<(), AckError> {
+        if self.channel.connection.is_closed() {
             return Err(AckError::Broker(
-                format!("{what} was not sent: the broker has shut down").into(),
+                format!("{} was not sent: the broker has shut down", frame.method()).into(),
             ));
         }
         Ok(())
     }
 
-    async fn settle<F, Fut>(mut self, op: F, what: &'static str) -> Result<(), AckError>
-    where
-        F: FnOnce(Acker) -> Fut,
-        Fut: Future<Output = lapin::Result<bool>>,
-    {
-        // No acker means a no-ack consumer delivered this message; nothing to settle.
-        let Some(acker) = self.acker.take() else {
-            return Ok(());
-        };
-        self.refuse_after_shutdown(what)?;
-        match op(acker).await {
-            Ok(true) => Ok(()),
-            // lapin reports `false` when the settle frame could not be sent because the channel
-            // already closed or errored; surface that instead of pretending the broker saw it.
-            Ok(false) => Err(AckError::Broker(
-                format!("{what} was not sent: the delivery channel is closed or errored").into(),
-            )),
-            Err(err) => Err(AckError::Broker(Box::new(err))),
+    /// Sends the settlement's frame on the channel the delivery arrived on.
+    ///
+    /// The frame goes out on the channel itself rather than through the acker, which hands every
+    /// settlement to a task of lapin's own at the cost of several allocations. What the acker
+    /// guards stays guarded: lapin poisons the ackers of a channel's deliveries once the channel
+    /// starts recovering, closes or fails, and a recovered channel numbers its deliveries from one
+    /// again, so the tag of a delivery from before the recovery may name another delivery. The
+    /// check and the frame happen in one poll, as in lapin's own settlement.
+    async fn settle(self, delivery_tag: u64, frame: Frame) -> Result<(), AckError> {
+        self.refuse_after_shutdown(frame)?;
+        if self.acker.poisoned() {
+            return Err(AckError::Broker(
+                format!(
+                    "{} was not sent: the delivery channel is closed or errored",
+                    frame.method()
+                )
+                .into(),
+            ));
+        }
+        let channel = &self.channel.channel;
+        match frame {
+            Frame::Ack => {
+                channel
+                    .basic_ack(delivery_tag, BasicAckOptions::default())
+                    .await
+            }
+            Frame::Reject { requeue } => {
+                channel
+                    .basic_reject(delivery_tag, BasicRejectOptions { requeue })
+                    .await
+            }
+        }
+        .map_err(|err| AckError::Broker(Box::new(err)))
+    }
+}
+
+/// The frame a delivery settles with.
+#[derive(Debug, Clone, Copy)]
+enum Frame {
+    Ack,
+    Reject { requeue: bool },
+}
+
+impl Frame {
+    /// The AMQP method the frame carries, for the error that reports it unsent.
+    const fn method(self) -> &'static str {
+        match self {
+            Self::Ack => "basic.ack",
+            Self::Reject { .. } => "basic.reject",
         }
     }
 }
@@ -248,11 +326,7 @@ impl Settle for LapinMessage {
         if let Some(settle) = self.in_process.take() {
             return settle.ack();
         }
-        self.settle(
-            async move |acker| acker.ack(BasicAckOptions::default()).await,
-            "basic.ack",
-        )
-        .await
+        self.settle(Frame::Ack).await
     }
 
     /// Settles negatively with `basic.reject`: back to the queue under `requeue = true`, away
@@ -282,11 +356,7 @@ impl Settle for LapinMessage {
         if let Some(settle) = self.in_process.take() {
             return settle.reject(self.into_bus_delivery(), requeue);
         }
-        self.settle(
-            async move |acker| acker.reject(BasicRejectOptions { requeue }).await,
-            "basic.reject",
-        )
-        .await
+        self.settle(Frame::Reject { requeue }).await
     }
 
     /// Whether this delivery can honor a native delayed redelivery.
@@ -329,17 +399,13 @@ impl Settle for LapinMessage {
             return Err(AckError::Unsupported);
         };
         // Before the copy, so a refused settlement leaves no copy behind either.
-        self.refuse_after_shutdown("basic.ack")?;
+        self.refuse_after_shutdown(Frame::Ack)?;
         context
             .republish(&self.payload, &self.headers, delay)
             .await
             .map_err(|err| AckError::Broker(Box::new(err)))?;
 
-        self.settle(
-            async move |acker| acker.ack(BasicAckOptions::default()).await,
-            "basic.ack",
-        )
-        .await
+        self.settle(Frame::Ack).await
     }
 }
 

@@ -39,9 +39,9 @@ fn app(messages: usize) -> Pending {
     common::pending(messages, |b| b.include(confirm))
 }
 
-// The longest run allocated 54192 to 54193 blocks over five runs; the floor adds a tenth of a
+// The longest run allocated 40191 to 40206 blocks over five runs; the floor adds a tenth of a
 // percent.
-#[library_benchmark(config = common::config(27, 248))]
+#[library_benchmark(config = common::config(20, 247))]
 #[bench::first(app(1))]
 #[bench::base(app(MESSAGES))]
 #[bench::twice(app(2 * MESSAGES))]
