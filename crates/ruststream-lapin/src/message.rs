@@ -63,7 +63,6 @@ pub struct LapinMessage {
     /// What a delivery of a live consumer settles with; `None` for a no-ack delivery, which has
     /// nothing to settle.
     live: Option<Live>,
-    delay: Option<DelayContext>,
     /// How a delivery of the in-process transport settles, in place of the acker a live one
     /// carries. The field is there only with the `testing` feature.
     #[cfg(feature = "testing")]
@@ -71,11 +70,7 @@ pub struct LapinMessage {
 }
 
 impl LapinMessage {
-    pub(crate) fn from_delivery(
-        delivery: Delivery,
-        channel: Option<Arc<DeliveryChannel>>,
-        delay: Option<DelayContext>,
-    ) -> Self {
+    pub(crate) fn from_delivery(delivery: Delivery, channel: Option<Arc<DeliveryChannel>>) -> Self {
         let headers = convert::headers_from_properties(&delivery.properties);
         let live = channel.map(|channel| Live {
             acker: delivery.acker,
@@ -90,7 +85,6 @@ impl LapinMessage {
             delivery_tag: delivery.delivery_tag,
             returns: returns_of(&delivery.properties),
             live,
-            delay,
             #[cfg(feature = "testing")]
             in_process: None,
         }
@@ -108,7 +102,6 @@ impl LapinMessage {
             delivery_tag,
             returns: delivery.returns,
             live: None,
-            delay: None,
             in_process: Some(Box::new(settle)),
         }
     }
@@ -128,7 +121,7 @@ impl LapinMessage {
 
     /// Builds a settled-by-construction message for no-ack deliveries (request replies).
     pub(crate) fn from_delivery_no_ack(delivery: Delivery) -> Self {
-        Self::from_delivery(delivery, None, None)
+        Self::from_delivery(delivery, None)
     }
 
     /// The exchange this message was published to (empty for the default exchange).
@@ -179,6 +172,9 @@ pub(crate) struct DeliveryChannel {
     /// The connection the channel belongs to, read for whether the broker has shut down.
     connection: Arc<AmqpConnection>,
     channel: Channel,
+    /// The native delay a `nack_after` re-publishes through; `None` when the descriptor set no
+    /// delay.
+    delay: Option<DelayContext>,
 }
 
 // A message's debug output names the channel by its id: lapin's own output for a channel lists
@@ -188,15 +184,21 @@ impl fmt::Debug for DeliveryChannel {
         f.debug_struct("DeliveryChannel")
             .field("channel", &self.channel.id())
             .field("connection", &self.connection)
+            .field("delays", &self.delay.is_some())
             .finish()
     }
 }
 
 impl DeliveryChannel {
-    pub(crate) fn new(connection: Arc<AmqpConnection>, channel: Channel) -> Arc<Self> {
+    pub(crate) fn new(
+        connection: Arc<AmqpConnection>,
+        channel: Channel,
+        delay: Option<DelayContext>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             connection,
             channel,
+            delay,
         })
     }
 
@@ -379,7 +381,9 @@ impl Settle for LapinMessage {
         if let Some(settle) = &self.in_process {
             return settle.delays();
         }
-        self.delay.is_some()
+        self.live
+            .as_ref()
+            .is_some_and(|live| live.channel.delay.is_some())
     }
 
     /// Redelivers this message no sooner than `delay`, natively: re-publish it to the delay
@@ -401,12 +405,20 @@ impl Settle for LapinMessage {
     ///
     /// Not cancel safe: dropping the future may leave the delayed copy published, the original
     /// acked, or both.
-    async fn nack_after(mut self, delay: Duration) -> Result<(), AckError> {
+    async fn nack_after(
+        // The binding is mutated only to take the in-process settlement out.
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut))] mut self,
+        delay: Duration,
+    ) -> Result<(), AckError> {
         #[cfg(feature = "testing")]
         if let Some(settle) = self.in_process.take() {
             return settle.nack_after(self.into_bus_delivery(), delay);
         }
-        let Some(context) = self.delay.take() else {
+        let Some(context) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.channel.delay.as_ref())
+        else {
             return Err(AckError::Unsupported);
         };
         // Before the copy, so a refused settlement leaves no copy behind either.

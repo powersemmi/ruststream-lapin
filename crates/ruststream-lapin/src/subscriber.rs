@@ -60,9 +60,8 @@ impl LapinSubscriber {
             Either::Left(consumer)
         };
         let deliveries = Deliveries::Amqp(AmqpDeliveries {
-            channel: DeliveryChannel::new(connection, channel),
+            channel: DeliveryChannel::new(connection, channel, delay),
             consumer,
-            delay,
             #[cfg(feature = "testing")]
             queue: queue.clone(),
         });
@@ -180,13 +179,10 @@ impl Subscriber for Deliveries {
 
 /// The wire consumer, one `basic.deliver` at a time.
 struct AmqpDeliveries {
-    // The subscription's channel and its connection, threaded into every delivery, which settles
-    // with a frame on that channel.
+    // The subscription's channel, its connection and its delay, threaded into every delivery,
+    // which settles with a frame on that channel.
     channel: Arc<DeliveryChannel>,
     consumer: Either<Consumer, RecoveringConsumer>,
-    // Present only when the descriptor opted into a native delay queue; threaded into every
-    // delivery so `nack_after` can re-publish to the waiting queue.
-    delay: Option<DelayContext>,
     // The queue a delivery came off, which the test harness reads to learn where a server-picked
     // route went.
     #[cfg(feature = "testing")]
@@ -195,38 +191,30 @@ struct AmqpDeliveries {
 
 impl AmqpDeliveries {
     fn stream(&mut self) -> impl Stream<Item = Result<LapinMessage, AmqpError>> + Send + '_ {
-        let delay = self.delay.clone();
         #[cfg(feature = "testing")]
         let queue = self.queue.as_str();
         let channel = &self.channel;
-        unfold(
-            (&mut self.consumer, delay),
-            async move |(consumer, delay)| {
-                let item = match consumer {
-                    Either::Left(consumer) => consumer
-                        .next()
-                        .await
-                        .map(|item| item.map_err(AmqpError::consume)),
-                    Either::Right(consumer) => consumer.next().await,
-                }?;
-                let mapped = match item {
-                    Ok(delivery) => Ok({
-                        #[cfg(feature = "testing")]
-                        channel.connection().routes().delivered(
-                            delivery.exchange.as_str(),
-                            delivery.routing_key.as_str(),
-                            queue,
-                        );
-                        LapinMessage::from_delivery(
-                            delivery,
-                            Some(Arc::clone(channel)),
-                            delay.clone(),
-                        )
-                    }),
-                    Err(err) => Err(err),
-                };
-                Some((mapped, (consumer, delay)))
-            },
-        )
+        unfold(&mut self.consumer, async move |consumer| {
+            let item = match consumer {
+                Either::Left(consumer) => consumer
+                    .next()
+                    .await
+                    .map(|item| item.map_err(AmqpError::consume)),
+                Either::Right(consumer) => consumer.next().await,
+            }?;
+            let mapped = match item {
+                Ok(delivery) => Ok({
+                    #[cfg(feature = "testing")]
+                    channel.connection().routes().delivered(
+                        delivery.exchange.as_str(),
+                        delivery.routing_key.as_str(),
+                        queue,
+                    );
+                    LapinMessage::from_delivery(delivery, Some(Arc::clone(channel)))
+                }),
+                Err(err) => Err(err),
+            };
+            Some((mapped, consumer))
+        })
     }
 }
