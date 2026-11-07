@@ -1,5 +1,6 @@
 //! The delivery type yielded by [`LapinSubscriber`](crate::LapinSubscriber).
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -174,11 +175,21 @@ impl LapinMessage {
 ///
 /// A delivery settles with a frame on this channel, so the channel stays open until the last
 /// delivery it carried is settled or dropped.
-#[derive(Debug)]
 pub(crate) struct DeliveryChannel {
     /// The connection the channel belongs to, read for whether the broker has shut down.
     connection: Arc<AmqpConnection>,
     channel: Channel,
+}
+
+// A message's debug output names the channel by its id: lapin's own output for a channel lists
+// its consumers and pending frames.
+impl fmt::Debug for DeliveryChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeliveryChannel")
+            .field("channel", &self.channel.id())
+            .field("connection", &self.connection)
+            .finish()
+    }
 }
 
 impl DeliveryChannel {
