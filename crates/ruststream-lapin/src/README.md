@@ -32,7 +32,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672").prefetch(nonzero!(64)),
         |b| {
-            b.include(handle);
+            b.include(handle)
         },
     )
 }

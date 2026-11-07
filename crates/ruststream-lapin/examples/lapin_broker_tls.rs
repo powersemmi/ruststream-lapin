@@ -24,9 +24,7 @@ fn broker() -> LapinBroker {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(place);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| b.include(place))
 }
 // --8<-- [end:broker]
 

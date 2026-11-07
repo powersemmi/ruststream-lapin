@@ -79,11 +79,11 @@
       "name": "classic queue, JSON decode into a small struct, ack each",
       "messages": 1000,
       "framework": {
-        "instructions": 14617.0,
-        "allocations": 16.0
+        "instructions": 7785.8,
+        "allocations": 9.0
       },
       "cold": {
-        "instructions": 370049,
+        "instructions": 370840,
         "allocations": 217
       },
       "gated": true
@@ -92,12 +92,12 @@
       "name": "classic queue, reply published through LapinPublish",
       "messages": 1000,
       "framework": {
-        "instructions": 22145.8,
-        "allocations": 27.0
+        "instructions": 15148.1,
+        "allocations": 20.0
       },
       "cold": {
-        "instructions": 367859,
-        "allocations": 219
+        "instructions": 375665,
+        "allocations": 226
       },
       "gated": true
     },
@@ -105,19 +105,19 @@
       "name": "classic queue, batches of 64 assembled on the client",
       "messages": 1000,
       "framework": {
-        "instructions": 14994.4,
-        "allocations": 16.3
+        "instructions": 7874.6,
+        "allocations": 9.1
       },
       "cold": {
-        "instructions": 377775,
-        "allocations": 223
+        "instructions": 377612,
+        "allocations": 224
       },
       "gated": true
     }
   ],
   "code_measured": {
-    "crate_version": "0.7.0",
-    "core_version": "0.7.0",
-    "measured_at": "2026-10-18"
+    "crate_version": "0.8.0-rc.1",
+    "core_version": "0.8.0-rc.1",
+    "measured_at": "2026-11-07"
   }
 }

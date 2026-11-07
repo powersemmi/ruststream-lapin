@@ -38,10 +38,8 @@ async fn refresh(price: &Price) -> HandlerOutcome {
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(place);
-        b.include(refresh);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(place).include(refresh))
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]

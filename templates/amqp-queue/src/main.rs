@@ -21,8 +21,6 @@ use ruststream_lapin::prelude::*;
 fn app() -> impl App {
     RustStream::new(AppInfo::new("{{project-name}}", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672").prefetch(nonzero!(32)),
-        |b| {
-            b.include_router(routes::orders());
-        },
+        |b| b.include_router(routes::orders()),
     )
 }

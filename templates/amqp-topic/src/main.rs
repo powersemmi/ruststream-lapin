@@ -23,8 +23,6 @@ fn app() -> impl App {
         LapinBroker::new("amqp://localhost:5672")
             .declare_topology(true)
             .prefetch(nonzero!(32)),
-        |b| {
-            b.include_router(routes::events());
-        },
+        |b| b.include_router(routes::events()),
     )
 }

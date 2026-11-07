@@ -59,7 +59,7 @@ use crate::error::AmqpError;
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(fulfil);
+///         b.include(fulfil)
 ///     })
 /// }
 /// ```
@@ -244,9 +244,8 @@ struct MissingDelayTarget {
     source: lapin::Error,
 }
 
-/// The resolved delay wiring a subscriber threads into each delivery, so a message can honor a
-/// native `nack_after`. Cheap to clone (the channel is a handle).
-#[derive(Clone)]
+/// The resolved delay wiring of a subscription, which its deliveries share to honor a native
+/// `nack_after`.
 pub(crate) struct DelayContext {
     channel: Channel,
     target: DelayTarget,

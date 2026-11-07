@@ -44,9 +44,7 @@ impl Handle<Order> for TakeOrder {
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672").declare_topology(true),
-        |b| {
-            b.include(subscriber("orders", TakeOrder).build());
-        },
+        |b| b.include(subscriber("orders", TakeOrder).build()),
     )
 }
 

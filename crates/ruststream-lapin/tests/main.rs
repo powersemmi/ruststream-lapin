@@ -5,6 +5,7 @@ mod live;
 mod proxy;
 
 mod asyncapi_lapin;
+mod batches;
 mod channel_recovery_live_lapin;
 mod conformance_lapin;
 mod connection_recovery_live_lapin;

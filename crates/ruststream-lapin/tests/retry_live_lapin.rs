@@ -23,7 +23,8 @@ use lapin::types::ShortString;
 use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, Consumer, Error};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::{
-    ConnectedBroker, OutgoingMessage, RetryDeclaration, Subscriber, SubscriptionSource, nonzero,
+    ConnectedBroker, OutgoingMessage, RetryDeclaration, Settle, Subscriber, SubscriptionSource,
+    nonzero,
 };
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{AmqpError, ConnectedLapinBroker, LapinMessage};

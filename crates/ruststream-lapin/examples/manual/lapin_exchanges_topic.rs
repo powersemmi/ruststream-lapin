@@ -91,13 +91,12 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         let events = RabbitExchange::topic("events");
+        let audit = RabbitQueue::new("audit").bind(events.clone(), "order.*");
+        let shipping = RabbitQueue::new("shipping").bind(events, "order.shipped");
         b.include(subscriber("order-steps", Announce).build())
             .out(Events, Publish::default().exchange("events"))
-            .build();
-        let audit = RabbitQueue::new("audit").bind(events.clone(), "order.*");
-        b.include(subscriber(audit, Audit).build());
-        let shipping = RabbitQueue::new("shipping").bind(events, "order.shipped");
-        b.include(subscriber(shipping, NotifyShipping).build());
+            .include(subscriber(audit, Audit).build())
+            .include(subscriber(shipping, NotifyShipping).build())
     })
 }
 // --8<-- [end:topic]

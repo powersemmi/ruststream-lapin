@@ -10,21 +10,23 @@ use futures::future::Either;
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use lapin::{Channel, Consumer};
-use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
+use ruststream::{BatchStream, BatchSubscriber, BufferedSubscriber, Subscriber};
 
 use crate::broker::AmqpConnection;
 use crate::delay::DelayContext;
 use crate::error::AmqpError;
 #[cfg(feature = "testing")]
 use crate::in_process::BusDeliveries;
-use crate::message::LapinMessage;
+use crate::message::{DeliveryChannel, LapinMessage};
 use crate::recovery::RecoveringConsumer;
 
 /// A consumer on one queue, yielding [`LapinMessage`] deliveries.
 ///
 /// Created by subscribing a [`RabbitQueue`](crate::RabbitQueue) descriptor (or a bare queue name)
-/// through [`LapinBroker`](crate::LapinBroker). The subscriber owns a dedicated channel;
-/// dropping it closes that channel and the broker redelivers whatever was unacknowledged.
+/// through [`LapinBroker`](crate::LapinBroker). The subscriber owns a dedicated channel, and the
+/// deliveries it yields settle on that channel. Dropping the subscriber cancels its consumer; the
+/// channel closes once those deliveries are settled or dropped, and the broker then redelivers
+/// whatever was left unacknowledged.
 ///
 /// Back-pressure: the broker stops pushing once
 /// [`prefetch`](crate::LapinBroker::prefetch) unacknowledged deliveries are in flight, so
@@ -58,10 +60,8 @@ impl LapinSubscriber {
             Either::Left(consumer)
         };
         let deliveries = Deliveries::Amqp(AmqpDeliveries {
-            connection,
-            _channel: channel,
+            channel: DeliveryChannel::new(connection, channel, delay),
             consumer,
-            delay,
             #[cfg(feature = "testing")]
             queue: queue.clone(),
         });
@@ -113,7 +113,7 @@ impl Subscriber for LapinSubscriber {
     /// Polling is cancel safe (no delivery is lost by dropping the stream between polls), and
     /// the stream can be re-created by calling `stream` again: deliveries buffer in the
     /// consumer, not in the returned stream.
-    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + '_ {
         self.deliveries.stream()
     }
 }
@@ -136,7 +136,7 @@ impl BatchSubscriber for LapinSubscriber {
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, <Self as Subscriber>::Error>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = <Self as Subscriber>::Error> + '_ {
         self.deliveries.batches(size)
     }
 }
@@ -165,7 +165,7 @@ impl Subscriber for Deliveries {
     type Message = LapinMessage;
     type Error = AmqpError;
 
-    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + '_ {
         match self {
             #[cfg(not(feature = "testing"))]
             Self::Amqp(consumer) => consumer.stream(),
@@ -179,15 +179,10 @@ impl Subscriber for Deliveries {
 
 /// The wire consumer, one `basic.deliver` at a time.
 struct AmqpDeliveries {
-    // Threaded into every delivery, so a settlement after shutdown is refused instead of waiting
-    // on an answer lapin never gives.
-    connection: Arc<AmqpConnection>,
-    // Keep the subscription's channel alive with either kind of consumer.
-    _channel: Channel,
+    // The subscription's channel, its connection and its delay, threaded into every delivery,
+    // which settles with a frame on that channel.
+    channel: Arc<DeliveryChannel>,
     consumer: Either<Consumer, RecoveringConsumer>,
-    // Present only when the descriptor opted into a native delay queue; threaded into every
-    // delivery so `nack_after` can re-publish to the waiting queue.
-    delay: Option<DelayContext>,
     // The queue a delivery came off, which the test harness reads to learn where a server-picked
     // route went.
     #[cfg(feature = "testing")]
@@ -196,38 +191,30 @@ struct AmqpDeliveries {
 
 impl AmqpDeliveries {
     fn stream(&mut self) -> impl Stream<Item = Result<LapinMessage, AmqpError>> + Send + '_ {
-        let delay = self.delay.clone();
         #[cfg(feature = "testing")]
         let queue = self.queue.as_str();
-        let connection = &self.connection;
-        unfold(
-            (&mut self.consumer, delay),
-            async move |(consumer, delay)| {
-                let item = match consumer {
-                    Either::Left(consumer) => consumer
-                        .next()
-                        .await
-                        .map(|item| item.map_err(AmqpError::consume)),
-                    Either::Right(consumer) => consumer.next().await,
-                }?;
-                let mapped = match item {
-                    Ok(delivery) => Ok({
-                        #[cfg(feature = "testing")]
-                        connection.routes().delivered(
-                            delivery.exchange.as_str(),
-                            delivery.routing_key.as_str(),
-                            queue,
-                        );
-                        LapinMessage::from_delivery(
-                            delivery,
-                            Some(Arc::clone(connection)),
-                            delay.clone(),
-                        )
-                    }),
-                    Err(err) => Err(err),
-                };
-                Some((mapped, (consumer, delay)))
-            },
-        )
+        let channel = &self.channel;
+        unfold(&mut self.consumer, async move |consumer| {
+            let item = match consumer {
+                Either::Left(consumer) => consumer
+                    .next()
+                    .await
+                    .map(|item| item.map_err(AmqpError::consume)),
+                Either::Right(consumer) => consumer.next().await,
+            }?;
+            let mapped = match item {
+                Ok(delivery) => Ok({
+                    #[cfg(feature = "testing")]
+                    channel.connection().routes().delivered(
+                        delivery.exchange.as_str(),
+                        delivery.routing_key.as_str(),
+                        queue,
+                    );
+                    LapinMessage::from_delivery(delivery, Some(Arc::clone(channel)))
+                }),
+                Err(err) => Err(err),
+            };
+            Some((mapped, consumer))
+        })
     }
 }

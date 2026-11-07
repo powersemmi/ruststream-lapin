@@ -40,7 +40,7 @@ callgrind and allocations under DHAT, in the steady state. Each scenario is a se
 `LapinBroker` against the same node. The count includes the framework's dispatch, the codec, this
 crate's code and the work `lapin` does on that thread. `lapin` reads and writes the socket on a
 thread of its own, which is not counted. Most of a row's allocations are the client's: every
-acknowledgement and every publish creates promises and an internal task on the service's thread.
+acknowledgement and every publish creates promises on the service's thread.
 `Cold start` is what connecting, opening the channels, declaring the queue, registering the
 consumer and taking the first delivery cost once.
 

@@ -239,7 +239,7 @@ pub trait LapinPublishPolicy: PublishPolicy<ConnectedLapinBroker> + Sealed {
 ///     let broker = LapinBroker::new("amqp://localhost:5672");
 ///     let events = LapinPublish::default().exchange("events").priority(3);
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(announce).out(DefaultSlot, events).build();
+///         b.include(announce).out(DefaultSlot, events)
 ///     })
 /// }
 /// ```
@@ -322,7 +322,7 @@ impl LapinPublishPolicy for LapinPublish {
 ///     let broker = LapinBroker::new("amqp://localhost:5672");
 ///     let shipments = LapinPublish::default().exchange("shipments").confirms();
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(ship).out(DefaultSlot, shipments).build();
+///         b.include(ship).out(DefaultSlot, shipments)
 ///     })
 /// }
 /// ```
@@ -421,7 +421,7 @@ impl LapinPublishPolicy for ConfirmsPublish {
 ///     let broker = LapinBroker::new("amqp://localhost:5672");
 ///     let ledger = LapinPublish::default().exchange("ledger").server_tx();
 ///     RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(broker, |b| {
-///         b.include(book).out(DefaultSlot, ledger).build();
+///         b.include(book).out(DefaultSlot, ledger)
 ///     })
 /// }
 /// ```

@@ -74,7 +74,6 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber(RabbitQueue::new("orders"), Ship).build())
                 .out(Shipments, Publish::default().priority(3))
-                .build();
         },
     )
 }

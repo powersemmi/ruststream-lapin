@@ -71,8 +71,7 @@ fn app() -> RustStream {
                     Receipts,
                     Publish::default().exchange("receipts").priority(3),
                 )
-                .build();
-            b.include(audit);
+                .include(audit)
         },
     )
 }

@@ -30,9 +30,7 @@ async fn take_order(order: &Order) -> HandlerOutcome {
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         LapinBroker::new("amqp://localhost:5672").declare_topology(true),
-        |b| {
-            b.include(take_order);
-        },
+        |b| b.include(take_order),
     )
 }
 // --8<-- [end:service]

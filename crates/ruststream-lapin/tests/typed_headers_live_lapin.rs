@@ -86,7 +86,7 @@ async fn typed_headers_from_a_foreign_producer_reach_the_handler() {
     let app = RustStream::new(AppInfo::new("foreign", "0.1.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(state))
         .with_broker(LapinBroker::new(url.clone()).declare_topology(true), |b| {
-            b.include(foreign);
+            b.include(foreign)
         });
     let tb = TestApp::start_live(app).await.expect("start");
 
@@ -201,9 +201,7 @@ async fn the_servers_dead_letter_record_reaches_the_handler() {
     let state = seen.clone();
     let app = RustStream::new(AppInfo::new("dead", "0.1.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(state))
-        .with_broker(LapinBroker::new(url.clone()), |b| {
-            b.include(dead);
-        });
+        .with_broker(LapinBroker::new(url.clone()), |b| b.include(dead));
     let tb = TestApp::start_live(app).await.expect("start");
     tb.broker::<LapinBroker>()
         .message(&Order { id: 2 })

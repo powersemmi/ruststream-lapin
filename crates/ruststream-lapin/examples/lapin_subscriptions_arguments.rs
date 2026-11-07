@@ -24,9 +24,8 @@ async fn notify(notification: &Notification) -> HandlerOutcome {
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-    RustStream::new(AppInfo::new("notifications", "0.1.0")).with_broker(broker, |b| {
-        b.include(notify);
-    })
+    RustStream::new(AppInfo::new("notifications", "0.1.0"))
+        .with_broker(broker, |b| b.include(notify))
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
@@ -74,11 +73,8 @@ mod tests {
     #[tokio::test]
     async fn a_second_declaration_with_other_arguments_fails_startup() {
         let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-        let app =
-            RustStream::new(AppInfo::new("notifications", "0.1.0")).with_broker(broker, |b| {
-                b.include(notify);
-                b.include(notify_sooner);
-            });
+        let app = RustStream::new(AppInfo::new("notifications", "0.1.0"))
+            .with_broker(broker, |b| b.include(notify).include(notify_sooner));
 
         let failed = TestApp::start(app).await.err();
         let mut cause: Option<&(dyn Error + 'static)> =

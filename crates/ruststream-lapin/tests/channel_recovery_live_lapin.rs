@@ -21,7 +21,8 @@ use lapin::options::{
 use lapin::types::FieldTable;
 use lapin::{Connection, ConnectionProperties, ExchangeKind};
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, RequestReply, Subscriber,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, RequestReply, Settle,
+    Subscriber,
 };
 use ruststream_lapin::{
     AmqpError, LapinBroker, LapinMessage, LapinPublish, LapinRequest, RabbitExchange, RabbitQueue,
@@ -239,7 +240,7 @@ async fn a_refused_confirm_does_not_end_the_publishers_channel() {
         .await
         .expect_err("a confirms publish must report an exchange that is no longer there");
     assert!(
-        matches!(refused, AmqpError::Publish(_)),
+        matches!(refused.error(), AmqpError::Publish(_)),
         "the refusal must name the publish, got {refused:?}"
     );
 

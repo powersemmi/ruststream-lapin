@@ -47,7 +47,7 @@ fn app() -> impl App {
         |b| {
             let orders = RabbitQueue::new("orders");
             b.include(subscriber(orders, Audit).reply().build())
-                .out_reply(Publish::default());
+                .out_reply(Publish::default())
         },
     )
 }

@@ -109,9 +109,9 @@ impl Handle<FxRate> for UpdateRate {
 // --8<-- [start:app]
 fn service(broker: LapinBroker) -> RustStream {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(payments_queue(), Charge).build());
-        b.include(subscriber(failed_queue(), RecordFailure).build());
-        b.include(subscriber(rates_queue(), UpdateRate).build());
+        b.include(subscriber(payments_queue(), Charge).build())
+            .include(subscriber(failed_queue(), RecordFailure).build())
+            .include(subscriber(rates_queue(), UpdateRate).build())
     })
 }
 

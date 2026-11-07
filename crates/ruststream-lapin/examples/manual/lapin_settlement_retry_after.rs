@@ -57,7 +57,7 @@ fn app() -> impl App {
                     IssueRefund,
                 )
                 .build(),
-            );
+            )
         },
     )
 }

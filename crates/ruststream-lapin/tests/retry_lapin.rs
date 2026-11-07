@@ -12,13 +12,16 @@
 #![cfg(feature = "testing")]
 
 use std::convert::Infallible;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::{InProcess, TestApp, TestError};
-use ruststream::{ConnectedBroker, FromRef, OutgoingMessage, Subscriber, SubscriptionSource};
+use ruststream::{
+    ConnectedBroker, FromRef, OutgoingMessage, Settle, Subscriber, SubscriptionSource,
+};
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{ConnectedLapinBroker, LapinMessage, LapinSubscriber};
 use serde::{Deserialize, Serialize};
@@ -87,8 +90,7 @@ async fn never_ready_on_a_waiting_queue(order: &Order) -> HandlerOutcome {
 async fn a_dropped_delivery_leaves_for_the_declared_dead_letter_queue() {
     let broker = LapinBroker::new(URI).declare_topology(true);
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(set_aside).dead_letter(DEAD);
-        b.include(bury);
+        b.include(set_aside).dead_letter(DEAD).include(bury)
     });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -122,7 +124,7 @@ async fn a_cap_on_a_classic_queue_refuses_to_start() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(never_ready_on_a_classic_queue)
             .max_attempts(nonzero!(ATTEMPTS))
-            .dead_letter(DEAD);
+            .dead_letter(DEAD)
     });
 
     let err = TestApp::start(app)
@@ -137,9 +139,9 @@ async fn a_cap_on_a_classic_queue_refuses_to_start() {
 // reach no route: the registration does not start, and the refusal names the descriptor to use.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_declaration_on_a_bare_queue_name_refuses_to_start() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(set_aside_by_name).dead_letter(DEAD);
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(LapinBroker::new(URI), |b| {
+            b.include(set_aside_by_name).dead_letter(DEAD)
         });
 
     let err = TestApp::start(app)
@@ -169,8 +171,10 @@ async fn set_aside_there(order: &Order) -> HandlerOutcome {
 async fn a_second_route_for_one_queue_refuses_to_start() {
     let broker = LapinBroker::new(URI).declare_topology(true);
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(set_aside_here).dead_letter(DEAD);
-        b.include(set_aside_there).dead_letter("orders.elsewhere");
+        b.include(set_aside_here)
+            .dead_letter(DEAD)
+            .include(set_aside_there)
+            .dead_letter("orders.elsewhere")
     });
 
     let err = TestApp::start(app)
@@ -186,9 +190,9 @@ async fn a_second_route_for_one_queue_refuses_to_start() {
 // service publishes nothing: the queue's publish log still holds the one message that started it.
 #[tokio::test(start_paused = true)]
 async fn a_waiting_queue_keeps_the_delayed_copy_off_the_service() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
-            b.include(never_ready_on_a_waiting_queue);
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(LapinBroker::new(URI), |b| {
+            b.include(never_ready_on_a_waiting_queue)
         });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -229,8 +233,8 @@ async fn a_quorum_queue_ends_the_loop_itself() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(never_ready_on_a_quorum_queue)
             .max_attempts(nonzero!(ATTEMPTS))
-            .dead_letter(DEAD);
-        b.include(bury);
+            .dead_letter(DEAD)
+            .include(bury)
     });
     let tb = TestApp::start(app).await.expect("start");
 
@@ -267,7 +271,7 @@ async fn a_quorum_declaration_on_a_broker_that_declares_nothing_refuses_to_start
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(never_ready_on_a_quorum_queue)
                 .max_attempts(nonzero!(ATTEMPTS))
-                .dead_letter(DEAD);
+                .dead_letter(DEAD)
         });
 
     match TestApp::start(app).await {
@@ -287,7 +291,7 @@ async fn half_a_declaration_refuses_to_start() {
     let app =
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(LapinBroker::new(URI), |b| {
             b.include(never_ready_on_a_quorum_queue)
-                .max_attempts(nonzero!(ATTEMPTS));
+                .max_attempts(nonzero!(ATTEMPTS))
         });
 
     let err = TestApp::start(app)
@@ -403,9 +407,7 @@ async fn every_copy_the_waiting_queue_releases_counts_one_more_attempt() {
             let seen = seen;
             async move { Ok::<_, Infallible>(seen) }
         })
-        .with_broker(LapinBroker::new(URI), |b| {
-            b.include(record_the_count);
-        });
+        .with_broker(LapinBroker::new(URI), |b| b.include(record_the_count));
     let tb = TestApp::start(app).await.expect("start");
 
     tb.broker::<LapinBroker>()
@@ -447,16 +449,14 @@ async fn defer_once(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
 /// The app `main` runs, on the broker it is handed: the production builder, unchanged in either
 /// mode.
 fn dual_app(broker: LapinBroker) -> RustStream {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        broker.declare_topology(true),
-        |b| {
-            b.include(defer_once);
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker.declare_topology(true), |b| b.include(defer_once))
 }
 
 /// The body both modes run: the first delivery asks to come back, the waiting queue holds the
 /// copy for the delay, and the copy is handled and acknowledged.
+// why: the harness future is not `Send` in 0.8, and the tests drive it on their own task.
+#[allow(clippy::future_not_send)]
 async fn a_delayed_redelivery_comes_back(tb: TestApp<()>) {
     tb.broker::<LapinBroker>()
         .message(&Order { id: 42 })
@@ -526,14 +526,11 @@ async fn a_live_test_refuses_two_consumers_of_one_queue() {
     let Some(url) = live::url("AMQP_TEST_URL") else {
         return;
     };
-    let run = tokio::spawn(async move {
-        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            LapinBroker::new(url).declare_topology(true),
-            |b| {
-                b.include(first_of_two);
-                b.include(second_of_two);
-            },
-        );
+    let run = AssertUnwindSafe(async move {
+        let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(LapinBroker::new(url).declare_topology(true), |b| {
+                b.include(first_of_two).include(second_of_two)
+            });
         let tb = TestApp::start_live(app)
             .await
             .expect("start against the stand");
@@ -544,9 +541,9 @@ async fn a_live_test_refuses_two_consumers_of_one_queue() {
             .await
     });
     let panic = run
+        .catch_unwind()
         .await
-        .expect_err("the harness cannot tell which consumer owes the message")
-        .into_panic();
+        .expect_err("the harness cannot tell which consumer owes the message");
     let message = panic.downcast_ref::<String>().map_or("", String::as_str);
     assert!(
         message.contains("\"orders.shared\" has 2 subscriptions"),

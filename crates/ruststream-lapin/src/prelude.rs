@@ -33,7 +33,7 @@
 //!     let broker = LapinBroker::new("amqp://localhost:5672");
 //!     let shipments = TransactionalPublish::default().exchange("shipments");
 //!     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-//!         b.include(ship).out(DefaultSlot, shipments).build();
+//!         b.include(ship).out(DefaultSlot, shipments)
 //!     })
 //! }
 //! ```

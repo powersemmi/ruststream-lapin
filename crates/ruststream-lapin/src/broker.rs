@@ -325,7 +325,7 @@ const _: () = assert!(
 ///         .prefetch(nonzero!(64))
 ///         .declare_topology(true);
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(handle);
+///         b.include(handle)
 ///     })
 /// }
 /// ```
@@ -460,9 +460,7 @@ impl Broker for LapinBroker {
 /// test can connect either.
 #[cfg(feature = "testing")]
 impl InProcess for LapinBroker {
-    fn connect_in_process(
-        self,
-    ) -> impl Future<Output = Result<Self::Connected, Self::Error>> + Send {
+    fn connect_in_process(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
         let connected = self
             .uri
             .parse::<AMQPUri>()

@@ -59,7 +59,6 @@ fn app() -> impl App {
         |b| {
             b.include(record)
                 .out(Readings, Publish::default().persistent(false))
-                .build();
         },
     )
 }

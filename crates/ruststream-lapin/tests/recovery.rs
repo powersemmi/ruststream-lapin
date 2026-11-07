@@ -4,7 +4,9 @@ use std::process::id;
 use std::time::Duration;
 
 use futures::StreamExt;
-use ruststream::{Broker, ConnectedBroker, OutgoingMessage, Publisher, Subscriber};
+use ruststream::{
+    Broker, ConnectedBroker, OutgoingMessage, PublishMessageError, Publisher, Subscriber,
+};
 use ruststream_lapin::{AmqpError, LapinBroker, LapinPublish, RabbitQueue};
 use tokio::net::TcpListener;
 use tokio::time::timeout as timeout_future;
@@ -119,7 +121,8 @@ async fn shutdown_closes_the_socket_when_it_recovers() {
     assert!(matches!(
         publisher
             .publish(OutgoingMessage::new("queue", b"closed"), None)
-            .await,
+            .await
+            .map_err(PublishMessageError::into_error),
         Err(AmqpError::Closed { .. })
     ));
 }

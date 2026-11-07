@@ -81,7 +81,6 @@ fn app() -> impl App {
                     Quotes,
                     Publish::default().expiration(Duration::from_mins(1)),
                 )
-                .build();
         },
     )
 }

@@ -5,7 +5,7 @@ export PATH := env("HOME") + "/.cargo/bin:" + env("HOME") + "/.local/bin:" + env
 
 # The scenarios `just bench-code` counts, one benchmark file each. Every one holds an allocation
 # floor, and a run against a baseline holds every one to the instruction limit as well.
-code_benches := "--bench consume --bench reply --bench batch"
+code_benches := "--bench consume --bench reply --bench batch --bench delay"
 
 default: check
 

@@ -38,9 +38,7 @@ async fn dispatch(shipment: &Shipment, ctx: &mut Context<'_>) -> HandlerOutcome 
 fn app() -> impl App {
     // The service declares its queues, `shipments.retry` included.
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-    RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(broker, |b| {
-        b.include(dispatch);
-    })
+    RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(broker, |b| b.include(dispatch))
 }
 // --8<-- [end:delay]
 

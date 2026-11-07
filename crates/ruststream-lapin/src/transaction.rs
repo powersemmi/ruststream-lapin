@@ -9,7 +9,7 @@
 use std::fmt;
 use std::future::ready;
 
-use ruststream::{OutgoingFor, OwnedTransactions, Take, Transaction};
+use ruststream::{OutgoingFor, OwnedTransactions, PublishOutcome, Take, Transaction};
 use tracing::warn;
 
 use crate::error::AmqpError;
@@ -31,33 +31,43 @@ use crate::publisher::{Buffered, ConfirmsPublisher};
 /// # Examples
 ///
 /// ```
-/// use std::error::Error;
-///
 /// use ruststream_lapin::prelude::*;
 /// use serde::{Deserialize, Serialize};
 ///
-/// #[derive(Deserialize, Serialize)]
+/// #[derive(Deserialize)]
 /// struct Order {
 ///     id: u64,
 /// }
 ///
-/// // Two transactions open side by side, each settled on its own.
-/// async fn record(
-///     publisher: &impl OwnedTransactions,
-///     order: &Order,
-/// ) -> Result<(), Box<dyn Error + Send + Sync>> {
-///     let mut shipment = publisher.owned_transaction().await?;
-///     let mut audit = publisher.owned_transaction().await?;
-///     shipment.publish("shipments", order).await?;
-///     audit.publish("audit", order).await?;
-///     shipment.commit().await?;
-///     audit.commit().await?;
-///     Ok(())
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "shipments")]
+/// struct Shipment {
+///     id: u64,
 /// }
 ///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "audit")]
+/// struct Audited {
+///     id: u64,
+/// }
+///
+/// #[derive(OutSlot)]
+/// #[publishes(Shipment, Audited)]
+/// struct Ledger;
+///
+/// // Two transactions open side by side, each settled on its own.
 /// #[subscriber("orders")]
-/// async fn ship(order: &Order, Out(publisher): Out<impl OwnedTransactions>) -> HandlerOutcome {
-///     if record(publisher, order).await.is_err() {
+/// async fn ship(order: &Order, Out(ledger): Out<impl OwnedTransactions, Ledger>) -> HandlerOutcome {
+///     let (Ok(mut shipment), Ok(mut audit)) = (ledger.transaction().await, ledger.transaction().await)
+///     else {
+///         return HandlerOutcome::retry();
+///     };
+///     let id = order.id;
+///     if shipment.message(&Shipment { id }).publish().await.is_err()
+///         || audit.message(&Audited { id }).publish().await.is_err()
+///         || shipment.commit().await.is_err()
+///         || audit.commit().await.is_err()
+///     {
 ///         return HandlerOutcome::retry();
 ///     }
 ///     HandlerOutcome::ack()
@@ -66,9 +76,7 @@ use crate::publisher::{Buffered, ConfirmsPublisher};
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672");
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(ship)
-///             .out(DefaultSlot, TransactionalPublish::default())
-///             .build();
+///         b.include(ship).out(Ledger, TransactionalPublish::default())
 ///     })
 /// }
 /// ```
@@ -119,11 +127,11 @@ impl Transaction for ConfirmsTransaction {
     ///
     /// Infallible in practice: buffering is local to this value, and a closed connection or a
     /// rejected frame surfaces at the commit, which is the visibility point.
-    fn publish(
+    fn publish<'msg>(
         &mut self,
-        msg: OutgoingFor<'_, Take>,
+        msg: OutgoingFor<'msg, Take>,
         options: Option<&Self::Options>,
-    ) -> impl Future<Output = Result<(), Self::Error>> {
+    ) -> impl Future<Output = PublishOutcome<'msg, Self::Error, Take>> {
         self.buffered.push(Buffered::taken(msg, options));
         ready(Ok(()))
     }

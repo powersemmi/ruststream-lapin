@@ -16,6 +16,7 @@
   ],
   "rules": [
     "Import `ruststream_lapin::prelude::*` in a routes file (it re-exports the framework's prelude); a handler body imports `ruststream::prelude::*` alone, the one exception being a body that adjusts an AMQP property for a single message.",
+    "Mount handlers through the chain the `with_broker` closure returns (`|b| b.include(a).include(c).out_reply(policy)`), with `after_startup` and `include_router` as steps before the `include`s; a publish-only scope is `|b| b`.",
     "Subscribe to a classic queue with the bare `#[subscriber(\"orders\")]` or `#[subscriber(RabbitQueue::new(\"orders\"))]`, and to a quorum queue with `RabbitQuorumQueue::new(..)`; a descriptor with settings is written in full in the attribute.",
     "Cap redeliveries with `.max_attempts(n).dead_letter(name)` after `include` on a `RabbitQuorumQueue`; a classic `RabbitQueue` takes `.dead_letter(name)` alone and refuses `max_attempts` at startup; a bare queue name takes neither; `out_retry` does not compile on either queue: the server moves the message.",
     "Write a per-message AMQP setting as a publish-builder step (`.priority(n)`, `.expiration(ttl)`, `.persistent(flag)`) on a slot bounded `Out<impl Publisher<Options = LapinPublishOptions>, Marker>`, never as a header; policy defaults go at the mount site.",

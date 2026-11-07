@@ -29,7 +29,7 @@ use lapin::ExchangeKind;
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(on_order);
+///         b.include(on_order)
 ///     })
 /// }
 /// ```
@@ -114,8 +114,8 @@ impl RabbitExchange {
     /// fn app() -> RustStream {
     ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(on_gold_in_eu);
-    ///         b.include(on_gold_or_eu);
+    ///         b.include(on_gold_in_eu)
+    ///             .include(on_gold_or_eu)
     ///     })
     /// }
     /// ```
@@ -164,7 +164,7 @@ impl RabbitExchange {
     /// fn app() -> RustStream {
     ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(on_order);
+    ///         b.include(on_order)
     ///     })
     /// }
     /// ```

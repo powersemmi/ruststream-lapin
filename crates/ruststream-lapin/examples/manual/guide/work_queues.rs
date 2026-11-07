@@ -92,8 +92,8 @@ fn app() -> impl App {
             subscriber(RabbitQueue::new("invoices"), RenderInvoice)
                 .workers_by_key(nonzero!(8usize))
                 .build(),
-        );
-        b.include(
+        )
+        .include(
             subscriber(
                 RabbitQueue::new("invoices.archive")
                     .prefetch(nonzero!(64))
@@ -102,15 +102,15 @@ fn app() -> impl App {
             )
             .batch(nonzero!(64usize))
             .build(),
-        );
-        b.include(
+        )
+        .include(
             subscriber(
                 RabbitQueue::new("invoices.ledger")
                     .argument("x-single-active-consumer", AMQPValue::Boolean(true)),
                 PostToLedger,
             )
             .build(),
-        );
+        )
     })
 }
 

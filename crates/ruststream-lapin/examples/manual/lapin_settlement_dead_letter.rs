@@ -65,8 +65,8 @@ fn app() -> impl App {
             .dead_letter_routing_key("invoices.rejected");
         let rejected = RabbitQueue::new("invoices.rejected")
             .bind(RabbitExchange::direct("invoices.dlx"), "invoices.rejected");
-        b.include(subscriber(invoices, Book).build());
-        b.include(subscriber(rejected, Review).build());
+        b.include(subscriber(invoices, Book).build())
+            .include(subscriber(rejected, Review).build())
     })
 }
 // --8<-- [end:dlx]

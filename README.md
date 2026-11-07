@@ -46,12 +46,12 @@ middleware come from the framework; this crate is the transport.
 
 ```toml
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json", "asyncapi", "logging"] }
-ruststream-lapin = "0.7"
+ruststream = { version = "0.8", features = ["macros", "json", "asyncapi", "logging"] }
+ruststream-lapin = "0.8"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-ruststream-lapin = { version = "0.7", features = ["testing"] }
+ruststream-lapin = { version = "0.8", features = ["testing"] }
 ```
 
 Optional features: `asyncapi`, TLS (`tls-rustls`, `tls-rustls-ring`, `tls-native-tls`), and the
@@ -86,9 +86,8 @@ async fn settle(order: &Order, Out(receipts): Out<impl Publisher>) -> HandlerOut
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").prefetch(nonzero!(64));
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(settle).out(DefaultSlot, Publish::default()).build();
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(settle).out(DefaultSlot, Publish::default()))
 }
 ```
 

@@ -53,7 +53,7 @@ fn app() -> impl App {
             let check = subscriber(RabbitQueue::new("inventory.check"), Check);
             b.include(check.reply().to("inventory.check.unrouted").build())
                 .out_reply(Publish::default())
-                .transform(DirectReplyTo);
+                .transform(DirectReplyTo)
         },
     )
 }

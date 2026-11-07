@@ -66,7 +66,7 @@ fn app(uri: &str) -> RustStream {
             let payments = RabbitQueue::new("testing-live.payments")
                 .durable(false)
                 .exclusive(true);
-            b.include(subscriber(payments, Accept).build());
+            b.include(subscriber(payments, Accept).build())
         },
     )
 }
@@ -81,6 +81,9 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
+// The harness drives the app on the test's own task, so a body shared by the in-process and the
+// live test holds futures that are not `Send`, and nothing here needs them to be.
+#[allow(clippy::future_not_send)]
 mod tests {
     use std::error::Error;
 

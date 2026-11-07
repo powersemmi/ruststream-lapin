@@ -18,7 +18,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use lapin::options::ExchangeDeleteOptions;
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Settle, Subscriber,
 };
 use ruststream_lapin::{LapinBroker, LapinPublish, RabbitQueue};
 use tokio::time::timeout as timeout_future;

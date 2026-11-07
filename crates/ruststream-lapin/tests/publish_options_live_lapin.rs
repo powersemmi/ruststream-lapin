@@ -18,7 +18,9 @@ use lapin::options::{BasicConsumeOptions, QueueDeleteOptions};
 use lapin::types::{FieldTable, ShortString};
 use lapin::{Channel, Connection, ConnectionProperties, Consumer};
 use ruststream::runtime::PublishExt;
-use ruststream::{Broker, ConnectedBroker, IncomingMessage, Outgoing, Serialized, Subscriber};
+use ruststream::{
+    Broker, ConnectedBroker, IncomingMessage, Outgoing, Serialized, Settle, Subscriber,
+};
 use ruststream_lapin::{
     AMQPValue, AmqpError, LapinBroker, LapinMessage, LapinPublish, LapinPublishSteps, LapinRequest,
     PRIORITY_HEADER, RabbitQueue,

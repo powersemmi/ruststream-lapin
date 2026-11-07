@@ -52,7 +52,7 @@ fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
     RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(broker, |b| {
         let shipments = RabbitQueue::new("shipments").delay(Delay::dlx_ttl());
-        b.include(subscriber(shipments, Dispatch).build());
+        b.include(subscriber(shipments, Dispatch).build())
     })
 }
 // --8<-- [end:delay]

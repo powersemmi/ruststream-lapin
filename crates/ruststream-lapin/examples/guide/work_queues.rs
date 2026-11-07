@@ -60,9 +60,9 @@ fn app() -> impl App {
         .prefetch(nonzero!(32))
         .declare_topology(true);
     RustStream::new(AppInfo::new("invoices", "0.1.0")).with_broker(broker, |b| {
-        b.include(render_invoice);
-        b.include(archive.batch(nonzero!(64)));
-        b.include(post_to_ledger);
+        b.include(render_invoice)
+            .include(archive.batch(nonzero!(64)))
+            .include(post_to_ledger)
     })
 }
 // --8<-- [end:app]

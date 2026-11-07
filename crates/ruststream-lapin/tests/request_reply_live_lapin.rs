@@ -9,19 +9,18 @@
 //!
 //! Every test is a no-op unless `AMQP_TEST_URL` points at a broker (see `just test-brokers`).
 
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use lapin::options::QueueDeleteOptions;
 use lapin::{Connection, ConnectionProperties};
-use ruststream::{ConnectedBroker, OutgoingMessage, Subscriber};
+use ruststream::{ConnectedBroker, OutgoingMessage, Settle, Subscriber};
 use ruststream_lapin::prelude::*;
 use ruststream_lapin::{AmqpError, LapinMessage};
 use serde::{Deserialize, Serialize};
 use tokio::runtime;
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::oneshot;
 use tokio::time::timeout as timeout_future;
 
 use crate::live;
@@ -129,17 +128,15 @@ async fn a_responder_answers_the_requester_and_falls_back_to_the_mount_site_name
         .await
         .expect("subscribe the fallback queue");
 
-    let stop = Arc::new(Notify::new());
-    let waiter = Arc::clone(&stop);
     let app = RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(
         LapinBroker::new(url.clone()).declare_topology(true),
         |b| {
             b.include(check)
                 .out_reply(Publish::default())
-                .transform(DirectReplyTo);
+                .transform(DirectReplyTo)
         },
     );
-    let running = tokio::spawn(app.run_until(async move { waiter.notified().await }));
+    let running = app.start().await.expect("start the responder");
 
     // The request carries the private reply address and a correlation id, and the transform sends
     // the answer to exactly that address. The timeout covers the responder's startup, because the
@@ -175,12 +172,10 @@ async fn a_responder_answers_the_requester_and_falls_back_to_the_mount_site_name
     );
     answered.ack().await.expect("ack");
 
-    stop.notify_one();
-    timeout_future(WAIT, running)
+    timeout_future(WAIT, running.shutdown())
         .await
         .expect("the responder shuts down")
-        .expect("app task did not panic")
-        .expect("run_until succeeded");
+        .expect("shutdown succeeded");
 
     drop(fallback);
     drop(unrouted);
@@ -202,17 +197,15 @@ async fn a_request_resolves_after_the_first_one_came_from_a_stopped_runtime() {
         .connect()
         .await
         .expect("connect");
-    let stop = Arc::new(Notify::new());
-    let waiter = Arc::clone(&stop);
     let app = RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(
         LapinBroker::new(url.clone()).declare_topology(true),
         |b| {
             b.include(check_foreign)
                 .out_reply(Publish::default())
-                .transform(DirectReplyTo);
+                .transform(DirectReplyTo)
         },
     );
-    let running = tokio::spawn(app.run_until(async move { waiter.notified().await }));
+    let running = app.start().await.expect("start the responder");
 
     let requester = client.requester(Request::default());
     let first = requester.clone();
@@ -223,7 +216,7 @@ async fn a_request_resolves_after_the_first_one_came_from_a_stopped_runtime() {
                 Duration::from_secs(15),
             )
             .await
-            .expect("the first request resolves on the runtime that made it");
+            .expect("the first request resolves on the runtime that made it")
     })
     .await;
 
@@ -237,12 +230,10 @@ async fn a_request_resolves_after_the_first_one_came_from_a_stopped_runtime() {
     let stock: Stock = serde_json::from_slice(reply.payload()).expect("decode the reply");
     assert!(!stock.available, "the reply must answer this request");
 
-    stop.notify_one();
-    timeout_future(WAIT, running)
+    timeout_future(WAIT, running.shutdown())
         .await
         .expect("the responder shuts down")
-        .expect("app task did not panic")
-        .expect("run_until succeeded");
+        .expect("shutdown succeeded");
     client.shutdown().await.expect("shutdown");
     delete_queues(&url, &[ASK_FOREIGN]).await;
 }

@@ -167,15 +167,14 @@ fn service(broker: LapinBroker) -> RustStream {
         b.include(check.build())
             .dead_letter("inventory.dead")
             .out_reply(Publish::default().exchange("answers"))
-            .transform(DirectReplyTo);
-        b.include(subscriber(events(), OnEvent).build())
+            .transform(DirectReplyTo)
+            .include(subscriber(events(), OnEvent).build())
             .out(
                 Restocks,
                 Publish::default()
                     .priority(4)
                     .expiration(Duration::from_secs(30)),
             )
-            .build();
     })
 }
 // --8<-- [end:operations]

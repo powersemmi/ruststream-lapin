@@ -61,7 +61,6 @@ fn app() -> impl App {
         |b| {
             b.include(ship)
                 .out(Shipments, Publish::default().priority(3))
-                .build();
         },
     )
 }

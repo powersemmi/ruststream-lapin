@@ -169,21 +169,17 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(broker, |b| {
         b.include(place_order)
             .out(DefaultSlot, Publish::default().exchange("events"))
-            .build();
-        b.include(notify_customer);
-        b.include(reserve_stock);
-        b.include(audit);
-
-        b.include(change_price)
-            .out_reply(Publish::default().exchange("prices"));
-        b.include(refresh_storefront);
-        b.include(reindex);
-
-        b.include(ship_order)
+            .include(notify_customer)
+            .include(reserve_stock)
+            .include(audit)
+            .include(change_price)
+            .out_reply(Publish::default().exchange("prices"))
+            .include(refresh_storefront)
+            .include(reindex)
+            .include(ship_order)
             .out(DefaultSlot, Publish::default().exchange("shipments"))
-            .build();
-        b.include(book_express);
-        b.include(insure);
+            .include(book_express)
+            .include(insure)
     })
 }
 // --8<-- [end:app]

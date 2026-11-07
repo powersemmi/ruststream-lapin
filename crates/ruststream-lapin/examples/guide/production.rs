@@ -34,9 +34,7 @@ fn broker(uri: String) -> LapinBroker {
 }
 
 fn service(broker: LapinBroker) -> RustStream {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(take_order);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(take_order))
 }
 
 #[ruststream::app]

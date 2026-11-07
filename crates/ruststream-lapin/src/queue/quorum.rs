@@ -51,7 +51,7 @@ use crate::subscriber::LapinSubscriber;
 ///         // route.
 ///         b.include(on_payout)
 ///             .max_attempts(nonzero!(5u32))
-///             .dead_letter("payouts.dead");
+///             .dead_letter("payouts.dead")
 ///     })
 /// }
 /// ```
@@ -90,7 +90,7 @@ use crate::subscriber::LapinSubscriber;
 /// fn app() -> RustStream {
 ///     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
 ///     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-///         b.include(take_payment);
+///         b.include(take_payment)
 ///     })
 /// }
 /// ```

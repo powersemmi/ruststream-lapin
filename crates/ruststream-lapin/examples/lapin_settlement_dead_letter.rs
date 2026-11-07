@@ -41,10 +41,8 @@ async fn review(invoice: &Invoice) -> HandlerOutcome {
 #[ruststream::app]
 fn app() -> impl App {
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
-        b.include(book);
-        b.include(review);
-    })
+    RustStream::new(AppInfo::new("billing", "0.1.0"))
+        .with_broker(broker, |b| b.include(book).include(review))
 }
 // --8<-- [end:dlx]
 

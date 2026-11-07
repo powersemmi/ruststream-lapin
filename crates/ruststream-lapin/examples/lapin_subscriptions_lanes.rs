@@ -20,12 +20,10 @@ async fn place(order: &Order) -> HandlerOutcome {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
-        |b| {
-            b.include(place);
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+            b.include(place)
+        })
 }
 // --8<-- [end:lanes]
 
@@ -88,14 +86,10 @@ mod tests {
     }
 
     fn timed() -> impl App<State = ()> {
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            LapinBroker::new("amqp://localhost:5672"),
-            |b| {
-                b.include(place_timed)
-                    .out(Placements, Publish::default())
-                    .build();
-            },
-        )
+        RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+                b.include(place_timed).out(Placements, Publish::default())
+            })
     }
 
     #[tokio::test]

@@ -61,8 +61,8 @@ fn app() -> impl App {
             .dead_letter_exchange("charges.dlx");
         let parked =
             RabbitQueue::new("charges.parked").bind(RabbitExchange::fanout("charges.dlx"), "");
-        b.include(subscriber(charges, TakePayment).build());
-        b.include(subscriber(parked, Park).build());
+        b.include(subscriber(charges, TakePayment).build())
+            .include(subscriber(parked, Park).build())
     })
 }
 // --8<-- [end:limit]

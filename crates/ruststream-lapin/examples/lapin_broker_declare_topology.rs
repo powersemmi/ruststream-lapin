@@ -20,9 +20,7 @@ async fn place(order: &Order) -> HandlerOutcome {
 fn app() -> impl App {
     // The service owns `events`, `orders` and the binding between them.
     let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(place);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(place))
 }
 // --8<-- [end:app]
 
@@ -69,9 +67,8 @@ mod tests {
     #[tokio::test]
     async fn a_transient_shared_queue_fails_startup() {
         let broker = LapinBroker::new("amqp://localhost:5672").declare_topology(true);
-        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-            b.include(place_transiently);
-        });
+        let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(broker, |b| b.include(place_transiently));
 
         let failed = TestApp::start(app).await.err();
         let mut cause: Option<&(dyn Error + 'static)> =

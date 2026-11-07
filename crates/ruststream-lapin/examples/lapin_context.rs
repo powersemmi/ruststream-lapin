@@ -31,12 +31,10 @@ async fn audit(
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        LapinBroker::new("amqp://localhost:5672"),
-        |b| {
-            b.include(audit).out_reply(Publish::default());
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(LapinBroker::new("amqp://localhost:5672"), |b| {
+            b.include(audit).out_reply(Publish::default())
+        })
 }
 // --8<-- [end:handler]
 
